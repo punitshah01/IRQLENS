@@ -47,6 +47,10 @@ class SqliteStore:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_irq_host_ts ON irq_samples(sut_ip, timestamp)")
+            self._ensure_column(conn, "irq_samples", "device", "TEXT NOT NULL DEFAULT 'N/A'")
+            self._ensure_column(conn, "irq_samples", "interrupt_type", "TEXT NOT NULL DEFAULT 'N/A'")
+            self._ensure_column(conn, "irq_samples", "numa_node", "TEXT NOT NULL DEFAULT 'N/A'")
+            self._ensure_column(conn, "irq_samples", "total_count", "INTEGER NOT NULL DEFAULT 0")
 
             conn.execute(
                 """
@@ -150,6 +154,12 @@ class SqliteStore:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_session_files_session ON session_files(session_id)")
+
+    def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        existing = {row[1] for row in rows}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     def _trim_table(self, conn: sqlite3.Connection, table: str, host: str) -> None:
         conn.execute(
