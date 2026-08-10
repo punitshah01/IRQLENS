@@ -120,21 +120,29 @@ class NetworkCollector:
 
             now = cur.get(iface, {})
             old = self._prev.get(iface)
+
             if not old:
-                continue
+                rx_bps = 0.0
+                tx_bps = 0.0
+                rx_pps = 0.0
+                tx_pps = 0.0
+                rx_err_ps = 0.0
+                tx_err_ps = 0.0
+                rx_drop_ps = 0.0
+                tx_drop_ps = 0.0
+            else:
+                def delta(key: str) -> int:
+                    val = int(now.get(key, 0)) - int(old.get(key, 0))
+                    return val if val >= 0 else int(now.get(key, 0))
 
-            def delta(key: str) -> int:
-                val = int(now.get(key, 0)) - int(old.get(key, 0))
-                return val if val >= 0 else int(now.get(key, 0))
-
-            rx_bps = float(delta("rx_bytes")) / elapsed
-            tx_bps = float(delta("tx_bytes")) / elapsed
-            rx_pps = float(delta("rx_packets")) / elapsed
-            tx_pps = float(delta("tx_packets")) / elapsed
-            rx_err_ps = float(delta("rx_errors")) / elapsed
-            tx_err_ps = float(delta("tx_errors")) / elapsed
-            rx_drop_ps = float(delta("rx_drops")) / elapsed
-            tx_drop_ps = float(delta("tx_drops")) / elapsed
+                rx_bps = float(delta("rx_bytes")) / elapsed
+                tx_bps = float(delta("tx_bytes")) / elapsed
+                rx_pps = float(delta("rx_packets")) / elapsed
+                tx_pps = float(delta("tx_packets")) / elapsed
+                rx_err_ps = float(delta("rx_errors")) / elapsed
+                tx_err_ps = float(delta("tx_errors")) / elapsed
+                rx_drop_ps = float(delta("rx_drops")) / elapsed
+                tx_drop_ps = float(delta("tx_drops")) / elapsed
 
             samples.append(
                 {

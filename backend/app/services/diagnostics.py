@@ -72,6 +72,22 @@ class DiagnosticSessionService:
 
         net_rows_raw, net_global, iface_infos = self.network_collector.collect(1.0, ts)
         files: List[ExportFile] = []
+        hosts = self.store.hosts()
+        selected_host = hosts[0] if hosts else "local"
+
+        if "irq" in categories:
+            irq_rows = [row.model_dump() for row in self.store.latest_irq(selected_host, limit=512)]
+            irq_dir = outdir / "irq"
+            files.extend(self._emit_category_files(irq_dir, "irqtop", {"host": selected_host, "rows": irq_rows}, irq_rows))
+
+        if "softirq" in categories:
+            soft = self.store.latest_softirq(selected_host)
+            soft_payload = soft.model_dump() if soft else {"host": selected_host, "sample": None}
+            soft_rows = []
+            if soft:
+                soft_rows = [{"class": k, "rate": v} for k, v in soft.rates.items()]
+            soft_dir = outdir / "softirq"
+            files.extend(self._emit_category_files(soft_dir, "softirq", soft_payload, soft_rows))
 
         if "network" in categories or "interfaces" in categories:
             category_dir = outdir / "network"
