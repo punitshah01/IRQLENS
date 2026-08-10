@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 
 
-def irq_balance_score(cpu_rates: Dict[str, float]) -> Dict[str, float | str]:
+def irq_balance_score(cpu_rates: Dict[str, float]) -> Dict[str, Union[float, str]]:
     values = [max(0.0, float(v)) for v in cpu_rates.values() if float(v) >= 0.0]
     if not values:
         return {
@@ -50,8 +50,8 @@ def irq_balance_score(cpu_rates: Dict[str, float]) -> Dict[str, float | str]:
     }
 
 
-def detect_spikes(values: List[Tuple[float, float]], multiplier: float = 2.0, baseline_points: int = 8) -> List[Dict[str, float | str]]:
-    events: List[Dict[str, float | str]] = []
+def detect_spikes(values: List[Tuple[float, float]], multiplier: float = 2.0, baseline_points: int = 8) -> List[Dict[str, Union[float, str]]]:
+    events: List[Dict[str, Union[float, str]]] = []
     if len(values) < baseline_points + 1:
         return events
 

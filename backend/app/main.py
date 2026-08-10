@@ -4,7 +4,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -60,7 +60,7 @@ def _ip_allowed(request: Request) -> bool:
     return client in settings.allowed_ingest_ips
 
 
-def _resolve_host(host: str | None) -> str:
+def _resolve_host(host: Optional[str]) -> str:
     if host:
         return host
     hosts = STORE.hosts()
@@ -69,7 +69,7 @@ def _resolve_host(host: str | None) -> str:
     return "local"
 
 
-def _resolve_sut(sut_id: str | None, host: str | None) -> str:
+def _resolve_sut(sut_id: Optional[str], host: Optional[str]) -> str:
     if sut_id:
         return sut_id
     return _resolve_host(host)
@@ -273,8 +273,8 @@ def _visualization_payload(
     sut_id: str,
     window_seconds: int = 300,
     top_n: int = 20,
-    from_ts: float | None = None,
-    to_ts: float | None = None,
+    from_ts: Optional[float] = None,
+    to_ts: Optional[float] = None,
 ) -> Dict[str, Any]:
     now = time.time()
     if to_ts is None:
@@ -555,7 +555,7 @@ async def ingest(request: Request) -> dict:
 
 
 @app.get("/api/system")
-def get_system(host: str | None = None, sut_id: str | None = None) -> dict:
+def get_system(host: Optional[str] = None, sut_id: Optional[str] = None) -> dict:
     target = _resolve_sut(sut_id, host)
     row = STORE.latest_system(target)
     if not row:
@@ -566,14 +566,14 @@ def get_system(host: str | None = None, sut_id: str | None = None) -> dict:
 
 
 @app.get("/api/interfaces")
-def get_interfaces(host: str | None = None, sut_id: str | None = None) -> dict:
+def get_interfaces(host: Optional[str] = None, sut_id: Optional[str] = None) -> dict:
     target = _resolve_sut(sut_id, host)
     interfaces = STORE.latest_interfaces(target)
     return {"host": target, "interfaces": [item.model_dump() for item in interfaces]}
 
 
 @app.get("/api/irq/current")
-def irq_current(host: str | None = None, sut_id: str | None = None, limit: int = 256) -> dict:
+def irq_current(host: Optional[str] = None, sut_id: Optional[str] = None, limit: int = 256) -> dict:
     target = _resolve_sut(sut_id, host)
     rows = STORE.latest_irq(target, limit=limit)
     return {"host": target, "rows": [row.model_dump() for row in rows]}
@@ -586,14 +586,14 @@ def irq_latest_compat(sut_ip: str, limit: int = 300) -> dict:
 
 
 @app.get("/api/irq/history")
-def irq_history(host: str | None = None, sut_id: str | None = None, limit: int = 1000) -> dict:
+def irq_history(host: Optional[str] = None, sut_id: Optional[str] = None, limit: int = 1000) -> dict:
     target = _resolve_sut(sut_id, host)
     rows = STORE.latest_irq(target, limit=limit)
     return {"host": target, "rows": [row.model_dump() for row in rows]}
 
 
 @app.get("/api/softirq/current")
-def softirq_current(host: str | None = None, sut_id: str | None = None) -> dict:
+def softirq_current(host: Optional[str] = None, sut_id: Optional[str] = None) -> dict:
     target = _resolve_sut(sut_id, host)
     row = STORE.latest_softirq(target)
     if not row:
@@ -602,7 +602,7 @@ def softirq_current(host: str | None = None, sut_id: str | None = None) -> dict:
 
 
 @app.get("/api/network/current")
-def network_current(host: str | None = None, sut_id: str | None = None) -> dict:
+def network_current(host: Optional[str] = None, sut_id: Optional[str] = None) -> dict:
     target = _resolve_sut(sut_id, host)
     rows = STORE.latest_network(target, limit=400)
     latest_by_iface: Dict[str, dict] = {}
@@ -646,7 +646,7 @@ def host_latest_compat(sut_ip: str, limit: int = 120) -> dict:
 
 
 @app.get("/api/network/{interface}")
-def network_interface(interface: str, host: str | None = None, sut_id: str | None = None) -> dict:
+def network_interface(interface: str, host: Optional[str] = None, sut_id: Optional[str] = None) -> dict:
     target = _resolve_sut(sut_id, host)
     rows = STORE.latest_network(target, limit=5000)
     filtered = [row.model_dump() for row in rows if row.interface == interface]
@@ -677,8 +677,8 @@ def system_visualization(
     sut_id: str,
     window_seconds: int = 300,
     top_n: int = 20,
-    from_ts: float | None = None,
-    to_ts: float | None = None,
+    from_ts: Optional[float] = None,
+    to_ts: Optional[float] = None,
 ) -> dict:
     if not STORE.get_system(sut_id) and sut_id != "local":
         raise HTTPException(status_code=404, detail="system not found")

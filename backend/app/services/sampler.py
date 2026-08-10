@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from ..collectors import IRQCollector, NetworkCollector, SoftIRQCollector, SystemCollector
 from ..config import Settings
@@ -23,10 +23,10 @@ class TelemetrySampler:
         self.net_collector = NetworkCollector()
         self.system_collector = SystemCollector()
 
-        self._task: asyncio.Task | None = None
-        self._stop: asyncio.Event | None = None
-        self._last_monotonic: float | None = None
-        self._last_snapshot: DashboardSnapshot | None = None
+        self._task: Optional[asyncio.Task] = None
+        self._stop: Optional[asyncio.Event] = None
+        self._last_monotonic: Optional[float] = None
+        self._last_snapshot: Optional[DashboardSnapshot] = None
         self._status = "idle"
         self._logger = logging.getLogger("irqlens.sampler")
 
@@ -35,7 +35,7 @@ class TelemetrySampler:
         return self._status
 
     @property
-    def snapshot(self) -> DashboardSnapshot | None:
+    def snapshot(self) -> Optional[DashboardSnapshot]:
         return self._last_snapshot
 
     async def start(self) -> None:

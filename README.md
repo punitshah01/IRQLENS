@@ -126,8 +126,8 @@ Repository-grounded requirements:
 
 ### Python
 - Repository does not declare a strict minor version in metadata.
-- Code uses modern typing syntax (`|`) and is expected to run on Python 3.10+.
-- This workspace was executed with Python 3.13 (`.venv`).
+- Current code is compatible with Python 3.9+.
+- This workspace was executed with Python 3.13 (`.venv`), and the reported Linux startup failure was fixed for Python 3.9.
 
 ### Linux distributions
 - The code is Linux-oriented and reads Linux proc/sys paths.
