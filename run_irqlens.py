@@ -88,6 +88,14 @@ def main() -> int:
     env.setdefault("IRQLENS_DB_PATH", str((backend / "data" / "irqlens.db").resolve()))
     host_ip = _detect_host_ip()
     url = f"http://{host_ip}:8080"
+    no_proxy_hosts = [host_ip, "127.0.0.1", "::1", "localhost"]
+    existing_no_proxy = env.get("no_proxy") or env.get("NO_PROXY") or ""
+    entries = [x.strip() for x in existing_no_proxy.split(",") if x.strip()]
+    for candidate in no_proxy_hosts:
+        if candidate not in entries:
+            entries.append(candidate)
+    env["no_proxy"] = ",".join(entries)
+    env["NO_PROXY"] = env["no_proxy"]
     if args.collect_local:
         env["IRQLENS_DISABLE_INGEST_ALLOWLIST"] = "1"
 

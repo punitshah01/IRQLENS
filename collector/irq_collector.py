@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def parse_interrupts() -> Tuple[List[str], Dict[str, Tuple[str, List[int]]]]:
     lines = Path("/proc/interrupts").read_text(encoding="utf-8", errors="ignore").splitlines()
     header = lines[0].split()
@@ -115,7 +118,7 @@ def post_json(url: str, payload: dict, timeout: float = 3.0) -> None:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout):
+    with _OPENER.open(req, timeout=timeout):
         return
 
 
