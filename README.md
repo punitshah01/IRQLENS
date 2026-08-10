@@ -103,6 +103,18 @@ This starts backend + dashboard UI on:
 
 IRQLENS prints the reachable URL in the terminal, similar to PRISM.
 
+If IRQLENS is running on the same Linux SUT you want to monitor, start backend + local collector together:
+
+```bash
+python3 run_irqlens.py --collect-local --nic <nic-name>
+```
+
+Example:
+
+```bash
+python3 run_irqlens.py --collect-local --nic ens3np0
+```
+
 ### 1. Start backend
 
 Linux/macOS:
@@ -213,6 +225,8 @@ Collector arguments:
 ### No hosts visible
 - Verify collector can reach backend URL.
 - Check backend logs for `403 ingest client IP not allowed` if allowlist is set.
+- If you only started `run_irqlens.py`, the UI will load but remain empty until a collector posts data.
+- For same-host monitoring on Linux, use `python3 run_irqlens.py --collect-local --nic <nic-name>`.
 
 ### Host appears but no rates
 - First loop establishes baseline; wait one interval.

@@ -42,6 +42,10 @@ def affinity_for_irq(irq: str) -> str:
     p = Path(f"/proc/irq/{irq}/smp_affinity_list")
     if not p.exists():
         return ""
+    try:
+        return p.read_text(encoding="utf-8", errors="ignore").strip()
+    except Exception:
+        return ""
 
 
 def parse_softirqs() -> Dict[str, int]:
@@ -101,10 +105,6 @@ def parse_netdev(nic: str = "") -> Dict[str, int]:
         except ValueError:
             continue
     return total
-    try:
-        return p.read_text(encoding="utf-8", errors="ignore").strip()
-    except Exception:
-        return ""
 
 
 def post_json(url: str, payload: dict, timeout: float = 3.0) -> None:

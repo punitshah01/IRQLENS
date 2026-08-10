@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import socket
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -40,9 +42,25 @@ def _print_banner(url: str) -> None:
     print("\n".join(lines))
 
 
+def _default_sut_id(host_ip: str) -> str:
+    try:
+        return socket.gethostname() or host_ip
+    except Exception:
+        return host_ip
+
+
 def main() -> int:
+    ap = argparse.ArgumentParser(description="Start IRQLENS backend and optionally local collector")
+    ap.add_argument("--collect-local", action="store_true", help="Also start the local IRQ collector on this Linux host")
+    ap.add_argument("--nic", default="", help="NIC name for local collection, e.g. ens3np0")
+    ap.add_argument("--sut-ip", default="", help="Logical SUT identifier shown in the dashboard")
+    ap.add_argument("--interval", type=float, default=1.0, help="Collector sampling interval seconds")
+    ap.add_argument("--topn", type=int, default=64, help="Top IRQ lines sent per sample")
+    args = ap.parse_args()
+
     root = Path(__file__).resolve().parent
     backend = root / "backend"
+    collector = root / "collector" / "irq_collector.py"
     req = backend / "requirements.txt"
 
     if not req.exists():
@@ -60,7 +78,7 @@ def main() -> int:
     host_ip = _detect_host_ip()
     url = f"http://{host_ip}:8080"
 
-    cmd = [
+    backend_cmd = [
         str(venv_py),
         "-m",
         "uvicorn",
@@ -72,7 +90,41 @@ def main() -> int:
     ]
     print("Starting IRQLENS")
     _print_banner(url)
-    return subprocess.call(cmd, cwd=str(backend), env=env)
+
+    backend_proc = subprocess.Popen(backend_cmd, cwd=str(backend), env=env)
+    collector_proc = None
+    try:
+        if args.collect_local:
+            if os.name == "nt":
+                print("Local collection is only supported on Linux because IRQLENS reads /proc telemetry.")
+            else:
+                time.sleep(1.0)
+                sut_id = args.sut_ip or _default_sut_id(host_ip)
+                collector_cmd = [
+                    sys.executable,
+                    str(collector),
+                    "--server",
+                    url,
+                    "--sut-ip",
+                    sut_id,
+                    "--interval",
+                    str(args.interval),
+                    "--topn",
+                    str(args.topn),
+                ]
+                if args.nic:
+                    collector_cmd.extend(["--nic", args.nic])
+                print(f"Starting local collector for {sut_id}")
+                collector_proc = subprocess.Popen(collector_cmd, cwd=str(root), env=env)
+
+        return backend_proc.wait()
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        if collector_proc and collector_proc.poll() is None:
+            collector_proc.terminate()
+        if backend_proc.poll() is None:
+            backend_proc.terminate()
 
 
 if __name__ == "__main__":
