@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>IRQLENS</title>
+  <style>
+    :root {
+      --bg: #f0f4f8;
+      --panel: #ffffff;
+      --panel2: #f8fafc;
+      --border: #d6dee8;
+      --text: #172130;
+      --muted: #5f738a;
+      --brand: #0054ae;
+      --hot: #d1393a;
+      --warn: #c8790a;
+      --good: #1f9d63;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 0% 0%, #f8fbff 0%, transparent 40%),
+        radial-gradient(circle at 100% 20%, #eef4fb 0%, transparent 35%),
+        var(--bg);
+    }
+    header {
+      background: var(--brand);
+      color: #fff;
+      padding: 12px 14px;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 12px;
+      align-items: center;
+    }
+    .title { font-size: 20px; font-weight: 800; letter-spacing: .5px; }
+    .sub { font-size: 11px; opacity: .92; }
+    .ctrl { display: flex; gap: 8px; align-items: center; justify-content: center; flex-wrap: wrap; }
+    input, select, button {
+      border: 1px solid #cfd9e5;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 13px;
+      background: #fff;
+      color: #15202e;
+    }
+    button { cursor: pointer; }
+    .status { font-size: 12px; color: #d6e7ff; text-align: right; }
+    main {
+      padding: 12px;
+      display: grid;
+      grid-template-columns: 1.4fr 1fr;
+      gap: 10px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+    }
+    .card h3 {
+      margin: 0 0 8px;
+      color: var(--muted);
+      text-transform: uppercase;
+      font-size: 12px;
+      letter-spacing: .45px;
+    }
+    .full { grid-column: 1 / -1; }
+    .kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+    .kpi { border: 1px solid var(--border); border-radius: 10px; padding: 8px; background: var(--panel2); }
+    .kpi .l { font-size: 10px; text-transform: uppercase; color: var(--muted); }
+    .kpi .v { margin-top: 3px; font-size: 15px; font-weight: 750; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid #eaf0f6; text-align: left; padding: 5px 4px; font-size: 12px; }
+    .mono { font-family: Consolas, monospace; }
+    .heat { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px; }
+    .cell { border: 1px solid var(--border); border-radius: 8px; padding: 6px; text-align: center; font-size: 11px; }
+    canvas { width: 100%; height: 180px; border: 1px solid var(--border); border-radius: 8px; background: #fbfdff; }
+    @media (max-width: 1080px) {
+      main { grid-template-columns: 1fr; }
+      .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <div class="title">IRQLENS</div>
+      <div class="sub">IRQ, SoftIRQ, and Network Operations Dashboard</div>
+    </div>
+    <div class="ctrl">
+      <input id="backend" value="http://localhost:8080" size="24" />
+      <select id="host"></select>
+      <button id="refresh">Refresh</button>
+    </div>
+    <div class="status" id="status">idle</div>
+  </header>
+
+  <main>
+    <section class="card full">
+      <h3>Fleet Summary</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Host</th><th>NIC</th><th>RX</th><th>TX</th><th>SoftIRQ/s</th><th>Drops (RX/TX)</th><th>Top IRQ</th><th>IRQ Rate/s</th>
+          </tr>
+        </thead>
+        <tbody id="summary-body"></tbody>
+      </table>
+    </section>
+
+    <section class="card full">
+      <h3>Selected Host KPI Strip</h3>
+      <div class="kpis">
+        <div class="kpi"><div class="l">RX Throughput</div><div class="v" id="kpi-rx-bps">-</div></div>
+        <div class="kpi"><div class="l">TX Throughput</div><div class="v" id="kpi-tx-bps">-</div></div>
+        <div class="kpi"><div class="l">RX Packets/s</div><div class="v" id="kpi-rx-pps">-</div></div>
+        <div class="kpi"><div class="l">TX Packets/s</div><div class="v" id="kpi-tx-pps">-</div></div>
+        <div class="kpi"><div class="l">SoftIRQ/s</div><div class="v" id="kpi-soft">-</div></div>
+        <div class="kpi"><div class="l">Drops (RX/TX)</div><div class="v" id="kpi-drops">-</div></div>
+      </div>
+    </section>
+
+    <section class="card full">
+      <h3>Host Trends (RX/TX/SoftIRQ)</h3>
+      <canvas id="trend" width="1200" height="260"></canvas>
+    </section>
+
+    <section class="card">
+      <h3>Top IRQ Lines</h3>
+      <table>
+        <thead>
+          <tr><th>IRQ</th><th>Source</th><th>Rate/s</th><th>Affinity</th></tr>
+        </thead>
+        <tbody id="irq-body"></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h3>Per-CPU IRQ Rate</h3>
+      <div id="heat" class="heat"></div>
+    </section>
+
+    <section class="card full">
+      <h3>Top SoftIRQ Classes</h3>
+      <table>
+        <thead>
+          <tr><th>Class</th><th>Rate/s</th></tr>
+        </thead>
+        <tbody id="softirq-body"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script>
+    const hostSel = document.getElementById("host");
+    const backend = document.getElementById("backend");
+    const status = document.getElementById("status");
+    const summaryBody = document.getElementById("summary-body");
+    const irqBody = document.getElementById("irq-body");
+    const softBody = document.getElementById("softirq-body");
+    const heat = document.getElementById("heat");
+    const trendCanvas = document.getElementById("trend");
+    const trendCtx = trendCanvas.getContext("2d");
+    let ws = null;
+
+    function api(path) { return backend.value.replace(/\/$/, "") + path; }
+
+    function heatColor(rate) {
+      if (rate >= 20000) return "#d1393a";
+      if (rate >= 7000) return "#c8790a";
+      if (rate >= 2000) return "#2f9f67";
+      return "#d7dee7";
+    }
+
+    function fmtBytesPerSec(v) {
+      const n = Number(v || 0);
+      if (n >= 1e9) return (n / 1e9).toFixed(2) + " GB/s";
+      if (n >= 1e6) return (n / 1e6).toFixed(2) + " MB/s";
+      if (n >= 1e3) return (n / 1e3).toFixed(2) + " KB/s";
+      return n.toFixed(0) + " B/s";
+    }
+
+    function drawTrend(hostSamples) {
+      const W = trendCanvas.width;
+      const H = trendCanvas.height;
+      trendCtx.clearRect(0, 0, W, H);
+      trendCtx.fillStyle = "#ffffff";
+      trendCtx.fillRect(0, 0, W, H);
+
+      if (!hostSamples.length) {
+        trendCtx.fillStyle = "#60758d";
+        trendCtx.fillText("No host samples yet", 20, 30);
+        return;
+      }
+
+      const rx = hostSamples.map(x => Number(x.rx_bps || 0));
+      const tx = hostSamples.map(x => Number(x.tx_bps || 0));
+      const soft = hostSamples.map(x => {
+        const s = x.softirq_rates || {};
+        return Object.values(s).reduce((a, b) => a + Number(b || 0), 0);
+      });
+      const maxV = Math.max(1, ...rx, ...tx, ...soft);
+
+      function plot(vals, color) {
+        trendCtx.strokeStyle = color;
+        trendCtx.lineWidth = 2;
+        trendCtx.beginPath();
+        for (let i = 0; i < vals.length; i++) {
+          const x = 36 + (i * (W - 50)) / Math.max(1, vals.length - 1);
+          const y = H - 24 - ((vals[i] / maxV) * (H - 50));
+          if (i === 0) trendCtx.moveTo(x, y); else trendCtx.lineTo(x, y);
+        }
+        trendCtx.stroke();
+      }
+
+      trendCtx.strokeStyle = "#dce6f1";
+      trendCtx.strokeRect(30, 16, W - 40, H - 36);
+      plot(rx, "#1d6fe5");
+      plot(tx, "#f5a623");
+      plot(soft, "#1f9d63");
+
+      trendCtx.fillStyle = "#334a63";
+      trendCtx.fillText("RX", 44, 18);
+      trendCtx.fillText("TX", 84, 18);
+      trendCtx.fillText("SoftIRQ", 124, 18);
+      trendCtx.fillStyle = "#1d6fe5";
+      trendCtx.fillRect(34, 10, 8, 4);
+      trendCtx.fillStyle = "#f5a623";
+      trendCtx.fillRect(74, 10, 8, 4);
+      trendCtx.fillStyle = "#1f9d63";
+      trendCtx.fillRect(114, 10, 8, 4);
+    }
+
+    async function loadHosts() {
+      const r = await fetch(api("/api/hosts"));
+      const d = await r.json();
+      const prev = hostSel.value;
+      hostSel.innerHTML = "";
+      (d.hosts || []).forEach(h => {
+        const o = document.createElement("option");
+        o.value = h;
+        o.textContent = h;
+        hostSel.appendChild(o);
+      });
+      if (prev && Array.from(hostSel.options).some(x => x.value === prev)) hostSel.value = prev;
+    }
+
+    async function refreshSummary() {
+      const r = await fetch(api("/api/summary/current"));
+      const d = await r.json();
+      summaryBody.innerHTML = "";
+      for (const row of (d.rows || [])) {
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          "<td class=\"mono\">" + row.sut_ip + "</td>" +
+          "<td class=\"mono\">" + (row.nic || "-") + "</td>" +
+          "<td>" + fmtBytesPerSec(row.rx_bps) + "</td>" +
+          "<td>" + fmtBytesPerSec(row.tx_bps) + "</td>" +
+          "<td>" + Number(row.softirq_total || 0).toFixed(0) + "</td>" +
+          "<td>" + Number(row.rx_drop_ps || 0).toFixed(1) + " / " + Number(row.tx_drop_ps || 0).toFixed(1) + "</td>" +
+          "<td>" + (row.top_irq || "-") + "</td>" +
+          "<td>" + Number(row.top_irq_rate || 0).toFixed(1) + "</td>";
+        summaryBody.appendChild(tr);
+      }
+    }
+
+    async function refreshHost() {
+      const h = hostSel.value;
+      if (!h) {
+        status.textContent = "no host";
+        return;
+      }
+
+      const irqUrl = api("/api/irq/latest?sut_ip=" + encodeURIComponent(h) + "&limit=500");
+      const hostUrl = api("/api/host/latest?sut_ip=" + encodeURIComponent(h) + "&limit=80");
+      const [r1, r2] = await Promise.all([fetch(irqUrl), fetch(hostUrl)]);
+      const irqData = await r1.json();
+      const hostData = await r2.json();
+      const irqSamples = irqData.samples || [];
+      const hostSamples = hostData.samples || [];
+
+      const byIrq = {};
+      const cpuAgg = {};
+      for (const s of irqSamples) {
+        const key = s.irq + "|" + s.irq_name;
+        if (!byIrq[key] || Number(s.total_rate || 0) > Number(byIrq[key].total_rate || 0)) byIrq[key] = s;
+        for (const [cpu, rate] of Object.entries(s.cpu_rates || {})) {
+          cpuAgg[cpu] = (cpuAgg[cpu] || 0) + Number(rate || 0);
+        }
+      }
+
+      irqBody.innerHTML = "";
+      const top = Object.values(byIrq).sort((a, b) => Number(b.total_rate || 0) - Number(a.total_rate || 0)).slice(0, 40);
+      for (const s of top) {
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          "<td class=\"mono\">" + s.irq + "</td>" +
+          "<td>" + s.irq_name + "</td>" +
+          "<td>" + Number(s.total_rate || 0).toFixed(1) + "</td>" +
+          "<td class=\"mono\">" + (s.affinity_list || "-") + "</td>";
+        irqBody.appendChild(tr);
+      }
+
+      heat.innerHTML = "";
+      const cpus = Object.keys(cpuAgg).map(x => Number(x)).sort((a, b) => a - b);
+      for (const c of cpus) {
+        const r = Number(cpuAgg[String(c)] || 0);
+        const div = document.createElement("div");
+        div.className = "cell";
+        div.style.background = heatColor(r);
+        div.innerHTML = "<div class=\"mono\">CPU " + c + "</div><div>" + r.toFixed(0) + "/s</div>";
+        heat.appendChild(div);
+      }
+
+      const hs = hostSamples.length ? hostSamples[hostSamples.length - 1] : null;
+      const soft = hs ? (hs.softirq_rates || {}) : {};
+      const softEntries = Object.entries(soft).sort((a, b) => Number(b[1]) - Number(a[1]));
+      const softTotal = softEntries.reduce((acc, x) => acc + Number(x[1] || 0), 0);
+
+      document.getElementById("kpi-rx-bps").textContent = hs ? fmtBytesPerSec(hs.rx_bps) : "-";
+      document.getElementById("kpi-tx-bps").textContent = hs ? fmtBytesPerSec(hs.tx_bps) : "-";
+      document.getElementById("kpi-rx-pps").textContent = hs ? Number(hs.rx_pps || 0).toFixed(0) + " pps" : "-";
+      document.getElementById("kpi-tx-pps").textContent = hs ? Number(hs.tx_pps || 0).toFixed(0) + " pps" : "-";
+      document.getElementById("kpi-soft").textContent = hs ? softTotal.toFixed(0) + " /s" : "-";
+      document.getElementById("kpi-drops").textContent = hs
+        ? Number(hs.rx_drop_ps || 0).toFixed(1) + " / " + Number(hs.tx_drop_ps || 0).toFixed(1)
+        : "-";
+
+      softBody.innerHTML = "";
+      for (const [name, rate] of softEntries.slice(0, 12)) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = "<td class=\"mono\">" + name + "</td><td>" + Number(rate).toFixed(1) + "</td>";
+        softBody.appendChild(tr);
+      }
+
+      drawTrend(hostSamples);
+    }
+
+    async function refreshAll() {
+      status.textContent = "loading";
+      await loadHosts();
+      await refreshSummary();
+      await refreshHost();
+      status.textContent = "updated " + new Date().toLocaleTimeString();
+    }
+
+    function connectWS() {
+      if (ws) {
+        try { ws.close(); } catch (e) {}
+      }
+      const base = backend.value.replace(/\/$/, "");
+      const wsUrl = base.replace(/^http/, "ws") + "/ws";
+      try {
+        ws = new WebSocket(wsUrl);
+      } catch (e) {
+        return;
+      }
+      ws.onopen = function() { status.textContent = "live"; };
+      ws.onmessage = function() { refreshAll().catch(() => {}); };
+      ws.onclose = function() { status.textContent = "polling"; };
+    }
+
+    document.getElementById("refresh").onclick = function() { refreshAll().catch(err => status.textContent = "error: " + err); };
+    hostSel.onchange = function() { refreshHost().catch(err => status.textContent = "error: " + err); };
+
+    async function boot() {
+      try {
+        await refreshAll();
+        connectWS();
+        setInterval(function() { refreshAll().catch(() => {}); }, 5000);
+      } catch (e) {
+        status.textContent = "error: " + e;
+      }
+    }
+    boot();
+  </script>
+</body>
+</html>
