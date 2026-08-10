@@ -59,6 +59,9 @@ class Settings:
     cors_origins: List[str]
     allowed_ingest_ips: List[str]
     enabled_intervals: List[float]
+    agent_token: str
+    heartbeat_interval: int
+    stale_threshold: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -78,6 +81,9 @@ class Settings:
         cors_raw = _env("IRQLENS_CORS_ORIGINS", "*")
         cors_origins = [x.strip() for x in cors_raw.split(",") if x.strip()] if cors_raw else ["*"]
         allowed_ingest_ips = _env_list("IRQLENS_ALLOWED_INGEST_IPS", "")
+        agent_token = _env("IRQLENS_AGENT_TOKEN", "")
+        heartbeat_interval = _env_int("IRQLENS_AGENT_HEARTBEAT_INTERVAL", 5)
+        stale_threshold = _env_int("IRQLENS_AGENT_STALE_THRESHOLD", 15)
 
         interval_raw = _env_list("IRQLENS_SUPPORTED_INTERVALS", "0.1,0.25,0.5,1,2,5,10")
         enabled_intervals: List[float] = []
@@ -107,6 +113,9 @@ class Settings:
             cors_origins=cors_origins,
             allowed_ingest_ips=allowed_ingest_ips,
             enabled_intervals=sorted(set(enabled_intervals)),
+            agent_token=agent_token,
+            heartbeat_interval=max(1, heartbeat_interval),
+            stale_threshold=max(3, stale_threshold),
         )
 
     def ensure_dirs(self) -> None:

@@ -35,7 +35,7 @@ class DiagnosticSessionService:
     def _session_dir(self, session_id: str) -> Path:
         return self.settings.output_dir / "sessions" / self._safe_session_id(session_id)
 
-    def start(self, categories: List[str], system_hostname: str, os_distribution: str, kernel: str) -> CollectionSession:
+    def start(self, categories: List[str], system_hostname: str, os_distribution: str, kernel: str, sut_id: str = "") -> CollectionSession:
         ts = time.time()
         session_id = time.strftime("%Y%m%d-%H%M%S", time.localtime(ts))
         session_id = f"{session_id}-{int((ts % 1) * 1000):03d}"
@@ -44,6 +44,7 @@ class DiagnosticSessionService:
 
         session = CollectionSession(
             session_id=session_id,
+            sut_id=sut_id,
             status="running",
             start_time=ts,
             end_time=None,
@@ -62,18 +63,36 @@ class DiagnosticSessionService:
         self.exporter.write_json(metadata_path, session.model_dump())
         return session
 
-    def collect_snapshot(self, session_id: str, categories: List[str]) -> List[ExportFile]:
+    def collect_snapshot(self, session_id: str, categories: List[str], sut_id: str = "local") -> List[ExportFile]:
         outdir = self._session_dir(session_id)
         outdir.mkdir(parents=True, exist_ok=True)
 
-        interfaces = self.network_collector.discover_interfaces()
-        system = self.system_collector.collect(time.time())
+        interfaces = self.network_collector.discover_interfaces() if sut_id == "local" else [i.name for i in self.store.latest_interfaces(sut_id)]
+        system_row = self.store.latest_system(sut_id)
+        system = system_row.model_dump() if system_row else self.system_collector.collect(time.time())
         ts = time.time()
 
-        net_rows_raw, net_global, iface_infos = self.network_collector.collect(1.0, ts)
+        if sut_id == "local":
+            net_rows_raw, net_global, iface_infos = self.network_collector.collect(1.0, ts)
+        else:
+            net_rows = [r.model_dump() for r in self.store.latest_network(sut_id, limit=512)]
+            iface_infos = [i.model_dump() for i in self.store.latest_interfaces(sut_id)]
+            net_rows_raw = net_rows
+            net_global = {
+                "interfaces": float(len(iface_infos)),
+                "interfaces_up": float(len([i for i in iface_infos if i.get("state") == "up"])),
+                "interfaces_down": float(len([i for i in iface_infos if i.get("state") != "up"])),
+                "rx_bps": float(sum(float(x.get("rx_bps", 0.0)) for x in net_rows)),
+                "tx_bps": float(sum(float(x.get("tx_bps", 0.0)) for x in net_rows)),
+                "rx_pps": float(sum(float(x.get("rx_pps", 0.0)) for x in net_rows)),
+                "tx_pps": float(sum(float(x.get("tx_pps", 0.0)) for x in net_rows)),
+                "rx_err_ps": float(sum(float(x.get("rx_err_ps", 0.0)) for x in net_rows)),
+                "tx_err_ps": float(sum(float(x.get("tx_err_ps", 0.0)) for x in net_rows)),
+                "rx_drop_ps": float(sum(float(x.get("rx_drop_ps", 0.0)) for x in net_rows)),
+                "tx_drop_ps": float(sum(float(x.get("tx_drop_ps", 0.0)) for x in net_rows)),
+            }
         files: List[ExportFile] = []
-        hosts = self.store.hosts()
-        selected_host = hosts[0] if hosts else "local"
+        selected_host = sut_id
 
         if "irq" in categories:
             irq_rows = [row.model_dump() for row in self.store.latest_irq(selected_host, limit=512)]
@@ -104,7 +123,7 @@ class DiagnosticSessionService:
             files.extend(self._emit_category_files(category_dir, "system", system, [system]))
 
         command_categories = [c for c in categories if c in {"network", "interfaces", "routes", "sockets", "ethtool"}]
-        if command_categories:
+        if command_categories and sut_id == "local":
             command_dir = outdir / "commands"
             commands = self.command_collector.available_commands(interfaces=interfaces, categories=command_categories)
             command_rows = []
@@ -127,6 +146,15 @@ class DiagnosticSessionService:
                         encoding="utf-8",
                     )
             files.extend(self._emit_category_files(command_dir, "commands", {"commands": command_rows}, command_rows))
+        elif command_categories:
+            command_dir = outdir / "commands"
+            note = {
+                "sut_id": sut_id,
+                "status": "remote-agent-required",
+                "message": "Remote command diagnostics must be executed by IRQLENS SUT Agent on target host.",
+                "timestamp": ts,
+            }
+            files.extend(self._emit_category_files(command_dir, "commands", note, [note]))
 
         latest_dir = self.settings.output_dir / "latest"
         latest_dir.mkdir(parents=True, exist_ok=True)

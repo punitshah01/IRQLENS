@@ -7,7 +7,7 @@ from threading import Lock
 from typing import Any, Dict, List, Optional
 
 from .config import settings
-from .models import CollectionSession, ExportFile, InterfaceInfo, IRQSample, NetworkSample, SoftIRQSample, SystemInfo
+from .models import CollectionSession, ExportFile, InterfaceInfo, IRQSample, NetworkSample, SoftIRQSample, SystemInfo, SystemRecord
 
 
 class SqliteStore:
@@ -138,6 +138,7 @@ class SqliteStore:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_start ON sessions(start_time DESC)")
+            self._ensure_column(conn, "sessions", "sut_id", "TEXT NOT NULL DEFAULT ''")
 
             conn.execute(
                 """
@@ -154,6 +155,48 @@ class SqliteStore:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_session_files_session ON session_files(session_id)")
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS systems (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    hostname TEXT NOT NULL,
+                    address TEXT NOT NULL,
+                    port INTEGER NOT NULL,
+                    os_distribution TEXT NOT NULL,
+                    os_version TEXT NOT NULL,
+                    kernel TEXT NOT NULL,
+                    architecture TEXT NOT NULL,
+                    agent_version TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    last_seen REAL NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    cpu_count INTEGER NOT NULL DEFAULT 0,
+                    cpu_model TEXT NOT NULL DEFAULT '',
+                    memory_total_kb INTEGER NOT NULL DEFAULT 0,
+                    numa_nodes INTEGER NOT NULL DEFAULT 0,
+                    interfaces_json TEXT NOT NULL DEFAULT '[]',
+                    ip_addresses_json TEXT NOT NULL DEFAULT '[]',
+                    mode TEXT NOT NULL DEFAULT 'remote'
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_systems_status ON systems(status, updated_at)")
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_heartbeats (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sut_id TEXT NOT NULL,
+                    timestamp REAL NOT NULL,
+                    uptime_seconds REAL NOT NULL,
+                    agent_version TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_heartbeats_sut_ts ON agent_heartbeats(sut_id, timestamp)")
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
         rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -455,12 +498,13 @@ class SqliteStore:
                 conn.execute(
                     """
                     INSERT INTO sessions(
-                        session_id, status, start_time, end_time, hostname, os_distribution,
+                        session_id, sut_id, status, start_time, end_time, hostname, os_distribution,
                         kernel, collector_version, output_dir, categories_json, error
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         session.session_id,
+                        session.sut_id,
                         session.status,
                         session.start_time,
                         session.end_time,
@@ -516,6 +560,7 @@ class SqliteStore:
             out.append(
                 CollectionSession(
                     session_id=row["session_id"],
+                    sut_id=row["sut_id"] or "",
                     status=row["status"],
                     start_time=row["start_time"],
                     end_time=row["end_time"],
@@ -537,6 +582,7 @@ class SqliteStore:
             return None
         return CollectionSession(
             session_id=row["session_id"],
+            sut_id=row["sut_id"] or "",
             status=row["status"],
             start_time=row["start_time"],
             end_time=row["end_time"],
@@ -630,6 +676,148 @@ class SqliteStore:
                     }
                 )
         return out
+
+    def upsert_system(self, system: SystemRecord) -> None:
+        with self._lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO systems(
+                        id, name, hostname, address, port, os_distribution, os_version, kernel,
+                        architecture, agent_version, status, last_seen, created_at, updated_at,
+                        cpu_count, cpu_model, memory_total_kb, numa_nodes, interfaces_json,
+                        ip_addresses_json, mode
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        name=excluded.name,
+                        hostname=excluded.hostname,
+                        address=excluded.address,
+                        port=excluded.port,
+                        os_distribution=excluded.os_distribution,
+                        os_version=excluded.os_version,
+                        kernel=excluded.kernel,
+                        architecture=excluded.architecture,
+                        agent_version=excluded.agent_version,
+                        status=excluded.status,
+                        last_seen=excluded.last_seen,
+                        updated_at=excluded.updated_at,
+                        cpu_count=excluded.cpu_count,
+                        cpu_model=excluded.cpu_model,
+                        memory_total_kb=excluded.memory_total_kb,
+                        numa_nodes=excluded.numa_nodes,
+                        interfaces_json=excluded.interfaces_json,
+                        ip_addresses_json=excluded.ip_addresses_json,
+                        mode=excluded.mode
+                    """,
+                    (
+                        system.id,
+                        system.name,
+                        system.hostname,
+                        system.address,
+                        system.port,
+                        system.os_distribution,
+                        system.os_version,
+                        system.kernel,
+                        system.architecture,
+                        system.agent_version,
+                        system.status,
+                        system.last_seen,
+                        system.created_at,
+                        system.updated_at,
+                        system.cpu_count,
+                        system.cpu_model,
+                        system.memory_total_kb,
+                        system.numa_nodes,
+                        json.dumps(system.interfaces, separators=(",", ":")),
+                        json.dumps(system.ip_addresses, separators=(",", ":")),
+                        system.mode,
+                    ),
+                )
+
+    def list_systems(self) -> List[SystemRecord]:
+        with self._conn() as conn:
+            rows = conn.execute("SELECT * FROM systems ORDER BY name").fetchall()
+        out: List[SystemRecord] = []
+        for row in rows:
+            out.append(
+                SystemRecord(
+                    id=row["id"],
+                    name=row["name"],
+                    hostname=row["hostname"],
+                    address=row["address"],
+                    port=row["port"],
+                    os_distribution=row["os_distribution"],
+                    os_version=row["os_version"],
+                    kernel=row["kernel"],
+                    architecture=row["architecture"],
+                    agent_version=row["agent_version"],
+                    status=row["status"],
+                    last_seen=row["last_seen"],
+                    created_at=row["created_at"],
+                    updated_at=row["updated_at"],
+                    cpu_count=row["cpu_count"],
+                    cpu_model=row["cpu_model"],
+                    memory_total_kb=row["memory_total_kb"],
+                    numa_nodes=row["numa_nodes"],
+                    interfaces=json.loads(row["interfaces_json"] or "[]"),
+                    ip_addresses=json.loads(row["ip_addresses_json"] or "[]"),
+                    mode=row["mode"] or "remote",
+                )
+            )
+        return out
+
+    def get_system(self, sut_id: str) -> Optional[SystemRecord]:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM systems WHERE id = ?", (sut_id,)).fetchone()
+        if not row:
+            return None
+        return SystemRecord(
+            id=row["id"],
+            name=row["name"],
+            hostname=row["hostname"],
+            address=row["address"],
+            port=row["port"],
+            os_distribution=row["os_distribution"],
+            os_version=row["os_version"],
+            kernel=row["kernel"],
+            architecture=row["architecture"],
+            agent_version=row["agent_version"],
+            status=row["status"],
+            last_seen=row["last_seen"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            cpu_count=row["cpu_count"],
+            cpu_model=row["cpu_model"],
+            memory_total_kb=row["memory_total_kb"],
+            numa_nodes=row["numa_nodes"],
+            interfaces=json.loads(row["interfaces_json"] or "[]"),
+            ip_addresses=json.loads(row["ip_addresses_json"] or "[]"),
+            mode=row["mode"] or "remote",
+        )
+
+    def delete_system(self, sut_id: str) -> None:
+        with self._lock:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM systems WHERE id = ?", (sut_id,))
+
+    def add_heartbeat(self, sut_id: str, timestamp: float, uptime_seconds: float, agent_version: str) -> None:
+        with self._lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO agent_heartbeats(sut_id, timestamp, uptime_seconds, agent_version)
+                    VALUES(?, ?, ?, ?)
+                    """,
+                    (sut_id, timestamp, uptime_seconds, agent_version),
+                )
+                conn.execute(
+                    """
+                    UPDATE systems
+                    SET last_seen = ?, updated_at = ?, agent_version = ?, status = 'ONLINE'
+                    WHERE id = ?
+                    """,
+                    (timestamp, timestamp, agent_version, sut_id),
+                )
 
 
 settings.ensure_dirs()

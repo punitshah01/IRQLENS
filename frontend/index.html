@@ -241,6 +241,15 @@
         </div>
       </section>
 
+      <section id="view-systems" class="view">
+        <div class="grid">
+          <div class="card wide">
+            <h3>Systems</h3>
+            <div class="card-row" id="systems-cards"></div>
+          </div>
+        </div>
+      </section>
+
       <section id="view-irq" class="view">
         <div class="grid">
           <div class="card wide">
@@ -391,9 +400,10 @@
   </div>
 
   <script>
-    const views = ["overview", "irq", "softirq", "cpu", "network", "interfaces", "diagnostics", "sessions", "logs", "settings"];
+    const views = ["overview", "systems", "irq", "softirq", "cpu", "network", "interfaces", "diagnostics", "sessions", "logs", "settings"];
     const state = {
       host: "",
+      systems: [],
       snapshot: null,
       network: null,
       interfaces: [],
@@ -477,10 +487,16 @@
     }
 
     async function loadHosts() {
-      const data = await fetchJson("/api/hosts");
-      const hosts = data.hosts || [];
+      const data = await fetchJson("/api/systems");
+      const systems = data.systems || [];
+      state.systems = systems;
+      const hosts = systems.map(x => x.id);
       const prev = state.host;
       el.host.innerHTML = "";
+      const all = document.createElement("option");
+      all.value = "ALL SYSTEMS";
+      all.textContent = "ALL SYSTEMS";
+      el.host.appendChild(all);
       if (!hosts.length) {
         const o = document.createElement("option");
         o.value = "";
@@ -492,20 +508,40 @@
       for (const h of hosts) {
         const o = document.createElement("option");
         o.value = h;
-        o.textContent = h;
+        const row = systems.find(x => x.id === h);
+        const status = row ? row.status : "UNKNOWN";
+        o.textContent = h + " (" + status + ")";
         el.host.appendChild(o);
       }
-      state.host = hosts.includes(prev) ? prev : hosts[0];
+      state.host = hosts.includes(prev) ? prev : (hosts[0] || "ALL SYSTEMS");
       el.host.value = state.host;
     }
 
     async function loadMainData() {
-      if (!state.host) return;
+      if (state.host) {
+        const selected = state.systems.find(x => x.id === state.host);
+        if (selected) {
+          document.getElementById("sys-host").textContent = selected.hostname + " (" + selected.id + ")";
+          document.getElementById("sys-os").textContent = selected.os_distribution || "N/A";
+          document.getElementById("sys-kernel").textContent = selected.kernel || "N/A";
+          document.getElementById("sys-root").textContent = selected.mode === "local" ? "LOCAL" : "REMOTE AGENT";
+        }
+      }
+      if (!state.host || state.host === "ALL SYSTEMS") {
+        const summary = await fetchJson("/api/summary/current");
+        state.summary = summary.rows || [];
+        state.snapshot = { irq: { rows: [] }, softirq: { sample: { rates: {}, per_cpu_rates: {} } } };
+        state.network = { global: {}, interfaces: [] };
+        state.interfaces = [];
+        state.lastTs = nowS();
+        renderAll();
+        return;
+      }
       const [irq, softirq, network, interfaces, summary] = await Promise.all([
-        fetchJson("/api/irq/current?host=" + encodeURIComponent(state.host) + "&limit=400"),
-        fetchJson("/api/softirq/current?host=" + encodeURIComponent(state.host)),
-        fetchJson("/api/network/current?host=" + encodeURIComponent(state.host)),
-        fetchJson("/api/interfaces?host=" + encodeURIComponent(state.host)),
+        fetchJson("/api/irq/current?sut_id=" + encodeURIComponent(state.host) + "&limit=400"),
+        fetchJson("/api/softirq/current?sut_id=" + encodeURIComponent(state.host)),
+        fetchJson("/api/network/current?sut_id=" + encodeURIComponent(state.host)),
+        fetchJson("/api/interfaces?sut_id=" + encodeURIComponent(state.host)),
         fetchJson("/api/summary/current"),
       ]);
       state.snapshot = { irq, softirq };
@@ -523,8 +559,34 @@
       renderCpu();
       renderNetwork();
       renderInterfaces();
+      renderSystems();
       renderSessions();
       updateFreshness();
+    }
+
+    function renderSystems() {
+      const root = document.getElementById("systems-cards");
+      root.innerHTML = "";
+      for (const s of state.systems) {
+        const statusClass = s.status === "ONLINE" ? "green" : (s.status === "STALE" ? "yellow" : (s.status === "OFFLINE" ? "red" : "gray"));
+        const card = document.createElement("div");
+        card.className = "iface-card";
+        card.innerHTML =
+          "<div class='name'>" + s.name + " <span class='" + statusClass + "'>● " + s.status + "</span></div>" +
+          "<div class='mono'>" + s.id + " @ " + s.address + "</div>" +
+          "<div>Host: " + s.hostname + "</div>" +
+          "<div>OS: " + s.os_distribution + " " + (s.os_version || "") + "</div>" +
+          "<div>Kernel: " + s.kernel + "</div>" +
+          "<div>CPU: " + (s.cpu_count || 0) + "</div>" +
+          "<div>Interfaces: " + (s.interfaces || []).length + "</div>" +
+          "<div>Mode: " + (s.mode || "remote") + "</div>" +
+          "<div>Last seen: " + (s.last_seen ? new Date(s.last_seen * 1000).toLocaleTimeString() : "N/A") + "</div>" +
+          "<div style='margin-top:6px'><button onclick=\"window.irqlensSelectSystem('" + s.id + "')\">Open Dashboard</button></div>";
+        root.appendChild(card);
+      }
+      if (!state.systems.length) {
+        root.textContent = "No systems registered yet.";
+      }
     }
 
     function renderOverview() {
@@ -756,14 +818,14 @@
 
     async function renderSessions() {
       const data = await fetchJson("/api/sessions");
-      state.sessions = data.sessions || [];
+      state.sessions = (data.sessions || []).filter(s => !state.host || state.host === "ALL SYSTEMS" || !s.sut_id || s.sut_id === state.host);
       const body = document.getElementById("sessions-body");
       body.innerHTML = "";
       for (const s of state.sessions) {
         const tr = document.createElement("tr");
         tr.innerHTML =
           "<td class='mono'>" + s.session_id + "</td>" +
-          "<td>" + s.hostname + "</td>" +
+          "<td>" + s.hostname + (s.sut_id ? (" (" + s.sut_id + ")") : "") + "</td>" +
           "<td>" + fmtTs(s.start_time) + "</td>" +
           "<td>" + fmtTs(s.end_time) + "</td>" +
           "<td>" + s.status + "</td>" +
@@ -856,7 +918,7 @@
       const data = await fetch(api("/api/sessions/start"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ categories }),
+        body: JSON.stringify({ categories, sut_id: state.host && state.host !== "ALL SYSTEMS" ? state.host : "local" }),
       }).then(r => r.json());
       state.activeSession = data.session?.session_id || "";
       document.getElementById("diag-status").textContent = state.activeSession ? ("Running: " + state.activeSession) : "No active session";
@@ -902,6 +964,11 @@
       document.getElementById("diag-stop").onclick = stopDiagnostics;
 
       window.irqlensShowFiles = showSessionFiles;
+      window.irqlensSelectSystem = async function(sutId) {
+        state.host = sutId;
+        el.host.value = sutId;
+        await loadMainData();
+      };
 
       await refresh();
       wsConnect();

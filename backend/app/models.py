@@ -28,6 +28,7 @@ class SystemInfo(BaseModel):
     memory_available_kb: int
     numa_nodes: int
     running_as_root: bool
+    architecture: str = "N/A"
 
 
 class InterfaceInfo(BaseModel):
@@ -52,6 +53,7 @@ class IRQRate(BaseModel):
 class IRQSample(BaseModel):
     timestamp: float
     sut_ip: str
+    sut_id: str = ""
     irq: str
     irq_name: str
     device: str = "N/A"
@@ -70,6 +72,7 @@ class IRQSample(BaseModel):
 class SoftIRQSample(BaseModel):
     timestamp: float
     sut_ip: str
+    sut_id: str = ""
     totals: Dict[str, int] = Field(default_factory=dict)
     rates: Dict[str, float] = Field(default_factory=dict)
     per_cpu_rates: Dict[str, float] = Field(default_factory=dict)
@@ -78,6 +81,7 @@ class SoftIRQSample(BaseModel):
 class NetworkSample(BaseModel):
     timestamp: float
     sut_ip: str
+    sut_id: str = ""
     interface: str
     rx_bytes: int = 0
     tx_bytes: int = 0
@@ -125,6 +129,7 @@ class DiagnosticCommandResult(BaseModel):
 
 class CollectionSession(BaseModel):
     session_id: str
+    sut_id: str = ""
     status: Literal["running", "stopped", "failed"]
     start_time: float
     end_time: Optional[float] = None
@@ -179,6 +184,7 @@ class DashboardSnapshot(BaseModel):
 
 class SessionStartRequest(BaseModel):
     categories: List[str] = Field(default_factory=lambda: ["irq", "softirq", "network", "interfaces", "routes", "sockets", "ethtool", "system"])
+    sut_id: str = ""
 
 
 class SessionStopRequest(BaseModel):
@@ -199,3 +205,77 @@ class LogEntry(BaseModel):
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR"]
     component: str
     message: str
+
+
+class SystemRecord(BaseModel):
+    id: str
+    name: str
+    hostname: str
+    address: str
+    port: int
+    os_distribution: str
+    os_version: str
+    kernel: str
+    architecture: str
+    agent_version: str
+    status: Literal["ONLINE", "OFFLINE", "CONNECTING", "STALE", "ERROR"]
+    last_seen: float
+    created_at: float
+    updated_at: float
+    cpu_count: int = 0
+    cpu_model: str = ""
+    memory_total_kb: int = 0
+    numa_nodes: int = 0
+    interfaces: List[str] = Field(default_factory=list)
+    ip_addresses: List[str] = Field(default_factory=list)
+    mode: Literal["local", "remote"] = "remote"
+
+
+class SystemCreateRequest(BaseModel):
+    id: str
+    name: str
+    address: str
+    port: int = 8443
+    token: str = ""
+
+
+class AgentRegistrationRequest(BaseModel):
+    sut_id: str
+    name: str
+    address: str
+    port: int = 8443
+    token_hint: str = ""
+    agent_version: str
+    telemetry_interval: float = 1.0
+    hostname: str
+    os_distribution: str
+    os_version: str
+    kernel: str
+    architecture: str
+    cpu_count: int
+    cpu_model: str
+    memory_total_kb: int
+    numa_nodes: int
+    uptime_seconds: float
+    interfaces: List[str] = Field(default_factory=list)
+    ip_addresses: List[str] = Field(default_factory=list)
+
+
+class AgentHeartbeatRequest(BaseModel):
+    sut_id: str
+    agent_version: str
+    uptime_seconds: float
+    timestamp: float
+
+
+class AgentTelemetryPayload(BaseModel):
+    type: Literal["telemetry"] = "telemetry"
+    sut_id: str
+    timestamp: float
+    system: SystemInfo
+    irq_rows: List[IRQSample]
+    softirq: SoftIRQSample
+    network_samples: List[NetworkSample]
+    interfaces: List[InterfaceInfo]
+    irq_summary: Dict[str, Any] = Field(default_factory=dict)
+    network_global: Dict[str, float] = Field(default_factory=dict)

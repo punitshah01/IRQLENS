@@ -2,6 +2,10 @@
 
 IRQLENS is a Linux IRQ and network diagnostics dashboard for System Under Test (SUT) environments.
 
+IRQLENS supports both:
+- local mode (collector and backend on the same host)
+- remote mode (one central backend + one or more Linux SUT agents)
+
 It provides:
 - live IRQ/SoftIRQ/network telemetry
 - historical telemetry persistence in SQLite
@@ -22,6 +26,7 @@ IRQLENS uses a modular backend:
 - `backend/app/services/diagnostics.py`: session start/stop/export orchestration
 - `backend/app/services/exporter.py`: JSON/CSV/XML/TXT writers
 - `backend/app/services/health.py`: health + dependency reporting
+- `agent/main.py`: Linux SUT agent for register/heartbeat/telemetry
 - `frontend/index.html`: dashboard UI with sidebar pages and live updates
 
 ## Data Sources
@@ -94,6 +99,20 @@ The dashboard is served at:
 
 - `http://<host-ip>:8080`
 
+### Remote SUT agent startup (Linux SUT)
+
+Run on each Linux SUT:
+
+```bash
+python3 agent/main.py \
+	--server http://<irqlens-server>:8080 \
+	--sut-id <unique-sut-id> \
+	--name <display-name> \
+	--token <agent-token>
+```
+
+If `IRQLENS_AGENT_TOKEN` is empty on server, token is optional.
+
 ## Running as Root
 
 IRQLENS works in root and non-root mode.
@@ -124,6 +143,9 @@ Set in `backend/.env`:
 - `IRQLENS_CORS_ORIGINS`
 - `IRQLENS_ALLOWED_INGEST_IPS`
 - `IRQLENS_DISABLE_INGEST_ALLOWLIST`
+- `IRQLENS_AGENT_TOKEN`
+- `IRQLENS_AGENT_HEARTBEAT_INTERVAL`
+- `IRQLENS_AGENT_STALE_THRESHOLD`
 
 Default output directory:
 - `/root/irqlens`
@@ -134,6 +156,15 @@ Core endpoints:
 
 - `GET /api/health`
 - `GET /api/system`
+- `GET /api/hosts`
+- `GET /api/systems`
+- `POST /api/systems`
+- `GET /api/systems/{sut_id}`
+- `DELETE /api/systems/{sut_id}`
+- `POST /api/systems/{sut_id}/test`
+- `POST /api/agent/register`
+- `POST /api/agent/heartbeat`
+- `POST /api/agent/telemetry`
 - `GET /api/interfaces`
 - `GET /api/irq/current`
 - `GET /api/irq/history`
@@ -148,6 +179,18 @@ Core endpoints:
 - `GET /api/sessions/{session_id}/download`
 - `GET /api/files?path=<session-file-path>`
 - `WS /ws`
+
+SUT-aware filtering:
+- `GET /api/system?sut_id=<sut-id>`
+- `GET /api/interfaces?sut_id=<sut-id>`
+- `GET /api/irq/current?sut_id=<sut-id>`
+- `GET /api/softirq/current?sut_id=<sut-id>`
+- `GET /api/network/current?sut_id=<sut-id>`
+
+Session routing:
+- `POST /api/sessions/start` accepts body `{"categories": [...], "sut_id": "<sut-id>"}`
+- `POST /api/systems/{sut_id}/sessions/start`
+- `POST /api/systems/{sut_id}/sessions/{session_id}/stop`
 
 Compatibility endpoints retained:
 - `POST /api/irq/ingest`
@@ -179,6 +222,7 @@ Downloadable zip archive:
 ## Frontend Pages
 
 - Overview
+- Systems
 - IRQ Monitor
 - SoftIRQ
 - CPU
