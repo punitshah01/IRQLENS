@@ -244,7 +244,17 @@
       const d = await r.json();
       const prev = hostSel.value;
       hostSel.innerHTML = "";
-      (d.hosts || []).forEach(h => {
+      const hosts = d.hosts || [];
+      if (!hosts.length) {
+        const o = document.createElement("option");
+        o.value = "";
+        o.textContent = "Waiting for collector data...";
+        hostSel.appendChild(o);
+        hostSel.disabled = true;
+        return;
+      }
+      hostSel.disabled = false;
+      hosts.forEach(h => {
         const o = document.createElement("option");
         o.value = h;
         o.textContent = h;
@@ -275,7 +285,17 @@
     async function refreshHost() {
       const h = hostSel.value;
       if (!h) {
-        status.textContent = "no host";
+        irqBody.innerHTML = "";
+        softBody.innerHTML = "";
+        heat.innerHTML = "";
+        document.getElementById("kpi-rx-bps").textContent = "-";
+        document.getElementById("kpi-tx-bps").textContent = "-";
+        document.getElementById("kpi-rx-pps").textContent = "-";
+        document.getElementById("kpi-tx-pps").textContent = "-";
+        document.getElementById("kpi-soft").textContent = "-";
+        document.getElementById("kpi-drops").textContent = "-";
+        drawTrend([]);
+        status.textContent = "waiting for collector data";
         return;
       }
 

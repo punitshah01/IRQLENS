@@ -49,6 +49,17 @@ def _default_sut_id(host_ip: str) -> str:
         return host_ip
 
 
+def _merge_allowlist_for_local_collection(env: dict[str, str], host_ip: str) -> None:
+    entries = []
+    raw = env.get("IRQLENS_ALLOWED_INGEST_IPS", "")
+    if raw:
+        entries.extend([x.strip() for x in raw.split(",") if x.strip()])
+    for candidate in [host_ip, "127.0.0.1", "::1", "localhost"]:
+        if candidate and candidate not in entries:
+            entries.append(candidate)
+    env["IRQLENS_ALLOWED_INGEST_IPS"] = ",".join(entries)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Start IRQLENS backend and optionally local collector")
     ap.add_argument("--collect-local", action="store_true", help="Also start the local IRQ collector on this Linux host")
@@ -77,6 +88,8 @@ def main() -> int:
     env.setdefault("IRQLENS_DB_PATH", str((backend / "data" / "irqlens.db").resolve()))
     host_ip = _detect_host_ip()
     url = f"http://{host_ip}:8080"
+    if args.collect_local:
+        _merge_allowlist_for_local_collection(env, host_ip)
 
     backend_cmd = [
         str(venv_py),

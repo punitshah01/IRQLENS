@@ -115,6 +115,8 @@ Example:
 python3 run_irqlens.py --collect-local --nic ens3np0
 ```
 
+When `--collect-local` is used, IRQLENS automatically allows local collector IPs for ingest.
+
 ### 1. Start backend
 
 Linux/macOS:
@@ -227,6 +229,7 @@ Collector arguments:
 - Check backend logs for `403 ingest client IP not allowed` if allowlist is set.
 - If you only started `run_irqlens.py`, the UI will load but remain empty until a collector posts data.
 - For same-host monitoring on Linux, use `python3 run_irqlens.py --collect-local --nic <nic-name>`.
+- If no data is present yet, the host dropdown will show `Waiting for collector data...`.
 
 ### Host appears but no rates
 - First loop establishes baseline; wait one interval.
