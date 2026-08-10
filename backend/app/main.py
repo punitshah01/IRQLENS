@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from .config import settings
 from .models import IngestPayload
@@ -9,6 +12,7 @@ from .store import STORE
 from .ws import WS
 
 app = FastAPI(title="IRQLENS API", version="0.1.0")
+FRONTEND_INDEX = Path(__file__).resolve().parents[2] / "frontend" / "index.html"
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,6 +34,11 @@ def _ip_allowed(request: Request) -> bool:
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
+
+
+@app.get("/")
+def index() -> FileResponse:
+    return FileResponse(str(FRONTEND_INDEX), media_type="text/html")
 
 
 @app.post("/api/irq/ingest")

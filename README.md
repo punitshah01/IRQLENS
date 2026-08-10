@@ -83,6 +83,24 @@ IRQLENS/
 
 ## Quick start
 
+### One-command start (PRISM-style)
+
+From IRQLENS repo root:
+
+```bash
+python3 run_irqlens.py
+```
+
+Windows PowerShell:
+
+```powershell
+python run_irqlens.py
+```
+
+This starts backend + dashboard UI on:
+
+- `http://localhost:8080`
+
 ### 1. Start backend
 
 Linux/macOS:
@@ -130,7 +148,7 @@ Notes:
 
 ### 3. Open the dashboard
 
-Open `frontend/index.html` in browser and set backend URL in the top input.
+Open `http://<dashboard-host>:8080` in browser. The backend serves the dashboard page at `/`.
 
 ## Configuration
 
