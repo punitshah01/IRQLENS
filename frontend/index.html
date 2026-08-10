@@ -68,6 +68,7 @@
       font-size: 12px;
       letter-spacing: .45px;
     }
+    .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
     .full { grid-column: 1 / -1; }
     .kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
     .kpi { border: 1px solid var(--border); border-radius: 10px; padding: 8px; background: var(--panel2); }
@@ -76,6 +77,16 @@
     table { width: 100%; border-collapse: collapse; }
     th, td { border-bottom: 1px solid #eaf0f6; text-align: left; padding: 5px 4px; font-size: 12px; }
     .mono { font-family: Consolas, monospace; }
+    .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .filters input, .filters select { font-size: 12px; padding: 6px 8px; }
+    .badge { display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: .3px; }
+    .badge-rx { background: #dff3ea; color: #0f7a47; }
+    .badge-tx { background: #ffe7cc; color: #a65b00; }
+    .badge-txrx { background: #e1ecff; color: #0d58b1; }
+    .badge-other { background: #edf1f5; color: #56697d; }
+    .match-ok { color: var(--good); font-weight: 700; }
+    .match-bad { color: var(--hot); font-weight: 700; }
+    .match-na { color: var(--muted); }
     .heat { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px; }
     .cell { border: 1px solid var(--border); border-radius: 8px; padding: 6px; text-align: center; font-size: 11px; }
     canvas { width: 100%; height: 180px; border: 1px solid var(--border); border-radius: 8px; background: #fbfdff; }
@@ -105,7 +116,7 @@
       <table>
         <thead>
           <tr>
-            <th>Host</th><th>NIC</th><th>RX</th><th>TX</th><th>SoftIRQ/s</th><th>Drops (RX/TX)</th><th>Top IRQ</th><th>IRQ Rate/s</th>
+            <th>Host</th><th>NIC</th><th>RX</th><th>TX</th><th>SoftIRQ/s</th><th>Drops (RX/TX)</th><th>Top IRQ</th><th>Queue</th><th>Dir</th><th>IRQ Rate/s</th>
           </tr>
         </thead>
         <tbody id="summary-body"></tbody>
@@ -129,13 +140,36 @@
       <canvas id="trend" width="1200" height="260"></canvas>
     </section>
 
-    <section class="card">
-      <h3>Top IRQ Lines</h3>
+    <section class="card full">
+      <div class="card-head">
+        <h3>IRQ Detail</h3>
+        <div class="filters">
+          <select id="irq-nic-filter"></select>
+          <select id="irq-dir-filter">
+            <option value="all">All directions</option>
+            <option value="RX">RX</option>
+            <option value="TX">TX</option>
+            <option value="TxRx">TxRx</option>
+            <option value="Other">Other</option>
+          </select>
+          <input id="irq-search" placeholder="Search IRQ/source" size="20" />
+        </div>
+      </div>
       <table>
         <thead>
-          <tr><th>IRQ</th><th>Source</th><th>Rate/s</th><th>Affinity</th></tr>
+          <tr><th>IRQ</th><th>NIC</th><th>Queue</th><th>Dir</th><th>Rate/s</th><th>Top CPU</th><th>Active CPUs</th><th>Affinity</th><th>Match</th><th>Source</th></tr>
         </thead>
         <tbody id="irq-body"></tbody>
+      </table>
+    </section>
+
+    <section class="card full">
+      <h3>Queue Activity Summary</h3>
+      <table>
+        <thead>
+          <tr><th>NIC</th><th>Queue</th><th>RX/s</th><th>TX/s</th><th>TxRx/s</th><th>Total/s</th><th>Busiest CPU</th></tr>
+        </thead>
+        <tbody id="queue-body"></tbody>
       </table>
     </section>
 
@@ -161,11 +195,16 @@
     const status = document.getElementById("status");
     const summaryBody = document.getElementById("summary-body");
     const irqBody = document.getElementById("irq-body");
+    const queueBody = document.getElementById("queue-body");
     const softBody = document.getElementById("softirq-body");
     const heat = document.getElementById("heat");
+    const irqNicFilter = document.getElementById("irq-nic-filter");
+    const irqDirFilter = document.getElementById("irq-dir-filter");
+    const irqSearch = document.getElementById("irq-search");
     const trendCanvas = document.getElementById("trend");
     const trendCtx = trendCanvas.getContext("2d");
     let ws = null;
+    let currentIrqRows = [];
 
     if (!backend.value) {
       backend.value = window.location.origin || "http://localhost:8080";
@@ -186,6 +225,135 @@
       if (n >= 1e6) return (n / 1e6).toFixed(2) + " MB/s";
       if (n >= 1e3) return (n / 1e3).toFixed(2) + " KB/s";
       return n.toFixed(0) + " B/s";
+    }
+
+    function topCpuInfo(cpuRates) {
+      let topCpu = "-";
+      let topRate = -1;
+      let activeCount = 0;
+      for (const [cpu, rate] of Object.entries(cpuRates || {})) {
+        const n = Number(rate || 0);
+        if (n > 0) activeCount += 1;
+        if (n > topRate) {
+          topRate = n;
+          topCpu = cpu;
+        }
+      }
+      return { topCpu, topRate: Math.max(0, topRate), activeCount };
+    }
+
+    function parseAffinityList(affinityList) {
+      const out = new Set();
+      const text = (affinityList || "").trim();
+      if (!text) return out;
+      for (const part of text.split(",")) {
+        const item = part.trim();
+        if (!item) continue;
+        if (item.includes("-")) {
+          const [startRaw, endRaw] = item.split("-", 2);
+          const start = Number(startRaw);
+          const end = Number(endRaw);
+          if (!Number.isNaN(start) && !Number.isNaN(end) && end >= start) {
+            for (let i = start; i <= end; i++) out.add(String(i));
+          }
+        } else {
+          out.add(item);
+        }
+      }
+      return out;
+    }
+
+    function affinityMatch(topCpu, affinityList) {
+      if (!affinityList) return { cls: "match-na", label: "N/A" };
+      const cpus = parseAffinityList(affinityList);
+      if (!cpus.size || topCpu === "-") return { cls: "match-na", label: "N/A" };
+      return cpus.has(String(topCpu))
+        ? { cls: "match-ok", label: "OK" }
+        : { cls: "match-bad", label: "Miss" };
+    }
+
+    function directionBadge(direction) {
+      const value = direction || "Other";
+      const cls = value === "RX" ? "badge-rx" : value === "TX" ? "badge-tx" : value === "TxRx" ? "badge-txrx" : "badge-other";
+      return '<span class="badge ' + cls + '">' + value + '</span>';
+    }
+
+    function populateIrqFilters(rows) {
+      const prev = irqNicFilter.value || "all";
+      const nics = Array.from(new Set(rows.map(r => r.nic || "-").filter(Boolean))).sort();
+      irqNicFilter.innerHTML = '<option value="all">All NICs</option>';
+      for (const nic of nics) {
+        const option = document.createElement("option");
+        option.value = nic;
+        option.textContent = nic;
+        irqNicFilter.appendChild(option);
+      }
+      irqNicFilter.value = nics.includes(prev) || prev === "all" ? prev : "all";
+    }
+
+    function renderIrqTables() {
+      const nicFilter = irqNicFilter.value || "all";
+      const dirFilter = irqDirFilter.value || "all";
+      const search = (irqSearch.value || "").trim().toLowerCase();
+      const rows = currentIrqRows.filter(row => {
+        if (nicFilter !== "all" && (row.nic || "-") !== nicFilter) return false;
+        if (dirFilter !== "all" && (row.direction || "Other") !== dirFilter) return false;
+        if (search) {
+          const hay = [row.irq, row.irq_name, row.nic, row.queue, row.direction].join(" ").toLowerCase();
+          if (!hay.includes(search)) return false;
+        }
+        return true;
+      });
+
+      irqBody.innerHTML = "";
+      for (const row of rows.slice(0, 60)) {
+        const cpu = topCpuInfo(row.cpu_rates || {});
+        const match = affinityMatch(cpu.topCpu, row.affinity_list || "");
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          '<td class="mono">' + row.irq + '</td>' +
+          '<td class="mono">' + (row.nic || '-') + '</td>' +
+          '<td class="mono">' + (row.queue || '-') + '</td>' +
+          '<td>' + directionBadge(row.direction || 'Other') + '</td>' +
+          '<td>' + Number(row.total_rate || 0).toFixed(1) + '</td>' +
+          '<td class="mono">CPU ' + cpu.topCpu + ' (' + cpu.topRate.toFixed(0) + '/s)</td>' +
+          '<td>' + cpu.activeCount + '</td>' +
+          '<td class="mono">' + (row.affinity_list || '-') + '</td>' +
+          '<td class="' + match.cls + '">' + match.label + '</td>' +
+          '<td>' + row.irq_name + '</td>';
+        irqBody.appendChild(tr);
+      }
+
+      const queueAgg = {};
+      for (const row of rows) {
+        const key = (row.nic || '-') + '|' + (row.queue || '-');
+        if (!queueAgg[key]) {
+          queueAgg[key] = { nic: row.nic || '-', queue: row.queue || '-', RX: 0, TX: 0, TxRx: 0, total: 0, topCpu: '-', topRate: 0 };
+        }
+        const bucket = queueAgg[key];
+        const dir = row.direction || 'Other';
+        if (dir === 'RX' || dir === 'TX' || dir === 'TxRx') bucket[dir] += Number(row.total_rate || 0);
+        bucket.total += Number(row.total_rate || 0);
+        const cpu = topCpuInfo(row.cpu_rates || {});
+        if (cpu.topRate > bucket.topRate) {
+          bucket.topRate = cpu.topRate;
+          bucket.topCpu = cpu.topCpu;
+        }
+      }
+
+      queueBody.innerHTML = "";
+      for (const bucket of Object.values(queueAgg).sort((a, b) => b.total - a.total).slice(0, 40)) {
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          '<td class="mono">' + bucket.nic + '</td>' +
+          '<td class="mono">' + bucket.queue + '</td>' +
+          '<td>' + bucket.RX.toFixed(1) + '</td>' +
+          '<td>' + bucket.TX.toFixed(1) + '</td>' +
+          '<td>' + bucket.TxRx.toFixed(1) + '</td>' +
+          '<td>' + bucket.total.toFixed(1) + '</td>' +
+          '<td class="mono">CPU ' + bucket.topCpu + '</td>';
+        queueBody.appendChild(tr);
+      }
     }
 
     function drawTrend(hostSamples) {
@@ -251,6 +419,8 @@
         o.textContent = "Waiting for collector data...";
         hostSel.appendChild(o);
         hostSel.disabled = true;
+        currentIrqRows = [];
+        queueBody.innerHTML = "";
         return;
       }
       hostSel.disabled = false;
@@ -277,6 +447,8 @@
           "<td>" + Number(row.softirq_total || 0).toFixed(0) + "</td>" +
           "<td>" + Number(row.rx_drop_ps || 0).toFixed(1) + " / " + Number(row.tx_drop_ps || 0).toFixed(1) + "</td>" +
           "<td>" + (row.top_irq || "-") + "</td>" +
+          "<td class=\"mono\">" + ((row.top_irq_queue || "-") ? (row.top_irq_queue || "-") : "-") + "</td>" +
+          "<td>" + directionBadge(row.top_irq_direction || "Other") + "</td>" +
           "<td>" + Number(row.top_irq_rate || 0).toFixed(1) + "</td>";
         summaryBody.appendChild(tr);
       }
@@ -285,7 +457,9 @@
     async function refreshHost() {
       const h = hostSel.value;
       if (!h) {
+        currentIrqRows = [];
         irqBody.innerHTML = "";
+        queueBody.innerHTML = "";
         softBody.innerHTML = "";
         heat.innerHTML = "";
         document.getElementById("kpi-rx-bps").textContent = "-";
@@ -310,24 +484,16 @@
       const byIrq = {};
       const cpuAgg = {};
       for (const s of irqSamples) {
-        const key = s.irq + "|" + s.irq_name;
+        const key = [s.irq, s.irq_name, s.nic || "", s.queue || "", s.direction || "Other"].join("|");
         if (!byIrq[key] || Number(s.total_rate || 0) > Number(byIrq[key].total_rate || 0)) byIrq[key] = s;
         for (const [cpu, rate] of Object.entries(s.cpu_rates || {})) {
           cpuAgg[cpu] = (cpuAgg[cpu] || 0) + Number(rate || 0);
         }
       }
 
-      irqBody.innerHTML = "";
-      const top = Object.values(byIrq).sort((a, b) => Number(b.total_rate || 0) - Number(a.total_rate || 0)).slice(0, 40);
-      for (const s of top) {
-        const tr = document.createElement("tr");
-        tr.innerHTML =
-          "<td class=\"mono\">" + s.irq + "</td>" +
-          "<td>" + s.irq_name + "</td>" +
-          "<td>" + Number(s.total_rate || 0).toFixed(1) + "</td>" +
-          "<td class=\"mono\">" + (s.affinity_list || "-") + "</td>";
-        irqBody.appendChild(tr);
-      }
+      currentIrqRows = Object.values(byIrq).sort((a, b) => Number(b.total_rate || 0) - Number(a.total_rate || 0));
+      populateIrqFilters(currentIrqRows);
+      renderIrqTables();
 
       heat.innerHTML = "";
       const cpus = Object.keys(cpuAgg).map(x => Number(x)).sort((a, b) => a - b);
@@ -390,6 +556,9 @@
 
     document.getElementById("refresh").onclick = function() { refreshAll().catch(err => status.textContent = "error: " + err); };
     hostSel.onchange = function() { refreshHost().catch(err => status.textContent = "error: " + err); };
+    irqNicFilter.onchange = renderIrqTables;
+    irqDirFilter.onchange = renderIrqTables;
+    irqSearch.oninput = renderIrqTables;
 
     async function boot() {
       try {

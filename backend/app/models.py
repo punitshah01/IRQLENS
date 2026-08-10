@@ -9,6 +9,10 @@ class IrqSample(BaseModel):
     sut_ip: str
     irq: str
     irq_name: str
+    nic: str = ""
+    queue: str = ""
+    direction: str = "Other"
+    source_class: str = "other"
     total_rate: float
     cpu_rates: Dict[str, float] = Field(default_factory=dict)
     affinity_list: str = ""

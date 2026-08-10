@@ -16,6 +16,8 @@ high-value counters from `/proc` and presenting both fleet-level and host-level 
 ## Key features
 
 - **IRQ Top Table**: IRQ line, source, rate/sec, and affinity list
+- **IRQ Detail Table**: IRQ, NIC, queue, RX/TX direction, rate, busiest CPU, active CPU count, and affinity match
+- **Queue Activity Summary**: grouped queue-level RX/TX/TxRx rates per NIC
 - **CPU IRQ Heatmap**: per-CPU IRQ rate intensity
 - **SoftIRQ Table**: highest-rate softirq classes
 - **Host KPI strip**: RX/TX throughput, packet rates, drop rates, softirq total

@@ -30,12 +30,20 @@ class SqliteStore:
                     sut_ip TEXT NOT NULL,
                     irq TEXT NOT NULL,
                     irq_name TEXT NOT NULL,
+                    nic TEXT NOT NULL DEFAULT '',
+                    queue TEXT NOT NULL DEFAULT '',
+                    direction TEXT NOT NULL DEFAULT 'Other',
+                    source_class TEXT NOT NULL DEFAULT 'other',
                     total_rate REAL NOT NULL,
                     cpu_rates_json TEXT NOT NULL,
                     affinity_list TEXT NOT NULL
                 )
                 """
             )
+            self._ensure_column(c, "irq_samples", "nic", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(c, "irq_samples", "queue", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(c, "irq_samples", "direction", "TEXT NOT NULL DEFAULT 'Other'")
+            self._ensure_column(c, "irq_samples", "source_class", "TEXT NOT NULL DEFAULT 'other'")
             c.execute("CREATE INDEX IF NOT EXISTS idx_irq_host_id ON irq_samples(sut_ip, id)")
             c.execute(
                 """
@@ -56,6 +64,12 @@ class SqliteStore:
             )
             c.execute("CREATE INDEX IF NOT EXISTS idx_host_host_id ON host_samples(sut_ip, id)")
 
+    def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        existing = {row[1] for row in rows}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
     def add_samples(self, samples: List[IrqSample]) -> None:
         if not samples:
             return
@@ -66,14 +80,20 @@ class SqliteStore:
                     by_host.add(s.sut_ip)
                     c.execute(
                         """
-                        INSERT INTO irq_samples(timestamp, sut_ip, irq, irq_name, total_rate, cpu_rates_json, affinity_list)
-                        VALUES(?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO irq_samples(
+                            timestamp, sut_ip, irq, irq_name, nic, queue, direction, source_class, total_rate, cpu_rates_json, affinity_list
+                        )
+                        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             s.timestamp,
                             s.sut_ip,
                             s.irq,
                             s.irq_name,
+                            s.nic,
+                            s.queue,
+                            s.direction,
+                            s.source_class,
                             s.total_rate,
                             json.dumps(s.cpu_rates, separators=(",", ":")),
                             s.affinity_list,
@@ -144,7 +164,7 @@ class SqliteStore:
         with self._conn() as c:
             rows = c.execute(
                 """
-                SELECT timestamp, sut_ip, irq, irq_name, total_rate, cpu_rates_json, affinity_list
+                SELECT timestamp, sut_ip, irq, irq_name, nic, queue, direction, source_class, total_rate, cpu_rates_json, affinity_list
                 FROM irq_samples
                 WHERE sut_ip = ?
                 ORDER BY id DESC
@@ -160,6 +180,10 @@ class SqliteStore:
                     sut_ip=r["sut_ip"],
                     irq=r["irq"],
                     irq_name=r["irq_name"],
+                    nic=r["nic"] or "",
+                    queue=r["queue"] or "",
+                    direction=r["direction"] or "Other",
+                    source_class=r["source_class"] or "other",
                     total_rate=r["total_rate"],
                     cpu_rates=json.loads(r["cpu_rates_json"] or "{}"),
                     affinity_list=r["affinity_list"],
@@ -217,7 +241,7 @@ class SqliteStore:
                 soft_total = float(sum(float(v) for v in soft.values()))
                 top_irq = c.execute(
                     """
-                    SELECT irq_name, total_rate FROM irq_samples
+                    SELECT irq_name, nic, queue, direction, total_rate FROM irq_samples
                     WHERE sut_ip = ?
                     ORDER BY id DESC LIMIT 1
                     """,
@@ -236,6 +260,9 @@ class SqliteStore:
                         "tx_drop_ps": row["tx_drop_ps"],
                         "softirq_total": soft_total,
                         "top_irq": top_irq["irq_name"] if top_irq else "",
+                        "top_irq_nic": top_irq["nic"] if top_irq else "",
+                        "top_irq_queue": top_irq["queue"] if top_irq else "",
+                        "top_irq_direction": top_irq["direction"] if top_irq else "",
                         "top_irq_rate": float(top_irq["total_rate"]) if top_irq else 0.0,
                     }
                 )

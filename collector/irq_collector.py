@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import time
 import urllib.request
 from pathlib import Path
@@ -10,6 +11,71 @@ from typing import Dict, List, Optional, Tuple
 
 
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+_IRQ_PATTERNS = [
+    re.compile(r"^(?P<nic>[A-Za-z0-9_.:-]+)[-_](?P<direction>TxRx|txrx|RX|rx|TX|tx)[-_](?P<queue>\d+)$"),
+    re.compile(r"^(?P<nic>[A-Za-z0-9_.:-]+)[-_](?P<queue>\d+)[-_](?P<direction>TxRx|txrx|RX|rx|TX|tx)$"),
+    re.compile(r"^(?P<nic>[A-Za-z0-9_.:-]+).*?(?P<direction>TxRx|txrx|RX|rx|TX|tx).*?(?P<queue>\d+)$"),
+    re.compile(r"^(?P<nic>mlx\d+).*?comp(?P<queue>\d+)$", re.IGNORECASE),
+]
+
+
+def normalize_direction(direction: str) -> str:
+    value = (direction or "").lower()
+    if value == "rx":
+        return "RX"
+    if value == "tx":
+        return "TX"
+    if value == "txrx":
+        return "TxRx"
+    return "Other"
+
+
+def classify_irq_name(irq_name: str, nic_hint: str = "") -> Dict[str, str]:
+    label = (irq_name or "").strip()
+    nic = nic_hint or ""
+    queue = ""
+    direction = "Other"
+    source_class = "other"
+
+    for pattern in _IRQ_PATTERNS:
+        match = pattern.match(label)
+        if not match:
+            continue
+        groups = match.groupdict()
+        nic = groups.get("nic") or nic
+        queue = groups.get("queue") or queue
+        direction = normalize_direction(groups.get("direction") or direction)
+        source_class = "network"
+        break
+
+    lower = label.lower()
+    if source_class == "other":
+        if nic_hint and nic_hint.lower() in lower:
+            nic = nic_hint
+            source_class = "network"
+        elif any(token in lower for token in ["txrx", "mlx", "eth", "ens", "eno", "enp", "virtio", "bnxt", "ixgbe", "i40e", "ice"]):
+            source_class = "network"
+
+    if not queue:
+        trailing = re.search(r"(\d+)$", label)
+        if trailing and source_class == "network":
+            queue = trailing.group(1)
+
+    if direction == "Other":
+        if "txrx" in lower or "comp" in lower:
+            direction = "TxRx"
+        elif re.search(r"(^|[^a-z])rx([^a-z]|$)", lower):
+            direction = "RX"
+        elif re.search(r"(^|[^a-z])tx([^a-z]|$)", lower):
+            direction = "TX"
+
+    return {
+        "nic": nic,
+        "queue": queue,
+        "direction": direction,
+        "source_class": source_class,
+    }
 
 
 def parse_interrupts() -> Tuple[List[str], Dict[str, Tuple[str, List[int]]]]:
@@ -142,6 +208,7 @@ def collect_loop(server: str, sut_ip: str, interval: float, topn: int, nic: str 
 
         deltas.sort(key=lambda x: x[3], reverse=True)
         for irq, name, per_cpu, total in deltas[:topn]:
+            irq_meta = classify_irq_name(name, nic_hint=nic)
             cpu_rates = {str(i): float(per_cpu[i]) / interval for i in range(len(per_cpu)) if per_cpu[i] > 0}
             out.append(
                 {
@@ -149,6 +216,10 @@ def collect_loop(server: str, sut_ip: str, interval: float, topn: int, nic: str 
                     "sut_ip": sut_ip,
                     "irq": irq,
                     "irq_name": name,
+                    "nic": irq_meta["nic"],
+                    "queue": irq_meta["queue"],
+                    "direction": irq_meta["direction"],
+                    "source_class": irq_meta["source_class"],
                     "total_rate": total,
                     "cpu_rates": cpu_rates,
                     "affinity_list": affinity_for_irq(irq),
