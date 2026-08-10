@@ -116,6 +116,7 @@ python3 run_irqlens.py --collect-local --nic ens3np0
 ```
 
 When `--collect-local` is used, IRQLENS automatically allows local collector IPs for ingest.
+For same-host local mode, IRQLENS also disables ingest allowlist enforcement to avoid multihomed source-IP mismatches.
 
 ### 1. Start backend
 

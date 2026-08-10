@@ -13,6 +13,7 @@ class Settings:
     def __init__(self) -> None:
         self.db_path: Path = Path(_env("IRQLENS_DB_PATH", str(Path(__file__).resolve().parents[1] / "data" / "irqlens.db"))).resolve()
         self.metric_retention: int = int(_env("IRQLENS_METRIC_RETENTION", "5000"))
+        self.disable_ingest_allowlist: bool = _env("IRQLENS_DISABLE_INGEST_ALLOWLIST", "0") in ("1", "true", "True", "yes")
         cors = _env("IRQLENS_CORS_ORIGINS", "*")
         self.cors_origins: List[str] = [x.strip() for x in cors.split(",") if x.strip()] if cors else ["*"]
         allow = _env("IRQLENS_ALLOWED_INGEST_IPS", "")

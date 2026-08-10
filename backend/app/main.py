@@ -24,6 +24,8 @@ app.add_middleware(
 
 
 def _ip_allowed(request: Request) -> bool:
+    if settings.disable_ingest_allowlist:
+        return True
     allowed = settings.allowed_ingest_ips
     if not allowed:
         return True

@@ -89,7 +89,7 @@ def main() -> int:
     host_ip = _detect_host_ip()
     url = f"http://{host_ip}:8080"
     if args.collect_local:
-        _merge_allowlist_for_local_collection(env, host_ip)
+        env["IRQLENS_DISABLE_INGEST_ALLOWLIST"] = "1"
 
     backend_cmd = [
         str(venv_py),
