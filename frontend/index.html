@@ -6,60 +6,85 @@
   <title>IRQLENS</title>
   <style>
     :root {
-      --bg: #f0f4f8;
+      --bg: #edf2f9;
       --panel: #ffffff;
-      --panel2: #f8fafc;
-      --border: #d6dee8;
-      --text: #172130;
-      --muted: #5f738a;
+      --line: #d4deea;
+      --ink: #182434;
+      --muted: #5c7188;
       --brand: #0054ae;
-      --hot: #d1393a;
-      --warn: #c8790a;
-      --good: #1f9d63;
+      --brand2: #1675d1;
+      --hot: #cf3c3d;
+      --warn: #c47b12;
+      --good: #1f965d;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: "Segoe UI", Tahoma, sans-serif;
-      color: var(--text);
+      font-family: "Trebuchet MS", "Gill Sans", sans-serif;
+      color: var(--ink);
       background:
-        radial-gradient(circle at 0% 0%, #f8fbff 0%, transparent 40%),
-        radial-gradient(circle at 100% 20%, #eef4fb 0%, transparent 35%),
-        var(--bg);
+        radial-gradient(circle at 0% 0%, #f9fbff 0%, transparent 42%),
+        radial-gradient(circle at 100% 16%, #eaf2fb 0%, transparent 36%),
+        linear-gradient(180deg, #f9fcff 0%, var(--bg) 100%);
     }
-    header {
-      background: var(--brand);
+    .topbar {
+      background: linear-gradient(90deg, var(--brand) 0%, var(--brand2) 100%);
       color: #fff;
-      padding: 12px 14px;
+      padding: 12px 16px;
       display: grid;
       grid-template-columns: auto 1fr auto;
-      gap: 12px;
+      gap: 14px;
       align-items: center;
+      box-shadow: 0 8px 22px rgba(0, 64, 128, 0.25);
     }
-    .title { font-size: 20px; font-weight: 800; letter-spacing: .5px; }
-    .sub { font-size: 11px; opacity: .92; }
+    .title { font-size: 21px; font-weight: 800; letter-spacing: .8px; }
+    .sub { font-size: 11px; opacity: .92; letter-spacing: .35px; }
     .ctrl { display: flex; gap: 8px; align-items: center; justify-content: center; flex-wrap: wrap; }
     input, select, button {
-      border: 1px solid #cfd9e5;
-      border-radius: 8px;
+      border: 1px solid #c8d8ea;
+      border-radius: 9px;
       padding: 8px 10px;
       font-size: 13px;
       background: #fff;
-      color: #15202e;
+      color: #17304d;
     }
-    button { cursor: pointer; }
+    button { cursor: pointer; background: #f7fbff; }
+    button:hover { background: #edf6ff; }
     .status { font-size: 12px; color: #d6e7ff; text-align: right; }
-    main {
-      padding: 12px;
-      display: grid;
-      grid-template-columns: 1.4fr 1fr;
-      gap: 10px;
+    .nav {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      padding: 10px 12px 0;
+      overflow-x: auto;
     }
+    .tab {
+      border: 1px solid #c8d8ea;
+      background: #ffffff;
+      color: #17436e;
+      border-radius: 999px;
+      padding: 7px 13px;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .tab.active {
+      background: linear-gradient(90deg, #e8f2ff, #f2f8ff);
+      border-color: #84aede;
+      color: #003f82;
+    }
+    main {
+      padding: 10px 12px 14px;
+    }
+    .view { display: none; }
+    .view.active { display: grid; gap: 10px; }
+    .view.two-col { grid-template-columns: 1.4fr 1fr; }
+    .view.one-col { grid-template-columns: 1fr; }
     .card {
-      background: var(--panel);
-      border: 1px solid var(--border);
+      background: #fff;
+      border: 1px solid var(--line);
       border-radius: 12px;
-      padding: 10px;
+      padding: 10px 10px 8px;
     }
     .card h3 {
       margin: 0 0 8px;
@@ -71,11 +96,11 @@
     .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
     .full { grid-column: 1 / -1; }
     .kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
-    .kpi { border: 1px solid var(--border); border-radius: 10px; padding: 8px; background: var(--panel2); }
+    .kpi { border: 1px solid #dae3ef; border-radius: 10px; padding: 8px; background: #f7fbff; }
     .kpi .l { font-size: 10px; text-transform: uppercase; color: var(--muted); }
     .kpi .v { margin-top: 3px; font-size: 15px; font-weight: 750; }
     table { width: 100%; border-collapse: collapse; }
-    th, td { border-bottom: 1px solid #eaf0f6; text-align: left; padding: 5px 4px; font-size: 12px; }
+    th, td { border-bottom: 1px solid #e9eff6; text-align: left; padding: 5px 4px; font-size: 12px; }
     .mono { font-family: Consolas, monospace; }
     .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .filters input, .filters select { font-size: 12px; padding: 6px 8px; }
@@ -88,19 +113,40 @@
     .match-bad { color: var(--hot); font-weight: 700; }
     .match-na { color: var(--muted); }
     .heat { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px; }
-    .cell { border: 1px solid var(--border); border-radius: 8px; padding: 6px; text-align: center; font-size: 11px; }
-    canvas { width: 100%; height: 180px; border: 1px solid var(--border); border-radius: 8px; background: #fbfdff; }
+    .cell { border: 1px solid var(--line); border-radius: 8px; padding: 6px; text-align: center; font-size: 11px; }
+    canvas { width: 100%; height: 180px; border: 1px solid #dae4f0; border-radius: 8px; background: #fbfdff; }
+    .cmd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    pre {
+      margin: 0;
+      border: 1px solid #d9e3ef;
+      border-radius: 8px;
+      background: #f6faff;
+      color: #183e63;
+      padding: 8px;
+      font-size: 11px;
+      line-height: 1.35;
+      max-height: 310px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .matrix-wrap { overflow: auto; }
+    .matrix th { position: sticky; top: 0; background: #f1f7ff; z-index: 1; }
+    .matrix td.good { color: var(--good); font-weight: 700; }
+    .matrix td.warn { color: var(--warn); font-weight: 700; }
+    .matrix td.hot { color: var(--hot); font-weight: 700; }
     @media (max-width: 1080px) {
-      main { grid-template-columns: 1fr; }
+      .view.two-col { grid-template-columns: 1fr; }
       .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .cmd-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
-  <header>
+  <header class="topbar">
     <div>
       <div class="title">IRQLENS</div>
-      <div class="sub">IRQ, SoftIRQ, and Network Operations Dashboard</div>
+      <div class="sub">PRISM-style IRQ, SoftIRQ, and Network Operations Lens</div>
     </div>
     <div class="ctrl">
       <input id="backend" value="" size="24" />
@@ -110,82 +156,133 @@
     <div class="status" id="status">idle</div>
   </header>
 
+  <section class="nav">
+    <button class="tab active" data-view="overview">Overview</button>
+    <button class="tab" data-view="irqtop">IRQTop Matrix</button>
+    <button class="tab" data-view="interfaces">Interfaces</button>
+    <button class="tab" data-view="commands">Network Commands</button>
+  </section>
+
   <main>
-    <section class="card full">
-      <h3>Fleet Summary</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>Host</th><th>NIC</th><th>RX</th><th>TX</th><th>SoftIRQ/s</th><th>Drops (RX/TX)</th><th>Top IRQ</th><th>Queue</th><th>Dir</th><th>IRQ Rate/s</th>
-          </tr>
-        </thead>
-        <tbody id="summary-body"></tbody>
-      </table>
-    </section>
+    <section id="view-overview" class="view two-col active">
+      <section class="card full">
+        <h3>Fleet Summary</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Host</th><th>NIC</th><th>RX</th><th>TX</th><th>SoftIRQ/s</th><th>Drops (RX/TX)</th><th>Top IRQ</th><th>Queue</th><th>Dir</th><th>IRQ Rate/s</th>
+            </tr>
+          </thead>
+          <tbody id="summary-body"></tbody>
+        </table>
+      </section>
 
-    <section class="card full">
-      <h3>Selected Host KPI Strip</h3>
-      <div class="kpis">
-        <div class="kpi"><div class="l">RX Throughput</div><div class="v" id="kpi-rx-bps">-</div></div>
-        <div class="kpi"><div class="l">TX Throughput</div><div class="v" id="kpi-tx-bps">-</div></div>
-        <div class="kpi"><div class="l">RX Packets/s</div><div class="v" id="kpi-rx-pps">-</div></div>
-        <div class="kpi"><div class="l">TX Packets/s</div><div class="v" id="kpi-tx-pps">-</div></div>
-        <div class="kpi"><div class="l">SoftIRQ/s</div><div class="v" id="kpi-soft">-</div></div>
-        <div class="kpi"><div class="l">Drops (RX/TX)</div><div class="v" id="kpi-drops">-</div></div>
-      </div>
-    </section>
-
-    <section class="card full">
-      <h3>Host Trends (RX/TX/SoftIRQ)</h3>
-      <canvas id="trend" width="1200" height="260"></canvas>
-    </section>
-
-    <section class="card full">
-      <div class="card-head">
-        <h3>IRQ Detail</h3>
-        <div class="filters">
-          <select id="irq-nic-filter"></select>
-          <select id="irq-dir-filter">
-            <option value="all">All directions</option>
-            <option value="RX">RX</option>
-            <option value="TX">TX</option>
-            <option value="TxRx">TxRx</option>
-            <option value="Other">Other</option>
-          </select>
-          <input id="irq-search" placeholder="Search IRQ/source" size="20" />
+      <section class="card full">
+        <h3>Selected Host KPI Strip</h3>
+        <div class="kpis">
+          <div class="kpi"><div class="l">RX Throughput</div><div class="v" id="kpi-rx-bps">-</div></div>
+          <div class="kpi"><div class="l">TX Throughput</div><div class="v" id="kpi-tx-bps">-</div></div>
+          <div class="kpi"><div class="l">RX Packets/s</div><div class="v" id="kpi-rx-pps">-</div></div>
+          <div class="kpi"><div class="l">TX Packets/s</div><div class="v" id="kpi-tx-pps">-</div></div>
+          <div class="kpi"><div class="l">SoftIRQ/s</div><div class="v" id="kpi-soft">-</div></div>
+          <div class="kpi"><div class="l">Drops (RX/TX)</div><div class="v" id="kpi-drops">-</div></div>
         </div>
-      </div>
-      <table>
-        <thead>
-          <tr><th>IRQ</th><th>NIC</th><th>Queue</th><th>Dir</th><th>Rate/s</th><th>Top CPU</th><th>Active CPUs</th><th>Affinity</th><th>Match</th><th>Source</th></tr>
-        </thead>
-        <tbody id="irq-body"></tbody>
-      </table>
+      </section>
+
+      <section class="card full">
+        <h3>Host Trends (RX/TX/SoftIRQ)</h3>
+        <canvas id="trend" width="1200" height="260"></canvas>
+      </section>
+
+      <section class="card full">
+        <div class="card-head">
+          <h3>IRQ Detail</h3>
+          <div class="filters">
+            <select id="irq-nic-filter"></select>
+            <select id="irq-dir-filter">
+              <option value="all">All directions</option>
+              <option value="RX">RX</option>
+              <option value="TX">TX</option>
+              <option value="TxRx">TxRx</option>
+              <option value="Other">Other</option>
+            </select>
+            <input id="irq-search" placeholder="Search IRQ/source" size="20" />
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr><th>IRQ</th><th>NIC</th><th>Queue</th><th>Dir</th><th>Rate/s</th><th>Top CPU</th><th>Active CPUs</th><th>Affinity</th><th>Match</th><th>Source</th></tr>
+          </thead>
+          <tbody id="irq-body"></tbody>
+        </table>
+      </section>
+
+      <section class="card full">
+        <h3>Queue Activity Summary</h3>
+        <table>
+          <thead>
+            <tr><th>NIC</th><th>Queue</th><th>RX/s</th><th>TX/s</th><th>TxRx/s</th><th>Total/s</th><th>Busiest CPU</th></tr>
+          </thead>
+          <tbody id="queue-body"></tbody>
+        </table>
+      </section>
+
+      <section class="card">
+        <h3>Per-CPU IRQ Rate</h3>
+        <div id="heat" class="heat"></div>
+      </section>
+
+      <section class="card full">
+        <h3>Top SoftIRQ Classes</h3>
+        <table>
+          <thead>
+            <tr><th>Class</th><th>Rate/s</th></tr>
+          </thead>
+          <tbody id="softirq-body"></tbody>
+        </table>
+      </section>
     </section>
 
-    <section class="card full">
-      <h3>Queue Activity Summary</h3>
-      <table>
-        <thead>
-          <tr><th>NIC</th><th>Queue</th><th>RX/s</th><th>TX/s</th><th>TxRx/s</th><th>Total/s</th><th>Busiest CPU</th></tr>
-        </thead>
-        <tbody id="queue-body"></tbody>
-      </table>
+    <section id="view-irqtop" class="view one-col">
+      <section class="card full">
+        <div class="card-head">
+          <h3>IRQTop CPU Matrix</h3>
+          <div class="filters">
+            <select id="matrix-sort">
+              <option value="cpu">Sort by CPU</option>
+              <option value="irq">Sort by IRQ total</option>
+              <option value="util">Sort by CPU util</option>
+            </select>
+          </div>
+        </div>
+        <div class="matrix-wrap">
+          <table class="matrix">
+            <thead>
+              <tr><th>CPU</th><th>cpuUtil</th><th>%irq</th><th>%sirq</th><th>irqTotal (/s)</th><th>softirqTotal (/s)</th></tr>
+            </thead>
+            <tbody id="irqtop-body"></tbody>
+          </table>
+        </div>
+      </section>
     </section>
 
-    <section class="card">
-      <h3>Per-CPU IRQ Rate</h3>
-      <div id="heat" class="heat"></div>
+    <section id="view-interfaces" class="view one-col">
+      <section class="card full">
+        <h3>Auto-Detected Interfaces</h3>
+        <table>
+          <thead>
+            <tr><th>Interface</th><th>RX MB/s</th><th>TX MB/s</th><th>RX pps</th><th>TX pps</th><th>RX drop/s</th><th>TX drop/s</th></tr>
+          </thead>
+          <tbody id="iface-body"></tbody>
+        </table>
+      </section>
     </section>
 
-    <section class="card full">
-      <h3>Top SoftIRQ Classes</h3>
-      <table>
-        <thead>
-          <tr><th>Class</th><th>Rate/s</th></tr>
-        </thead>
-        <tbody id="softirq-body"></tbody>
-      </table>
+    <section id="view-commands" class="view one-col">
+      <section class="card full">
+        <h3>Network Command Outputs (Startup Capture)</h3>
+        <div class="cmd-grid" id="cmd-grid"></div>
+      </section>
     </section>
   </main>
 
@@ -198,19 +295,33 @@
     const queueBody = document.getElementById("queue-body");
     const softBody = document.getElementById("softirq-body");
     const heat = document.getElementById("heat");
+    const irqTopBody = document.getElementById("irqtop-body");
+    const ifaceBody = document.getElementById("iface-body");
+    const cmdGrid = document.getElementById("cmd-grid");
     const irqNicFilter = document.getElementById("irq-nic-filter");
     const irqDirFilter = document.getElementById("irq-dir-filter");
     const irqSearch = document.getElementById("irq-search");
+    const matrixSort = document.getElementById("matrix-sort");
     const trendCanvas = document.getElementById("trend");
     const trendCtx = trendCanvas.getContext("2d");
     let ws = null;
     let currentIrqRows = [];
+    let currentHostDetails = {};
 
     if (!backend.value) {
       backend.value = window.location.origin || "http://localhost:8080";
     }
 
     function api(path) { return backend.value.replace(/\/$/, "") + path; }
+
+    function switchView(name) {
+      document.querySelectorAll(".tab").forEach(t => {
+        t.classList.toggle("active", t.getAttribute("data-view") === name);
+      });
+      document.querySelectorAll(".view").forEach(v => {
+        v.classList.toggle("active", v.id === "view-" + name);
+      });
+    }
 
     function heatColor(rate) {
       if (rate >= 20000) return "#d1393a";
@@ -353,6 +464,104 @@
           '<td>' + bucket.total.toFixed(1) + '</td>' +
           '<td class="mono">CPU ' + bucket.topCpu + '</td>';
         queueBody.appendChild(tr);
+      }
+    }
+
+    function levelClass(v) {
+      const n = Number(v || 0);
+      if (n >= 40) return "hot";
+      if (n >= 20) return "warn";
+      if (n >= 8) return "good";
+      return "";
+    }
+
+    function renderIrqTopMatrix() {
+      const d = currentHostDetails || {};
+      const util = d.cpu_util_pct || {};
+      const irqp = d.irq_pct || {};
+      const sirqp = d.sirq_pct || {};
+      const irqt = d.irq_total_cpu || {};
+      const sirqt = d.softirq_total_cpu || {};
+      const cpus = Array.from(new Set([...Object.keys(util), ...Object.keys(irqt), ...Object.keys(sirqt)]));
+      const rows = cpus.map(cpu => ({
+        cpu: Number(cpu),
+        cpuUtil: Number(util[cpu] || 0),
+        irqPct: Number(irqp[cpu] || 0),
+        sirqPct: Number(sirqp[cpu] || 0),
+        irqTotal: Number(irqt[cpu] || 0),
+        sirqTotal: Number(sirqt[cpu] || 0),
+      }));
+
+      const mode = matrixSort.value || "cpu";
+      if (mode === "irq") rows.sort((a, b) => b.irqTotal - a.irqTotal);
+      else if (mode === "util") rows.sort((a, b) => b.cpuUtil - a.cpuUtil);
+      else rows.sort((a, b) => a.cpu - b.cpu);
+
+      irqTopBody.innerHTML = "";
+      for (const r of rows) {
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          '<td class="mono">CPU ' + r.cpu + '</td>' +
+          '<td class="' + levelClass(r.cpuUtil) + '">' + r.cpuUtil.toFixed(1) + '%</td>' +
+          '<td class="' + levelClass(r.irqPct) + '">' + r.irqPct.toFixed(2) + '%</td>' +
+          '<td class="' + levelClass(r.sirqPct) + '">' + r.sirqPct.toFixed(2) + '%</td>' +
+          '<td class="mono">' + r.irqTotal.toFixed(1) + '</td>' +
+          '<td class="mono">' + r.sirqTotal.toFixed(1) + '</td>';
+        irqTopBody.appendChild(tr);
+      }
+      if (!rows.length) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = '<td colspan="6">Waiting for collector details...</td>';
+        irqTopBody.appendChild(tr);
+      }
+    }
+
+    function renderInterfaceTable() {
+      const d = currentHostDetails || {};
+      const rates = d.per_interface_rates || {};
+      const ifs = Array.from(new Set([...(d.interfaces || []), ...Object.keys(rates)])).sort();
+      ifaceBody.innerHTML = "";
+      for (const iface of ifs) {
+        const row = rates[iface] || {};
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          '<td class="mono">' + iface + '</td>' +
+          '<td>' + (Number(row.rx_bps || 0) / 1e6).toFixed(2) + '</td>' +
+          '<td>' + (Number(row.tx_bps || 0) / 1e6).toFixed(2) + '</td>' +
+          '<td>' + Number(row.rx_pps || 0).toFixed(1) + '</td>' +
+          '<td>' + Number(row.tx_pps || 0).toFixed(1) + '</td>' +
+          '<td>' + Number(row.rx_drop_ps || 0).toFixed(1) + '</td>' +
+          '<td>' + Number(row.tx_drop_ps || 0).toFixed(1) + '</td>';
+        ifaceBody.appendChild(tr);
+      }
+      if (!ifs.length) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = '<td colspan="7">No interfaces discovered yet</td>';
+        ifaceBody.appendChild(tr);
+      }
+    }
+
+    function renderCommandPanels() {
+      const start = (currentHostDetails.startup || {});
+      const previews = start.command_preview || {};
+      cmdGrid.innerHTML = "";
+      const keys = Object.keys(previews).sort();
+      for (const key of keys) {
+        const card = document.createElement("div");
+        card.className = "card";
+        const h = document.createElement("h3");
+        h.textContent = key;
+        const p = document.createElement("pre");
+        p.textContent = previews[key] || "";
+        card.appendChild(h);
+        card.appendChild(p);
+        cmdGrid.appendChild(card);
+      }
+      if (!keys.length) {
+        const card = document.createElement("div");
+        card.className = "card";
+        card.innerHTML = "<h3>Waiting for startup capture...</h3>";
+        cmdGrid.appendChild(card);
       }
     }
 
@@ -507,6 +716,7 @@
       }
 
       const hs = hostSamples.length ? hostSamples[hostSamples.length - 1] : null;
+      currentHostDetails = hs ? (hs.details || {}) : {};
       const soft = hs ? (hs.softirq_rates || {}) : {};
       const softEntries = Object.entries(soft).sort((a, b) => Number(b[1]) - Number(a[1]));
       const softTotal = softEntries.reduce((acc, x) => acc + Number(x[1] || 0), 0);
@@ -528,6 +738,9 @@
       }
 
       drawTrend(hostSamples);
+      renderIrqTopMatrix();
+      renderInterfaceTable();
+      renderCommandPanels();
     }
 
     async function refreshAll() {
@@ -559,6 +772,10 @@
     irqNicFilter.onchange = renderIrqTables;
     irqDirFilter.onchange = renderIrqTables;
     irqSearch.oninput = renderIrqTables;
+    matrixSort.onchange = renderIrqTopMatrix;
+    document.querySelectorAll(".tab").forEach(tab => {
+      tab.onclick = function() { switchView(tab.getAttribute("data-view")); };
+    });
 
     async function boot() {
       try {

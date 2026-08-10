@@ -58,10 +58,12 @@ class SqliteStore:
                     tx_pps REAL NOT NULL,
                     rx_drop_ps REAL NOT NULL,
                     tx_drop_ps REAL NOT NULL,
-                    softirq_rates_json TEXT NOT NULL
+                    softirq_rates_json TEXT NOT NULL,
+                    details_json TEXT NOT NULL DEFAULT '{}'
                 )
                 """
             )
+            self._ensure_column(c, "host_samples", "details_json", "TEXT NOT NULL DEFAULT '{}'")
             c.execute("CREATE INDEX IF NOT EXISTS idx_host_host_id ON host_samples(sut_ip, id)")
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
@@ -121,8 +123,8 @@ class SqliteStore:
                     c.execute(
                         """
                         INSERT INTO host_samples(
-                            timestamp, sut_ip, nic, rx_bps, tx_bps, rx_pps, tx_pps, rx_drop_ps, tx_drop_ps, softirq_rates_json
-                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            timestamp, sut_ip, nic, rx_bps, tx_bps, rx_pps, tx_pps, rx_drop_ps, tx_drop_ps, softirq_rates_json, details_json
+                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             s.timestamp,
@@ -135,6 +137,7 @@ class SqliteStore:
                             s.rx_drop_ps,
                             s.tx_drop_ps,
                             json.dumps(s.softirq_rates, separators=(",", ":")),
+                            json.dumps(s.details, separators=(",", ":")),
                         ),
                     )
                 for host in by_host:
@@ -196,6 +199,7 @@ class SqliteStore:
             rows = c.execute(
                 """
                 SELECT timestamp, sut_ip, nic, rx_bps, tx_bps, rx_pps, tx_pps, rx_drop_ps, tx_drop_ps, softirq_rates_json
+                      , details_json
                 FROM host_samples
                 WHERE sut_ip = ?
                 ORDER BY id DESC
@@ -217,6 +221,7 @@ class SqliteStore:
                     rx_drop_ps=r["rx_drop_ps"],
                     tx_drop_ps=r["tx_drop_ps"],
                     softirq_rates=json.loads(r["softirq_rates_json"] or "{}"),
+                    details=json.loads(r["details_json"] or "{}"),
                 )
             )
         return out
@@ -228,7 +233,7 @@ class SqliteStore:
             for h in hosts:
                 row = c.execute(
                     """
-                    SELECT timestamp, nic, rx_bps, tx_bps, rx_pps, tx_pps, rx_drop_ps, tx_drop_ps, softirq_rates_json
+                    SELECT timestamp, nic, rx_bps, tx_bps, rx_pps, tx_pps, rx_drop_ps, tx_drop_ps, softirq_rates_json, details_json
                     FROM host_samples
                     WHERE sut_ip = ?
                     ORDER BY id DESC LIMIT 1
@@ -264,6 +269,7 @@ class SqliteStore:
                         "top_irq_queue": top_irq["queue"] if top_irq else "",
                         "top_irq_direction": top_irq["direction"] if top_irq else "",
                         "top_irq_rate": float(top_irq["total_rate"]) if top_irq else 0.0,
+                        "details": json.loads(row["details_json"] or "{}"),
                     }
                 )
             return sorted(out, key=lambda x: x["sut_ip"])

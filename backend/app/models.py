@@ -29,6 +29,7 @@ class HostSample(BaseModel):
     rx_drop_ps: float = 0.0
     tx_drop_ps: float = 0.0
     softirq_rates: Dict[str, float] = Field(default_factory=dict)
+    details: Dict[str, dict] = Field(default_factory=dict)
 
 
 class IngestPayload(BaseModel):
