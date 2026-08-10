@@ -1,129 +1,62 @@
 # IRQLENS
 
-Platform IRQ, SoftIRQ, and network operations dashboard for Linux SUTs.
+IRQLENS is a Linux IRQ and network diagnostics dashboard for System Under Test (SUT) environments.
 
-IRQLENS turns CLI-only monitoring workflows into a browser dashboard by collecting
-high-value counters from `/proc` and presenting both fleet-level and host-level views.
-
-## What IRQLENS solves
-
-- Real-time top IRQ visibility without running `irqtop` interactively
-- Per-CPU IRQ load distribution and affinity visibility
-- SoftIRQ pressure tracking for packet path health
-- Network throughput/packet/drop telemetry from the host
-- Multi-SUT summary for side-by-side operational triage
-
-## Key features
-
-- **IRQ Top Table**: IRQ line, source, rate/sec, and affinity list
-- **IRQ Detail Table**: IRQ, NIC, queue, RX/TX direction, rate, busiest CPU, active CPU count, and affinity match
-- **Queue Activity Summary**: grouped queue-level RX/TX/TxRx rates per NIC
-- **CPU IRQ Heatmap**: per-CPU IRQ rate intensity
-- **SoftIRQ Table**: highest-rate softirq classes
-- **Host KPI strip**: RX/TX throughput, packet rates, drop rates, softirq total
-- **Fleet Summary**: all active SUTs in one table
-- **Trends Panel**: RX/TX/SoftIRQ time trends for selected host
-- **Dual update path**: WebSocket live push + REST polling fallback
-- **SQLite retention**: persistent recent history with per-host pruning
-- **Optional ingest allowlist**: restrict who can publish samples
+It provides:
+- live IRQ/SoftIRQ/network telemetry
+- historical telemetry persistence in SQLite
+- on-demand diagnostic session collection
+- export outputs in JSON/CSV/XML/TXT
+- session archive download
 
 ## Architecture
 
-```
-Linux SUT(s)
-  |- collector/irq_collector.py
-  |    |- /proc/interrupts
-  |    |- /proc/irq/*/smp_affinity_list
-  |    |- /proc/softirqs
-  |    |- /proc/net/dev
-  |
-  +---- POST /api/irq/ingest (JSON)
-            |
-            v
-       FastAPI backend (backend/app)
-         |- SQLite store
-         |- /api/* query endpoints
-         +- /ws live notification
-            |
-            v
-       Browser dashboard (frontend/index.html)
-         |- Polling fallback
-         +- Live refresh on websocket events
-```
+IRQLENS uses a modular backend:
 
-## Project layout
+- `backend/app/main.py`: FastAPI app, REST endpoints, websocket endpoint
+- `backend/app/config.py`: centralized environment-driven settings
+- `backend/app/store.py`: SQLite telemetry/session/file metadata storage
+- `backend/app/ws.py`: websocket broadcast manager
+- `backend/app/collectors/`: data collectors
+- `backend/app/services/sampler.py`: background live telemetry sampler
+- `backend/app/services/diagnostics.py`: session start/stop/export orchestration
+- `backend/app/services/exporter.py`: JSON/CSV/XML/TXT writers
+- `backend/app/services/health.py`: health + dependency reporting
+- `frontend/index.html`: dashboard UI with sidebar pages and live updates
 
-```
-IRQLENS/
-+-- backend/
-|   +-- app/
-|   |   +-- main.py           FastAPI routes + websocket
-|   |   +-- store.py          SQLite persistence + retention
-|   |   +-- models.py         Pydantic payload models
-|   |   +-- config.py         Environment-driven settings
-|   |   +-- ws.py             WebSocket connection manager
-|   +-- requirements.txt
-|   +-- .env.example
-|   +-- run_backend.sh
-|   +-- run_backend.ps1
-+-- collector/
-|   +-- irq_collector.py      Linux-side telemetry sampler/publisher
-+-- frontend/
-|   +-- index.html            Operations dashboard
-+-- README.md
-```
+## Data Sources
 
-## Requirements
+Primary live telemetry sources:
+- `/proc/interrupts`
+- `/proc/softirqs`
+- `/proc/net/dev`
+- `/proc/uptime`
+- `/proc/loadavg`
+- `/proc/cpuinfo`
+- `/proc/meminfo`
+- `/sys/class/net/*`
+- `/proc/irq/*/smp_affinity_list`
+- `/sys/kernel/irq/*/node`
 
-### Backend host
-- Python 3.9+
-- Network reachable from SUTs on backend port
+Supplemental diagnostics commands (discovered dynamically):
+- `ip`
+- `ss`
+- `sysctl`
+- `ethtool` (optional)
 
-### SUT host(s)
-- Linux with `/proc/interrupts`, `/proc/softirqs`, `/proc/net/dev`
-- Python 3.8+
+## Compatibility
 
-## Quick start
+Designed for Ubuntu and CentOS/RHEL-family Linux systems.
 
-### One-command start (PRISM-style)
+Behavior for missing capabilities:
+- missing commands are marked as unavailable and skipped
+- unsupported command options are captured in stderr/exit code
+- unavailable proc/sys paths are treated as `N/A`
+- collector continues even if a subset of sources fails
 
-From IRQLENS repo root:
+## Installation
 
-```bash
-python3 run_irqlens.py
-```
-
-Windows PowerShell:
-
-```powershell
-python run_irqlens.py
-```
-
-This starts backend + dashboard UI on:
-
-- `http://<detected-host-ip>:8080`
-
-IRQLENS prints the reachable URL in the terminal, similar to PRISM.
-
-If IRQLENS is running on the same Linux SUT you want to monitor, start backend + local collector together:
-
-```bash
-python3 run_irqlens.py --collect-local --nic <nic-name>
-```
-
-Example:
-
-```bash
-python3 run_irqlens.py --collect-local --nic ens3np0
-```
-
-When `--collect-local` is used, IRQLENS automatically allows local collector IPs for ingest.
-For same-host local mode, IRQLENS also disables ingest allowlist enforcement to avoid multihomed source-IP mismatches.
-The collector also bypasses `http_proxy`/`https_proxy` when posting to the backend so local or lab-network ingest is not intercepted by a proxy.
-
-### 1. Start backend
-
-Linux/macOS:
+### Backend
 
 ```bash
 cd backend
@@ -131,11 +64,9 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-set -a; . ./.env; set +a
-uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
-Windows PowerShell:
+### Windows backend setup
 
 ```powershell
 cd backend
@@ -143,119 +74,178 @@ python -m venv .venv
 . .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 copy .env.example .env
-uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
-You can also use:
+## Startup
 
-- `backend/run_backend.sh`
-- `backend/run_backend.ps1`
-
-### 2. Start collector on each Linux SUT
+Quick start from repository root:
 
 ```bash
-python3 collector/irq_collector.py \
-  --server http://<dashboard-host>:8080 \
-  --sut-ip <sut-ip-or-name> \
-  --nic <nic-name> \
-  --interval 1.0 \
-  --topn 64
+python3 run_irqlens.py
 ```
 
-Notes:
-- `--nic` optional. If omitted, aggregate all interfaces in `/proc/net/dev`.
-- First sample cycle is warm-up for delta-based metrics.
+Linux local collector mode (legacy collector compatibility):
 
-### 3. Open the dashboard
+```bash
+python3 run_irqlens.py --collect-local --nic <interface>
+```
 
-Open `http://<dashboard-host>:8080` in browser. The backend serves the dashboard page at `/`.
+The dashboard is served at:
+
+- `http://<host-ip>:8080`
+
+## Running as Root
+
+IRQLENS works in root and non-root mode.
+
+Root-sensitive access (for full diagnostics visibility):
+- some `ethtool` paths
+- some `/proc/irq` and device metadata paths
+
+Health endpoint reports:
+- `running_as_root: true/false`
 
 ## Configuration
 
-Backend environment variables (`backend/.env.example`):
+Set in `backend/.env`:
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `IRQLENS_DB_PATH` | `./data/irqlens.db` | SQLite database location |
-| `IRQLENS_METRIC_RETENTION` | `5000` | Max rows retained per host per table |
-| `IRQLENS_CORS_ORIGINS` | `*` | Comma-separated CORS origins |
-| `IRQLENS_ALLOWED_INGEST_IPS` | empty | Optional client IP allowlist for ingest |
+- `IRQLENS_HOST`
+- `IRQLENS_PORT`
+- `IRQLENS_DB_PATH`
+- `IRQLENS_OUTPUT_DIR`
+- `IRQLENS_COLLECTION_INTERVAL`
+- `IRQLENS_SUPPORTED_INTERVALS`
+- `IRQLENS_METRIC_RETENTION`
+- `IRQLENS_RETENTION_DAYS`
+- `IRQLENS_MAX_SESSIONS`
+- `IRQLENS_MAX_STORAGE_MB`
+- `IRQLENS_COMMAND_TIMEOUT_SECONDS`
+- `IRQLENS_LOG_LEVEL`
+- `IRQLENS_CORS_ORIGINS`
+- `IRQLENS_ALLOWED_INGEST_IPS`
+- `IRQLENS_DISABLE_INGEST_ALLOWLIST`
 
-Collector arguments:
+Default output directory:
+- `/root/irqlens`
 
-| Argument | Default | Meaning |
-|---|---|---|
-| `--server` | required | Backend URL |
-| `--sut-ip` | required | Host identifier shown in dashboard |
-| `--interval` | `1.0` | Sampling interval seconds |
-| `--topn` | `64` | Top IRQ lines sent per sample |
-| `--nic` | empty | Interface to monitor for net stats |
+## API Endpoints
 
-## API reference
+Core endpoints:
 
-### Health
-- `GET /health`
+- `GET /api/health`
+- `GET /api/system`
+- `GET /api/interfaces`
+- `GET /api/irq/current`
+- `GET /api/irq/history`
+- `GET /api/softirq/current`
+- `GET /api/network/current`
+- `GET /api/network/{interface}`
+- `GET /api/sessions`
+- `GET /api/sessions/{session_id}`
+- `POST /api/sessions/start`
+- `POST /api/sessions/{session_id}/stop`
+- `GET /api/sessions/{session_id}/files`
+- `GET /api/sessions/{session_id}/download`
+- `GET /api/files?path=<session-file-path>`
+- `WS /ws`
 
-### Ingest
+Compatibility endpoints retained:
 - `POST /api/irq/ingest`
-  - body:
-    - `samples[]`: IRQ samples
-    - `host_samples[]`: host/network/softirq samples
-
-### Query
-- `GET /api/hosts`
-- `GET /api/irq/latest?sut_ip=<host>&limit=300`
-- `GET /api/host/latest?sut_ip=<host>&limit=120`
+- `GET /api/irq/latest`
+- `GET /api/host/latest`
 - `GET /api/summary/current`
 
-### Live channel
-- `WS /ws`
-  - Backend sends ingest notifications to trigger client refresh.
+## Session Output Structure
 
-## Operational guidance
+IRQLENS writes under:
 
-### Security
-- Set `IRQLENS_ALLOWED_INGEST_IPS` in production to permit only trusted SUTs.
-- Prefer private network exposure for backend ingest path.
+- `/root/irqlens/sessions/<session-id>/`
 
-### Retention sizing
-- Increase `IRQLENS_METRIC_RETENTION` for longer trend windows.
-- Keep default for low disk usage and fast latest-query response.
+Categories are written as:
+- `<category>.json`
+- `<category>.csv`
+- `<category>.xml`
+- `<category>.txt`
 
-### Performance tuning
-- Start with `--interval 1.0` and `--topn 64`.
-- Raise `--interval` if backend or network overhead must be reduced.
+Command raw output is saved under:
+- `/root/irqlens/sessions/<session-id>/commands/*.txt`
+
+Latest session marker:
+- `/root/irqlens/latest/session.txt`
+
+Downloadable zip archive:
+- `/api/sessions/{session_id}/download`
+
+## Frontend Pages
+
+- Overview
+- IRQ Monitor
+- SoftIRQ
+- CPU
+- Network
+- Interfaces
+- Diagnostics
+- Sessions
+- Logs
+- Settings
+
+Features include:
+- websocket status and reconnect indicator
+- stale data detection
+- sortable/searchable IRQ table
+- dynamic interface selector (`ALL INTERFACES` + detected interfaces)
+- session start/stop and file links
+
+## Security Notes
+
+IRQLENS does not expose arbitrary shell command execution.
+
+Safe command collection behavior:
+- command allowlist only
+- executable discovery before run
+- timeout-protected subprocess calls
+- stdout/stderr/exit_code captured
+
+Session file downloads are constrained to configured output directory.
+
+## Testing
+
+Run:
+
+```bash
+cd backend
+pytest ..\tests -q
+```
+
+Current tests cover:
+- IRQ parsing and rate calculation
+- SoftIRQ parsing and rate calculation
+- network interface discovery parsing
+- JSON/CSV/XML/TXT export validity
+- health endpoint
+- diagnostics session lifecycle endpoint flow
 
 ## Troubleshooting
 
-### No hosts visible
-- Verify collector can reach backend URL.
-- Check backend logs for `403 ingest client IP not allowed` if allowlist is set.
-- If you only started `run_irqlens.py`, the UI will load but remain empty until a collector posts data.
-- For same-host monitoring on Linux, use `python3 run_irqlens.py --collect-local --nic <nic-name>`.
-- If no data is present yet, the host dropdown will show `Waiting for collector data...`.
+1. No hosts listed
+- wait for live sampler startup
+- check `/api/health` collector status
+- verify backend can read `/proc`
 
-### Host appears but no rates
-- First loop establishes baseline; wait one interval.
-- Confirm collector has permission to read `/proc/interrupts` and `/proc/softirqs`.
+2. Missing command diagnostics
+- check `/api/health` dependency list
+- install optional tools (`ethtool`, `ss`, `iproute2`, `sysctl`)
 
-### SoftIRQ or net values look zero
-- Confirm traffic exists on selected NIC.
-- Remove `--nic` to aggregate all interfaces for validation.
+3. Stale data indicator
+- verify backend process is running
+- check websocket connection status
+- check collector status in `/api/health`
 
-### Dashboard not live-updating instantly
-- WebSocket may be blocked by network policy.
-- REST polling fallback runs automatically every 5 seconds.
+4. Permission gaps
+- run as root for complete IRQ/device metadata coverage
 
-## Current scope and roadmap
+## Development Notes
 
-Implemented now:
-- IRQ + SoftIRQ + network telemetry path
-- SQLite persistence with retention
-- Multi-SUT fleet summary + selected-host deep view
-- WebSocket + polling update model
-
-Planned next:
-- Additional collectors (`ethtool -S`, `ss -s`, `nstat`)
-- Optional authentication token for ingest
-- Export/report snapshots
+- Keep live telemetry lightweight and proc/sys based.
+- Use command collectors for snapshot diagnostics, not high-frequency loops.
+- Add new diagnostics commands only through explicit allowlist in `collectors/commands.py`.

@@ -2,27 +2,29 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from threading import Lock
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
-from .models import HostSample, IrqSample
 from .config import settings
+from .models import CollectionSession, ExportFile, InterfaceInfo, IRQSample, NetworkSample, SoftIRQSample, SystemInfo
+
 
 class SqliteStore:
-    def __init__(self, db_path: str, retention: int) -> None:
-        self._lock = Lock()
+    def __init__(self, db_path: str, retention_rows: int) -> None:
         self._db_path = db_path
-        self._retention = retention
+        self._retention_rows = retention_rows
+        self._lock = Lock()
         self._init_db()
 
     def _conn(self) -> sqlite3.Connection:
-        c = sqlite3.connect(self._db_path)
-        c.row_factory = sqlite3.Row
-        return c
+        conn = sqlite3.connect(self._db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
 
     def _init_db(self) -> None:
-        with self._conn() as c:
-            c.execute(
+        with self._conn() as conn:
+            conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS irq_samples (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,249 +32,594 @@ class SqliteStore:
                     sut_ip TEXT NOT NULL,
                     irq TEXT NOT NULL,
                     irq_name TEXT NOT NULL,
-                    nic TEXT NOT NULL DEFAULT '',
-                    queue TEXT NOT NULL DEFAULT '',
-                    direction TEXT NOT NULL DEFAULT 'Other',
-                    source_class TEXT NOT NULL DEFAULT 'other',
+                    device TEXT NOT NULL,
+                    interrupt_type TEXT NOT NULL,
+                    affinity_list TEXT NOT NULL,
+                    numa_node TEXT NOT NULL,
+                    nic TEXT NOT NULL,
+                    queue TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    source_class TEXT NOT NULL,
+                    total_count INTEGER NOT NULL,
                     total_rate REAL NOT NULL,
-                    cpu_rates_json TEXT NOT NULL,
-                    affinity_list TEXT NOT NULL
+                    cpu_rates_json TEXT NOT NULL
                 )
                 """
             )
-            self._ensure_column(c, "irq_samples", "nic", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column(c, "irq_samples", "queue", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column(c, "irq_samples", "direction", "TEXT NOT NULL DEFAULT 'Other'")
-            self._ensure_column(c, "irq_samples", "source_class", "TEXT NOT NULL DEFAULT 'other'")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_irq_host_id ON irq_samples(sut_ip, id)")
-            c.execute(
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_irq_host_ts ON irq_samples(sut_ip, timestamp)")
+
+            conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS host_samples (
+                CREATE TABLE IF NOT EXISTS softirq_samples (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp REAL NOT NULL,
                     sut_ip TEXT NOT NULL,
-                    nic TEXT NOT NULL,
+                    totals_json TEXT NOT NULL,
+                    rates_json TEXT NOT NULL,
+                    per_cpu_rates_json TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_softirq_host_ts ON softirq_samples(sut_ip, timestamp)")
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS network_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp REAL NOT NULL,
+                    sut_ip TEXT NOT NULL,
+                    interface TEXT NOT NULL,
+                    rx_bytes INTEGER NOT NULL,
+                    tx_bytes INTEGER NOT NULL,
+                    rx_packets INTEGER NOT NULL,
+                    tx_packets INTEGER NOT NULL,
+                    rx_errors INTEGER NOT NULL,
+                    tx_errors INTEGER NOT NULL,
+                    rx_drops INTEGER NOT NULL,
+                    tx_drops INTEGER NOT NULL,
                     rx_bps REAL NOT NULL,
                     tx_bps REAL NOT NULL,
                     rx_pps REAL NOT NULL,
                     tx_pps REAL NOT NULL,
+                    rx_err_ps REAL NOT NULL,
+                    tx_err_ps REAL NOT NULL,
                     rx_drop_ps REAL NOT NULL,
-                    tx_drop_ps REAL NOT NULL,
-                    softirq_rates_json TEXT NOT NULL,
-                    details_json TEXT NOT NULL DEFAULT '{}'
+                    tx_drop_ps REAL NOT NULL
                 )
                 """
             )
-            self._ensure_column(c, "host_samples", "details_json", "TEXT NOT NULL DEFAULT '{}'")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_host_host_id ON host_samples(sut_ip, id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_network_host_ts ON network_samples(sut_ip, timestamp)")
 
-    def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
-        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-        existing = {row[1] for row in rows}
-        if column not in existing:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS interface_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp REAL NOT NULL,
+                    sut_ip TEXT NOT NULL,
+                    interface TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_interface_host_ts ON interface_samples(sut_ip, timestamp)")
 
-    def add_samples(self, samples: List[IrqSample]) -> None:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS system_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp REAL NOT NULL,
+                    sut_ip TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_system_host_ts ON system_samples(sut_ip, timestamp)")
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL UNIQUE,
+                    status TEXT NOT NULL,
+                    start_time REAL NOT NULL,
+                    end_time REAL,
+                    hostname TEXT NOT NULL,
+                    os_distribution TEXT NOT NULL,
+                    kernel TEXT NOT NULL,
+                    collector_version TEXT NOT NULL,
+                    output_dir TEXT NOT NULL,
+                    categories_json TEXT NOT NULL,
+                    error TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_start ON sessions(start_time DESC)")
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_files (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    format TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_session_files_session ON session_files(session_id)")
+
+    def _trim_table(self, conn: sqlite3.Connection, table: str, host: str) -> None:
+        conn.execute(
+            f"""
+            DELETE FROM {table}
+            WHERE sut_ip = ? AND id NOT IN (
+                SELECT id FROM {table}
+                WHERE sut_ip = ?
+                ORDER BY id DESC
+                LIMIT ?
+            )
+            """,
+            (host, host, self._retention_rows),
+        )
+
+    def add_irq_samples(self, samples: List[IRQSample]) -> None:
         if not samples:
             return
         with self._lock:
-            by_host = set()
-            with self._conn() as c:
-                for s in samples:
-                    by_host.add(s.sut_ip)
-                    c.execute(
+            with self._conn() as conn:
+                hosts = set()
+                for sample in samples:
+                    hosts.add(sample.sut_ip)
+                    conn.execute(
                         """
                         INSERT INTO irq_samples(
-                            timestamp, sut_ip, irq, irq_name, nic, queue, direction, source_class, total_rate, cpu_rates_json, affinity_list
-                        )
-                        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            timestamp, sut_ip, irq, irq_name, device, interrupt_type,
+                            affinity_list, numa_node, nic, queue, direction, source_class,
+                            total_count, total_rate, cpu_rates_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
-                            s.timestamp,
-                            s.sut_ip,
-                            s.irq,
-                            s.irq_name,
-                            s.nic,
-                            s.queue,
-                            s.direction,
-                            s.source_class,
-                            s.total_rate,
-                            json.dumps(s.cpu_rates, separators=(",", ":")),
-                            s.affinity_list,
+                            sample.timestamp,
+                            sample.sut_ip,
+                            sample.irq,
+                            sample.irq_name,
+                            sample.device,
+                            sample.interrupt_type,
+                            sample.affinity_list,
+                            sample.numa_node,
+                            sample.nic,
+                            sample.queue,
+                            sample.direction,
+                            sample.source_class,
+                            sample.total_count,
+                            sample.total_rate,
+                            json.dumps(sample.cpu_rates, separators=(",", ":")),
                         ),
                     )
-                for host in by_host:
-                    c.execute(
-                        """
-                        DELETE FROM irq_samples
-                        WHERE sut_ip = ? AND id NOT IN (
-                            SELECT id FROM irq_samples WHERE sut_ip = ? ORDER BY id DESC LIMIT ?
-                        )
-                        """,
-                        (host, host, self._retention),
-                    )
+                for host in hosts:
+                    self._trim_table(conn, "irq_samples", host)
 
-    def add_host_samples(self, samples: List[HostSample]) -> None:
+    def add_softirq_sample(self, sample: SoftIRQSample) -> None:
+        with self._lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO softirq_samples(timestamp, sut_ip, totals_json, rates_json, per_cpu_rates_json)
+                    VALUES(?, ?, ?, ?, ?)
+                    """,
+                    (
+                        sample.timestamp,
+                        sample.sut_ip,
+                        json.dumps(sample.totals, separators=(",", ":")),
+                        json.dumps(sample.rates, separators=(",", ":")),
+                        json.dumps(sample.per_cpu_rates, separators=(",", ":")),
+                    ),
+                )
+                self._trim_table(conn, "softirq_samples", sample.sut_ip)
+
+    def add_network_samples(self, samples: List[NetworkSample]) -> None:
         if not samples:
             return
         with self._lock:
-            by_host = set()
-            with self._conn() as c:
-                for s in samples:
-                    by_host.add(s.sut_ip)
-                    c.execute(
+            with self._conn() as conn:
+                hosts = set()
+                for sample in samples:
+                    hosts.add(sample.sut_ip)
+                    conn.execute(
                         """
-                        INSERT INTO host_samples(
-                            timestamp, sut_ip, nic, rx_bps, tx_bps, rx_pps, tx_pps, rx_drop_ps, tx_drop_ps, softirq_rates_json, details_json
-                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO network_samples(
+                            timestamp, sut_ip, interface,
+                            rx_bytes, tx_bytes, rx_packets, tx_packets,
+                            rx_errors, tx_errors, rx_drops, tx_drops,
+                            rx_bps, tx_bps, rx_pps, tx_pps,
+                            rx_err_ps, tx_err_ps, rx_drop_ps, tx_drop_ps
+                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
-                            s.timestamp,
-                            s.sut_ip,
-                            s.nic,
-                            s.rx_bps,
-                            s.tx_bps,
-                            s.rx_pps,
-                            s.tx_pps,
-                            s.rx_drop_ps,
-                            s.tx_drop_ps,
-                            json.dumps(s.softirq_rates, separators=(",", ":")),
-                            json.dumps(s.details, separators=(",", ":")),
+                            sample.timestamp,
+                            sample.sut_ip,
+                            sample.interface,
+                            sample.rx_bytes,
+                            sample.tx_bytes,
+                            sample.rx_packets,
+                            sample.tx_packets,
+                            sample.rx_errors,
+                            sample.tx_errors,
+                            sample.rx_drops,
+                            sample.tx_drops,
+                            sample.rx_bps,
+                            sample.tx_bps,
+                            sample.rx_pps,
+                            sample.tx_pps,
+                            sample.rx_err_ps,
+                            sample.tx_err_ps,
+                            sample.rx_drop_ps,
+                            sample.tx_drop_ps,
                         ),
                     )
-                for host in by_host:
-                    c.execute(
+                for host in hosts:
+                    self._trim_table(conn, "network_samples", host)
+
+    def add_interfaces(self, sut_ip: str, interfaces: List[InterfaceInfo]) -> None:
+        if not interfaces:
+            return
+        with self._lock:
+            with self._conn() as conn:
+                ts = time.time()
+                for info in interfaces:
+                    conn.execute(
                         """
-                        DELETE FROM host_samples
-                        WHERE sut_ip = ? AND id NOT IN (
-                            SELECT id FROM host_samples WHERE sut_ip = ? ORDER BY id DESC LIMIT ?
-                        )
+                        INSERT INTO interface_samples(timestamp, sut_ip, interface, payload_json)
+                        VALUES(?, ?, ?, ?)
                         """,
-                        (host, host, self._retention),
+                        (ts, sut_ip, info.name, info.model_dump_json()),
                     )
+                self._trim_table(conn, "interface_samples", sut_ip)
+
+    def add_system(self, sut_ip: str, system: SystemInfo) -> None:
+        with self._lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO system_samples(timestamp, sut_ip, payload_json)
+                    VALUES(?, ?, ?)
+                    """,
+                    (system.timestamp, sut_ip, system.model_dump_json()),
+                )
+                self._trim_table(conn, "system_samples", sut_ip)
 
     def hosts(self) -> List[str]:
-        with self._conn() as c:
-            rows = c.execute(
+        with self._conn() as conn:
+            rows = conn.execute(
                 """
                 SELECT sut_ip FROM irq_samples
                 UNION
-                SELECT sut_ip FROM host_samples
+                SELECT sut_ip FROM network_samples
+                UNION
+                SELECT sut_ip FROM system_samples
                 ORDER BY sut_ip
                 """
             ).fetchall()
-            return [r["sut_ip"] for r in rows]
+        return [row[0] for row in rows]
 
-    def latest(self, sut_ip: str, limit: int = 300) -> List[IrqSample]:
-        with self._conn() as c:
-            rows = c.execute(
+    def latest_irq(self, sut_ip: str, limit: int = 500) -> List[IRQSample]:
+        with self._conn() as conn:
+            rows = conn.execute(
                 """
-                SELECT timestamp, sut_ip, irq, irq_name, nic, queue, direction, source_class, total_rate, cpu_rates_json, affinity_list
-                FROM irq_samples
+                SELECT * FROM irq_samples
                 WHERE sut_ip = ?
                 ORDER BY id DESC
                 LIMIT ?
                 """,
                 (sut_ip, limit),
             ).fetchall()
-        out = []
-        for r in reversed(rows):
+        out: List[IRQSample] = []
+        for row in reversed(rows):
             out.append(
-                IrqSample(
-                    timestamp=r["timestamp"],
-                    sut_ip=r["sut_ip"],
-                    irq=r["irq"],
-                    irq_name=r["irq_name"],
-                    nic=r["nic"] or "",
-                    queue=r["queue"] or "",
-                    direction=r["direction"] or "Other",
-                    source_class=r["source_class"] or "other",
-                    total_rate=r["total_rate"],
-                    cpu_rates=json.loads(r["cpu_rates_json"] or "{}"),
-                    affinity_list=r["affinity_list"],
+                IRQSample(
+                    timestamp=row["timestamp"],
+                    sut_ip=row["sut_ip"],
+                    irq=row["irq"],
+                    irq_name=row["irq_name"],
+                    device=row["device"],
+                    interrupt_type=row["interrupt_type"],
+                    affinity_list=row["affinity_list"],
+                    numa_node=row["numa_node"],
+                    nic=row["nic"],
+                    queue=row["queue"],
+                    direction=row["direction"],
+                    source_class=row["source_class"],
+                    total_count=row["total_count"],
+                    total_rate=row["total_rate"],
+                    cpu_rates=json.loads(row["cpu_rates_json"] or "{}"),
                 )
             )
         return out
 
-    def latest_host(self, sut_ip: str, limit: int = 120) -> List[HostSample]:
-        with self._conn() as c:
-            rows = c.execute(
+    def latest_softirq(self, sut_ip: str) -> Optional[SoftIRQSample]:
+        with self._conn() as conn:
+            row = conn.execute(
                 """
-                SELECT timestamp, sut_ip, nic, rx_bps, tx_bps, rx_pps, tx_pps, rx_drop_ps, tx_drop_ps, softirq_rates_json
-                      , details_json
-                FROM host_samples
+                SELECT * FROM softirq_samples
+                WHERE sut_ip = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (sut_ip,),
+            ).fetchone()
+        if not row:
+            return None
+        return SoftIRQSample(
+            timestamp=row["timestamp"],
+            sut_ip=row["sut_ip"],
+            totals=json.loads(row["totals_json"] or "{}"),
+            rates=json.loads(row["rates_json"] or "{}"),
+            per_cpu_rates=json.loads(row["per_cpu_rates_json"] or "{}"),
+        )
+
+    def latest_network(self, sut_ip: str, limit: int = 2000) -> List[NetworkSample]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM network_samples
                 WHERE sut_ip = ?
                 ORDER BY id DESC
                 LIMIT ?
                 """,
                 (sut_ip, limit),
             ).fetchall()
-        out = []
-        for r in reversed(rows):
+        out: List[NetworkSample] = []
+        for row in reversed(rows):
             out.append(
-                HostSample(
-                    timestamp=r["timestamp"],
-                    sut_ip=r["sut_ip"],
-                    nic=r["nic"],
-                    rx_bps=r["rx_bps"],
-                    tx_bps=r["tx_bps"],
-                    rx_pps=r["rx_pps"],
-                    tx_pps=r["tx_pps"],
-                    rx_drop_ps=r["rx_drop_ps"],
-                    tx_drop_ps=r["tx_drop_ps"],
-                    softirq_rates=json.loads(r["softirq_rates_json"] or "{}"),
-                    details=json.loads(r["details_json"] or "{}"),
+                NetworkSample(
+                    timestamp=row["timestamp"],
+                    sut_ip=row["sut_ip"],
+                    interface=row["interface"],
+                    rx_bytes=row["rx_bytes"],
+                    tx_bytes=row["tx_bytes"],
+                    rx_packets=row["rx_packets"],
+                    tx_packets=row["tx_packets"],
+                    rx_errors=row["rx_errors"],
+                    tx_errors=row["tx_errors"],
+                    rx_drops=row["rx_drops"],
+                    tx_drops=row["tx_drops"],
+                    rx_bps=row["rx_bps"],
+                    tx_bps=row["tx_bps"],
+                    rx_pps=row["rx_pps"],
+                    tx_pps=row["tx_pps"],
+                    rx_err_ps=row["rx_err_ps"],
+                    tx_err_ps=row["tx_err_ps"],
+                    rx_drop_ps=row["rx_drop_ps"],
+                    tx_drop_ps=row["tx_drop_ps"],
                 )
             )
         return out
 
-    def summary_current(self) -> List[Dict[str, float]]:
-        with self._conn() as c:
-            hosts = [r["sut_ip"] for r in c.execute("SELECT sut_ip FROM host_samples GROUP BY sut_ip").fetchall()]
-            out: List[Dict[str, float]] = []
-            for h in hosts:
-                row = c.execute(
+    def latest_interfaces(self, sut_ip: str) -> List[InterfaceInfo]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT interface, MAX(id) AS max_id
+                FROM interface_samples
+                WHERE sut_ip = ?
+                GROUP BY interface
+                """,
+                (sut_ip,),
+            ).fetchall()
+            ids = [row["max_id"] for row in rows if row["max_id"] is not None]
+            if not ids:
+                return []
+            placeholders = ",".join(["?"] * len(ids))
+            payload_rows = conn.execute(
+                f"SELECT payload_json FROM interface_samples WHERE id IN ({placeholders})",
+                ids,
+            ).fetchall()
+        out: List[InterfaceInfo] = []
+        for row in payload_rows:
+            out.append(InterfaceInfo.model_validate_json(row["payload_json"]))
+        out.sort(key=lambda item: item.name)
+        return out
+
+    def latest_system(self, sut_ip: str) -> Optional[SystemInfo]:
+        with self._conn() as conn:
+            row = conn.execute(
+                """
+                SELECT payload_json
+                FROM system_samples
+                WHERE sut_ip = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (sut_ip,),
+            ).fetchone()
+        if not row:
+            return None
+        return SystemInfo.model_validate_json(row["payload_json"])
+
+    def create_session(self, session: CollectionSession) -> None:
+        with self._lock:
+            with self._conn() as conn:
+                conn.execute(
                     """
-                    SELECT timestamp, nic, rx_bps, tx_bps, rx_pps, tx_pps, rx_drop_ps, tx_drop_ps, softirq_rates_json, details_json
-                    FROM host_samples
-                    WHERE sut_ip = ?
-                    ORDER BY id DESC LIMIT 1
+                    INSERT INTO sessions(
+                        session_id, status, start_time, end_time, hostname, os_distribution,
+                        kernel, collector_version, output_dir, categories_json, error
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (h,),
+                    (
+                        session.session_id,
+                        session.status,
+                        session.start_time,
+                        session.end_time,
+                        session.hostname,
+                        session.os_distribution,
+                        session.kernel,
+                        session.collector_version,
+                        session.output_dir,
+                        json.dumps(session.categories, separators=(",", ":")),
+                        session.error,
+                    ),
+                )
+
+    def update_session_status(self, session_id: str, status: str, end_time: Optional[float] = None, error: str = "") -> None:
+        with self._lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """
+                    UPDATE sessions
+                    SET status = ?, end_time = COALESCE(?, end_time), error = ?
+                    WHERE session_id = ?
+                    """,
+                    (status, end_time, error, session_id),
+                )
+
+    def add_session_files(self, session_id: str, files: List[ExportFile]) -> None:
+        if not files:
+            return
+        with self._lock:
+            with self._conn() as conn:
+                for item in files:
+                    conn.execute(
+                        """
+                        INSERT INTO session_files(session_id, name, category, format, path, size_bytes, created_at)
+                        VALUES(?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            session_id,
+                            item.name,
+                            item.category,
+                            item.format,
+                            item.path,
+                            item.size_bytes,
+                            time.time(),
+                        ),
+                    )
+
+    def list_sessions(self) -> List[CollectionSession]:
+        with self._conn() as conn:
+            rows = conn.execute("SELECT * FROM sessions ORDER BY start_time DESC").fetchall()
+        out: List[CollectionSession] = []
+        for row in rows:
+            out.append(
+                CollectionSession(
+                    session_id=row["session_id"],
+                    status=row["status"],
+                    start_time=row["start_time"],
+                    end_time=row["end_time"],
+                    hostname=row["hostname"],
+                    os_distribution=row["os_distribution"],
+                    kernel=row["kernel"],
+                    collector_version=row["collector_version"],
+                    output_dir=row["output_dir"],
+                    categories=json.loads(row["categories_json"] or "[]"),
+                    error=row["error"] or "",
+                )
+            )
+        return out
+
+    def get_session(self, session_id: str) -> Optional[CollectionSession]:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+        if not row:
+            return None
+        return CollectionSession(
+            session_id=row["session_id"],
+            status=row["status"],
+            start_time=row["start_time"],
+            end_time=row["end_time"],
+            hostname=row["hostname"],
+            os_distribution=row["os_distribution"],
+            kernel=row["kernel"],
+            collector_version=row["collector_version"],
+            output_dir=row["output_dir"],
+            categories=json.loads(row["categories_json"] or "[]"),
+            error=row["error"] or "",
+        )
+
+    def session_files(self, session_id: str) -> List[ExportFile]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT name, category, format, path, size_bytes FROM session_files WHERE session_id = ? ORDER BY id",
+                (session_id,),
+            ).fetchall()
+        return [
+            ExportFile(
+                name=row["name"],
+                category=row["category"],
+                format=row["format"],
+                path=row["path"],
+                size_bytes=row["size_bytes"],
+            )
+            for row in rows
+        ]
+
+    def summary_current(self) -> List[Dict[str, Any]]:
+        hosts = self.hosts()
+        out: List[Dict[str, Any]] = []
+        with self._conn() as conn:
+            for host in hosts:
+                net = conn.execute(
+                    """
+                    SELECT timestamp,
+                           SUM(rx_bps) AS rx_bps,
+                           SUM(tx_bps) AS tx_bps,
+                           SUM(rx_pps) AS rx_pps,
+                           SUM(tx_pps) AS tx_pps,
+                           SUM(rx_drop_ps) AS rx_drop_ps,
+                           SUM(tx_drop_ps) AS tx_drop_ps
+                    FROM network_samples
+                    WHERE sut_ip = ?
+                    GROUP BY timestamp
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                    """,
+                    (host,),
                 ).fetchone()
-                if not row:
+                soft = conn.execute(
+                    """
+                    SELECT rates_json
+                    FROM softirq_samples
+                    WHERE sut_ip = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (host,),
+                ).fetchone()
+                top_irq = conn.execute(
+                    """
+                    SELECT irq_name, total_rate
+                    FROM irq_samples
+                    WHERE sut_ip = ?
+                    ORDER BY timestamp DESC, total_rate DESC
+                    LIMIT 1
+                    """,
+                    (host,),
+                ).fetchone()
+                if not net:
                     continue
-                soft = json.loads(row["softirq_rates_json"] or "{}")
-                soft_total = float(sum(float(v) for v in soft.values()))
-                top_irq = c.execute(
-                    """
-                    SELECT irq_name, nic, queue, direction, total_rate FROM irq_samples
-                    WHERE sut_ip = ?
-                    ORDER BY id DESC LIMIT 1
-                    """,
-                    (h,),
-                ).fetchone()
+                soft_total = 0.0
+                if soft:
+                    soft_rates = json.loads(soft["rates_json"] or "{}")
+                    soft_total = float(sum(float(v) for v in soft_rates.values()))
                 out.append(
                     {
-                        "sut_ip": h,
-                        "timestamp": row["timestamp"],
-                        "nic": row["nic"],
-                        "rx_bps": row["rx_bps"],
-                        "tx_bps": row["tx_bps"],
-                        "rx_pps": row["rx_pps"],
-                        "tx_pps": row["tx_pps"],
-                        "rx_drop_ps": row["rx_drop_ps"],
-                        "tx_drop_ps": row["tx_drop_ps"],
+                        "sut_ip": host,
+                        "timestamp": net["timestamp"],
+                        "rx_bps": net["rx_bps"] or 0.0,
+                        "tx_bps": net["tx_bps"] or 0.0,
+                        "rx_pps": net["rx_pps"] or 0.0,
+                        "tx_pps": net["tx_pps"] or 0.0,
+                        "rx_drop_ps": net["rx_drop_ps"] or 0.0,
+                        "tx_drop_ps": net["tx_drop_ps"] or 0.0,
                         "softirq_total": soft_total,
-                        "top_irq": top_irq["irq_name"] if top_irq else "",
-                        "top_irq_nic": top_irq["nic"] if top_irq else "",
-                        "top_irq_queue": top_irq["queue"] if top_irq else "",
-                        "top_irq_direction": top_irq["direction"] if top_irq else "",
+                        "top_irq": top_irq["irq_name"] if top_irq else "N/A",
                         "top_irq_rate": float(top_irq["total_rate"]) if top_irq else 0.0,
-                        "details": json.loads(row["details_json"] or "{}"),
                     }
                 )
-            return sorted(out, key=lambda x: x["sut_ip"])
+        return out
 
 
 settings.ensure_dirs()

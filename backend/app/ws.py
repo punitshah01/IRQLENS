@@ -15,6 +15,7 @@ class WSManager:
         await ws.accept()
         async with self._lock:
             self._clients.add(ws)
+        await ws.send_json({"type": "connection", "status": "connected"})
 
     async def disconnect(self, ws: WebSocket) -> None:
         async with self._lock:
@@ -33,6 +34,14 @@ class WSManager:
             async with self._lock:
                 for ws in dead:
                     self._clients.discard(ws)
+
+    async def client_count(self) -> int:
+        async with self._lock:
+            return len(self._clients)
+
+    async def status(self) -> str:
+        count = await self.client_count()
+        return "connected" if count > 0 else "idle"
 
 
 WS = WSManager()

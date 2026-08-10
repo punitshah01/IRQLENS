@@ -6,786 +6,914 @@
   <title>IRQLENS</title>
   <style>
     :root {
-      --bg: #edf2f9;
-      --panel: #ffffff;
-      --line: #d4deea;
-      --ink: #182434;
-      --muted: #5c7188;
-      --brand: #0054ae;
-      --brand2: #1675d1;
-      --hot: #cf3c3d;
-      --warn: #c47b12;
-      --good: #1f965d;
+      --bg: #0c1118;
+      --bg2: #111826;
+      --panel: #151f2e;
+      --panel2: #1a2436;
+      --line: #263246;
+      --text: #dce5f2;
+      --muted: #8fa0ba;
+      --green: #33b07a;
+      --yellow: #d5a53e;
+      --red: #d45050;
+      --blue: #4da4ff;
+      --gray: #6f7f96;
+      --accent: #5eb0ff;
+      --font: "Segoe UI", "Calibri", sans-serif;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: "Trebuchet MS", "Gill Sans", sans-serif;
-      color: var(--ink);
-      background:
-        radial-gradient(circle at 0% 0%, #f9fbff 0%, transparent 42%),
-        radial-gradient(circle at 100% 16%, #eaf2fb 0%, transparent 36%),
-        linear-gradient(180deg, #f9fcff 0%, var(--bg) 100%);
+      color: var(--text);
+      background: radial-gradient(circle at 10% 0%, #16243a 0%, transparent 30%), radial-gradient(circle at 100% 0%, #0f1c32 0%, transparent 35%), var(--bg);
+      font-family: var(--font);
     }
-    .topbar {
-      background: linear-gradient(90deg, var(--brand) 0%, var(--brand2) 100%);
-      color: #fff;
-      padding: 12px 16px;
+    .app {
       display: grid;
-      grid-template-columns: auto 1fr auto;
-      gap: 14px;
-      align-items: center;
-      box-shadow: 0 8px 22px rgba(0, 64, 128, 0.25);
+      grid-template-columns: 240px 1fr;
+      min-height: 100vh;
     }
-    .title { font-size: 21px; font-weight: 800; letter-spacing: .8px; }
-    .sub { font-size: 11px; opacity: .92; letter-spacing: .35px; }
-    .ctrl { display: flex; gap: 8px; align-items: center; justify-content: center; flex-wrap: wrap; }
-    input, select, button {
-      border: 1px solid #c8d8ea;
-      border-radius: 9px;
-      padding: 8px 10px;
-      font-size: 13px;
-      background: #fff;
-      color: #17304d;
+    .sidebar {
+      border-right: 1px solid var(--line);
+      background: linear-gradient(180deg, #0f1623 0%, #0b111a 100%);
+      padding: 14px 10px;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
     }
-    button { cursor: pointer; background: #f7fbff; }
-    button:hover { background: #edf6ff; }
-    .status { font-size: 12px; color: #d6e7ff; text-align: right; }
-    .nav {
-      display: flex;
-      gap: 6px;
-      align-items: center;
-      padding: 10px 12px 0;
-      overflow-x: auto;
-    }
-    .tab {
-      border: 1px solid #c8d8ea;
-      background: #ffffff;
-      color: #17436e;
-      border-radius: 999px;
-      padding: 7px 13px;
-      font-size: 12px;
-      font-weight: 700;
-      white-space: nowrap;
-    }
-    .tab.active {
-      background: linear-gradient(90deg, #e8f2ff, #f2f8ff);
-      border-color: #84aede;
-      color: #003f82;
-    }
-    main {
-      padding: 10px 12px 14px;
-    }
-    .view { display: none; }
-    .view.active { display: grid; gap: 10px; }
-    .view.two-col { grid-template-columns: 1.4fr 1fr; }
-    .view.one-col { grid-template-columns: 1fr; }
-    .card {
-      background: #fff;
+    .brand {
+      margin-bottom: 12px;
+      padding: 8px;
       border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 10px 10px 8px;
+      border-radius: 10px;
+      background: #141e2f;
+    }
+    .brand .h1 { font-size: 22px; font-weight: 700; letter-spacing: 1px; }
+    .brand .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .nav button {
+      width: 100%;
+      text-align: left;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text);
+      padding: 9px 10px;
+      border-radius: 8px;
+      margin-bottom: 4px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .nav button:hover { background: #1a2638; }
+    .nav button.active { border-color: #3f5877; background: #1c2b42; color: #bdddff; }
+    .content { padding: 12px; }
+    .top {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .sys {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .status-badge {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+    }
+    .status-ok { color: var(--green); }
+    .status-warn { color: var(--yellow); }
+    .status-err { color: var(--red); }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+    select, input, button {
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 7px 8px;
+      font-size: 12px;
+    }
+    button { cursor: pointer; }
+    button:hover { border-color: #3b5170; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: linear-gradient(180deg, var(--panel) 0%, var(--panel2) 100%);
+      padding: 10px;
+      min-height: 84px;
     }
     .card h3 {
       margin: 0 0 8px;
-      color: var(--muted);
-      text-transform: uppercase;
+      color: #a8b8cd;
       font-size: 12px;
-      letter-spacing: .45px;
+      text-transform: uppercase;
+      letter-spacing: .4px;
     }
-    .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-    .full { grid-column: 1 / -1; }
-    .kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
-    .kpi { border: 1px solid #dae3ef; border-radius: 10px; padding: 8px; background: #f7fbff; }
-    .kpi .l { font-size: 10px; text-transform: uppercase; color: var(--muted); }
-    .kpi .v { margin-top: 3px; font-size: 15px; font-weight: 750; }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { border-bottom: 1px solid #e9eff6; text-align: left; padding: 5px 4px; font-size: 12px; }
+    .kpi { grid-column: span 3; }
+    .kpi .v { font-size: 20px; font-weight: 700; }
+    .kpi .l { color: var(--muted); font-size: 11px; }
+    .wide { grid-column: span 12; }
+    .half { grid-column: span 6; }
+    .third { grid-column: span 4; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    th, td {
+      border-bottom: 1px solid #243043;
+      text-align: left;
+      padding: 6px 4px;
+      vertical-align: top;
+    }
+    th { color: #b6c5d7; font-weight: 600; }
     .mono { font-family: Consolas, monospace; }
-    .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    .filters input, .filters select { font-size: 12px; padding: 6px 8px; }
-    .badge { display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: .3px; }
-    .badge-rx { background: #dff3ea; color: #0f7a47; }
-    .badge-tx { background: #ffe7cc; color: #a65b00; }
-    .badge-txrx { background: #e1ecff; color: #0d58b1; }
-    .badge-other { background: #edf1f5; color: #56697d; }
-    .match-ok { color: var(--good); font-weight: 700; }
-    .match-bad { color: var(--hot); font-weight: 700; }
-    .match-na { color: var(--muted); }
-    .heat { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px; }
-    .cell { border: 1px solid var(--line); border-radius: 8px; padding: 6px; text-align: center; font-size: 11px; }
-    canvas { width: 100%; height: 180px; border: 1px solid #dae4f0; border-radius: 8px; background: #fbfdff; }
-    .cmd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-    pre {
-      margin: 0;
-      border: 1px solid #d9e3ef;
-      border-radius: 8px;
-      background: #f6faff;
-      color: #183e63;
-      padding: 8px;
-      font-size: 11px;
-      line-height: 1.35;
-      max-height: 310px;
-      overflow: auto;
-      white-space: pre-wrap;
-      word-break: break-word;
+    .tag {
+      padding: 2px 6px;
+      border-radius: 999px;
+      border: 1px solid #2c3a53;
+      font-size: 10px;
+      display: inline-block;
     }
-    .matrix-wrap { overflow: auto; }
-    .matrix th { position: sticky; top: 0; background: #f1f7ff; z-index: 1; }
-    .matrix td.good { color: var(--good); font-weight: 700; }
-    .matrix td.warn { color: var(--warn); font-weight: 700; }
-    .matrix td.hot { color: var(--hot); font-weight: 700; }
-    @media (max-width: 1080px) {
-      .view.two-col { grid-template-columns: 1fr; }
-      .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .cmd-grid { grid-template-columns: 1fr; }
+    .green { color: var(--green); }
+    .yellow { color: var(--yellow); }
+    .red { color: var(--red); }
+    .blue { color: var(--blue); }
+    .gray { color: var(--gray); }
+    .view { display: none; }
+    .view.active { display: block; }
+    .card-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+    .iface-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      background: #111a29;
+      font-size: 12px;
+    }
+    .iface-card .name { font-weight: 700; margin-bottom: 4px; }
+    .logs {
+      max-height: 320px;
+      overflow-y: auto;
+      background: #0a0f17;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      font-size: 12px;
+      font-family: Consolas, monospace;
+      white-space: pre-wrap;
+    }
+    .tiny { font-size: 11px; color: var(--muted); }
+    .hidden { display: none; }
+    @media (max-width: 1200px) {
+      .kpi { grid-column: span 6; }
+      .half { grid-column: span 12; }
+      .third { grid-column: span 6; }
+      .card-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 900px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar { position: static; height: auto; }
+      .kpi { grid-column: span 12; }
+      .third { grid-column: span 12; }
+      .card-row { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
-  <header class="topbar">
-    <div>
-      <div class="title">IRQLENS</div>
-      <div class="sub">PRISM-style IRQ, SoftIRQ, and Network Operations Lens</div>
-    </div>
-    <div class="ctrl">
-      <input id="backend" value="" size="24" />
-      <select id="host"></select>
-      <button id="refresh">Refresh</button>
-    </div>
-    <div class="status" id="status">idle</div>
-  </header>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="h1">IRQLENS</div>
+        <div class="sub">Linux IRQ + Network Diagnostics</div>
+      </div>
+      <nav class="nav" id="nav"></nav>
+    </aside>
 
-  <section class="nav">
-    <button class="tab active" data-view="overview">Overview</button>
-    <button class="tab" data-view="irqtop">IRQTop Matrix</button>
-    <button class="tab" data-view="interfaces">Interfaces</button>
-    <button class="tab" data-view="commands">Network Commands</button>
-  </section>
-
-  <main>
-    <section id="view-overview" class="view two-col active">
-      <section class="card full">
-        <h3>Fleet Summary</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>Host</th><th>NIC</th><th>RX</th><th>TX</th><th>SoftIRQ/s</th><th>Drops (RX/TX)</th><th>Top IRQ</th><th>Queue</th><th>Dir</th><th>IRQ Rate/s</th>
-            </tr>
-          </thead>
-          <tbody id="summary-body"></tbody>
-        </table>
-      </section>
-
-      <section class="card full">
-        <h3>Selected Host KPI Strip</h3>
-        <div class="kpis">
-          <div class="kpi"><div class="l">RX Throughput</div><div class="v" id="kpi-rx-bps">-</div></div>
-          <div class="kpi"><div class="l">TX Throughput</div><div class="v" id="kpi-tx-bps">-</div></div>
-          <div class="kpi"><div class="l">RX Packets/s</div><div class="v" id="kpi-rx-pps">-</div></div>
-          <div class="kpi"><div class="l">TX Packets/s</div><div class="v" id="kpi-tx-pps">-</div></div>
-          <div class="kpi"><div class="l">SoftIRQ/s</div><div class="v" id="kpi-soft">-</div></div>
-          <div class="kpi"><div class="l">Drops (RX/TX)</div><div class="v" id="kpi-drops">-</div></div>
+    <main class="content">
+      <section class="top">
+        <div class="sys" id="sys-line">
+          <span class="status-badge">System: <span id="sys-host">N/A</span></span>
+          <span class="status-badge">OS: <span id="sys-os">N/A</span></span>
+          <span class="status-badge">Kernel: <span id="sys-kernel">N/A</span></span>
+          <span class="status-badge">Root: <span id="sys-root">N/A</span></span>
+          <span class="status-badge">Last updated: <span id="last-updated">never</span></span>
+          <span class="status-badge" id="stale-ind">Fresh</span>
+        </div>
+        <div class="controls">
+          <input id="backend" size="28" />
+          <select id="host"></select>
+          <select id="interval"></select>
+          <button id="refresh">Refresh</button>
+          <span id="ws-status" class="status-badge status-warn">Connecting...</span>
         </div>
       </section>
 
-      <section class="card full">
-        <h3>Host Trends (RX/TX/SoftIRQ)</h3>
-        <canvas id="trend" width="1200" height="260"></canvas>
-      </section>
+      <section id="view-overview" class="view active">
+        <div class="grid">
+          <div class="card kpi"><div class="l">IRQ/sec</div><div class="v" id="kpi-irqps">0</div></div>
+          <div class="card kpi"><div class="l">SoftIRQ/sec</div><div class="v" id="kpi-softps">0</div></div>
+          <div class="card kpi"><div class="l">CPU IRQ %</div><div class="v" id="kpi-cpuirq">0</div></div>
+          <div class="card kpi"><div class="l">Active Interfaces</div><div class="v" id="kpi-ifaces">0</div></div>
+          <div class="card kpi"><div class="l">RX</div><div class="v" id="kpi-rx">0</div></div>
+          <div class="card kpi"><div class="l">TX</div><div class="v" id="kpi-tx">0</div></div>
+          <div class="card kpi"><div class="l">Active IRQs</div><div class="v" id="kpi-activeirqs">0</div></div>
+          <div class="card kpi"><div class="l">Collection Status</div><div class="v" id="kpi-cstatus">N/A</div></div>
 
-      <section class="card full">
-        <div class="card-head">
-          <h3>IRQ Detail</h3>
-          <div class="filters">
-            <select id="irq-nic-filter"></select>
-            <select id="irq-dir-filter">
-              <option value="all">All directions</option>
-              <option value="RX">RX</option>
-              <option value="TX">TX</option>
-              <option value="TxRx">TxRx</option>
-              <option value="Other">Other</option>
-            </select>
-            <input id="irq-search" placeholder="Search IRQ/source" size="20" />
+          <div class="card wide">
+            <h3>Fleet Summary</h3>
+            <table>
+              <thead><tr><th>Host</th><th>RX</th><th>TX</th><th>SoftIRQ/s</th><th>Top IRQ</th><th>Rate/s</th></tr></thead>
+              <tbody id="fleet-body"></tbody>
+            </table>
           </div>
         </div>
-        <table>
-          <thead>
-            <tr><th>IRQ</th><th>NIC</th><th>Queue</th><th>Dir</th><th>Rate/s</th><th>Top CPU</th><th>Active CPUs</th><th>Affinity</th><th>Match</th><th>Source</th></tr>
-          </thead>
-          <tbody id="irq-body"></tbody>
-        </table>
       </section>
 
-      <section class="card full">
-        <h3>Queue Activity Summary</h3>
-        <table>
-          <thead>
-            <tr><th>NIC</th><th>Queue</th><th>RX/s</th><th>TX/s</th><th>TxRx/s</th><th>Total/s</th><th>Busiest CPU</th></tr>
-          </thead>
-          <tbody id="queue-body"></tbody>
-        </table>
-      </section>
-
-      <section class="card">
-        <h3>Per-CPU IRQ Rate</h3>
-        <div id="heat" class="heat"></div>
-      </section>
-
-      <section class="card full">
-        <h3>Top SoftIRQ Classes</h3>
-        <table>
-          <thead>
-            <tr><th>Class</th><th>Rate/s</th></tr>
-          </thead>
-          <tbody id="softirq-body"></tbody>
-        </table>
-      </section>
-    </section>
-
-    <section id="view-irqtop" class="view one-col">
-      <section class="card full">
-        <div class="card-head">
-          <h3>IRQTop CPU Matrix</h3>
-          <div class="filters">
-            <select id="matrix-sort">
-              <option value="cpu">Sort by CPU</option>
-              <option value="irq">Sort by IRQ total</option>
-              <option value="util">Sort by CPU util</option>
-            </select>
+      <section id="view-irq" class="view">
+        <div class="grid">
+          <div class="card wide">
+            <h3>IRQ Monitor</h3>
+            <div class="controls">
+              <input id="irq-search" placeholder="Search IRQ/source" size="24" />
+              <select id="irq-sort">
+                <option value="rate">Sort by IRQ/sec</option>
+                <option value="name">Sort by name</option>
+                <option value="irq">Sort by IRQ ID</option>
+              </select>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>IRQ</th><th>IRQ Name / Source</th><th>Total Count</th><th>IRQ/sec</th><th>CPU Distribution</th><th>Top CPU</th><th>Top CPU IRQ/sec</th><th>Device</th><th>Interrupt Type</th><th>Affinity</th><th>NUMA Node</th>
+                </tr>
+              </thead>
+              <tbody id="irq-body"></tbody>
+            </table>
+          </div>
+          <div class="card half">
+            <h3>Top IRQ Sources</h3>
+            <table><thead><tr><th>Source</th><th>Rate/s</th></tr></thead><tbody id="irq-top-body"></tbody></table>
+          </div>
+          <div class="card half">
+            <h3>Network IRQ Correlation</h3>
+            <table>
+              <thead><tr><th>Interface</th><th>RX IRQs</th><th>TX IRQs</th><th>RX IRQ/s</th><th>TX IRQ/s</th><th>RX pps</th><th>TX pps</th><th>Status</th></tr></thead>
+              <tbody id="corr-body"></tbody>
+            </table>
           </div>
         </div>
-        <div class="matrix-wrap">
-          <table class="matrix">
-            <thead>
-              <tr><th>CPU</th><th>cpuUtil</th><th>%irq</th><th>%sirq</th><th>irqTotal (/s)</th><th>softirqTotal (/s)</th></tr>
-            </thead>
-            <tbody id="irqtop-body"></tbody>
-          </table>
+      </section>
+
+      <section id="view-softirq" class="view">
+        <div class="grid">
+          <div class="card wide">
+            <h3>SoftIRQ Classes</h3>
+            <table><thead><tr><th>Class</th><th>Rate/s</th></tr></thead><tbody id="softirq-body"></tbody></table>
+          </div>
         </div>
       </section>
-    </section>
 
-    <section id="view-interfaces" class="view one-col">
-      <section class="card full">
-        <h3>Auto-Detected Interfaces</h3>
-        <table>
-          <thead>
-            <tr><th>Interface</th><th>RX MB/s</th><th>TX MB/s</th><th>RX pps</th><th>TX pps</th><th>RX drop/s</th><th>TX drop/s</th></tr>
-          </thead>
-          <tbody id="iface-body"></tbody>
-        </table>
+      <section id="view-cpu" class="view">
+        <div class="grid">
+          <div class="card wide">
+            <h3>CPU IRQ Distribution</h3>
+            <table>
+              <thead><tr><th>CPU</th><th>IRQ/sec</th><th>SoftIRQ/sec</th><th>% CPU IRQ load</th></tr></thead>
+              <tbody id="cpu-body"></tbody>
+            </table>
+          </div>
+        </div>
       </section>
-    </section>
 
-    <section id="view-commands" class="view one-col">
-      <section class="card full">
-        <h3>Network Command Outputs (Startup Capture)</h3>
-        <div class="cmd-grid" id="cmd-grid"></div>
+      <section id="view-network" class="view">
+        <div class="grid">
+          <div class="card kpi"><div class="l">Interfaces</div><div class="v" id="net-ifaces">0</div></div>
+          <div class="card kpi"><div class="l">UP</div><div class="v" id="net-up">0</div></div>
+          <div class="card kpi"><div class="l">DOWN</div><div class="v" id="net-down">0</div></div>
+          <div class="card kpi"><div class="l">RX pps</div><div class="v" id="net-rxpps">0</div></div>
+          <div class="card kpi"><div class="l">TX pps</div><div class="v" id="net-txpps">0</div></div>
+          <div class="card kpi"><div class="l">RX bytes/s</div><div class="v" id="net-rxbps">0</div></div>
+          <div class="card kpi"><div class="l">TX bytes/s</div><div class="v" id="net-txbps">0</div></div>
+          <div class="card kpi"><div class="l">Errors/s</div><div class="v" id="net-err">0</div></div>
+
+          <div class="card wide">
+            <h3>Interface Statistics</h3>
+            <div class="controls"><select id="iface-filter"></select></div>
+            <table>
+              <thead><tr><th>Interface</th><th>RX bytes/s</th><th>TX bytes/s</th><th>RX pps</th><th>TX pps</th><th>RX errors/s</th><th>TX errors/s</th><th>RX drops/s</th><th>TX drops/s</th></tr></thead>
+              <tbody id="net-table"></tbody>
+            </table>
+          </div>
+        </div>
       </section>
-    </section>
-  </main>
+
+      <section id="view-interfaces" class="view">
+        <div class="grid">
+          <div class="card wide">
+            <h3>Interface Cards</h3>
+            <div class="card-row" id="iface-cards"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-diagnostics" class="view">
+        <div class="grid">
+          <div class="card half">
+            <h3>Collect Diagnostics</h3>
+            <div>
+              <label><input type="checkbox" class="diag-cat" value="irq" checked /> IRQ</label><br />
+              <label><input type="checkbox" class="diag-cat" value="softirq" checked /> SoftIRQ</label><br />
+              <label><input type="checkbox" class="diag-cat" value="network" checked /> Network</label><br />
+              <label><input type="checkbox" class="diag-cat" value="interfaces" checked /> Interfaces</label><br />
+              <label><input type="checkbox" class="diag-cat" value="routes" checked /> Routes</label><br />
+              <label><input type="checkbox" class="diag-cat" value="sockets" checked /> Sockets</label><br />
+              <label><input type="checkbox" class="diag-cat" value="ethtool" checked /> ethtool</label><br />
+              <label><input type="checkbox" class="diag-cat" value="system" checked /> System</label>
+            </div>
+            <div class="controls" style="margin-top:8px;">
+              <button id="diag-start">Start Collection</button>
+              <button id="diag-stop">Stop Collection</button>
+            </div>
+            <div class="tiny" id="diag-status">No active session</div>
+          </div>
+          <div class="card half">
+            <h3>Session Files</h3>
+            <div id="diag-files" class="tiny">No files yet</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-sessions" class="view">
+        <div class="grid">
+          <div class="card wide">
+            <h3>Sessions</h3>
+            <table>
+              <thead><tr><th>Session ID</th><th>Hostname</th><th>Start</th><th>End</th><th>Status</th><th>Files</th><th>Download</th></tr></thead>
+              <tbody id="sessions-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-logs" class="view">
+        <div class="grid">
+          <div class="card wide">
+            <h3>Live Logs</h3>
+            <div class="controls">
+              <select id="log-level"><option value="ALL">ALL</option><option value="INFO">INFO</option><option value="WARNING">WARNING</option><option value="ERROR">ERROR</option><option value="DEBUG">DEBUG</option></select>
+              <input id="log-search" placeholder="Search logs" />
+            </div>
+            <div class="logs" id="logs"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-settings" class="view">
+        <div class="grid">
+          <div class="card third"><h3>Collection Interval</h3><div id="set-interval">1 sec</div></div>
+          <div class="card third"><h3>Output Directory</h3><div id="set-output">N/A</div></div>
+          <div class="card third"><h3>Dependencies</h3><div id="set-deps">N/A</div></div>
+        </div>
+      </section>
+    </main>
+  </div>
 
   <script>
-    const hostSel = document.getElementById("host");
-    const backend = document.getElementById("backend");
-    const status = document.getElementById("status");
-    const summaryBody = document.getElementById("summary-body");
-    const irqBody = document.getElementById("irq-body");
-    const queueBody = document.getElementById("queue-body");
-    const softBody = document.getElementById("softirq-body");
-    const heat = document.getElementById("heat");
-    const irqTopBody = document.getElementById("irqtop-body");
-    const ifaceBody = document.getElementById("iface-body");
-    const cmdGrid = document.getElementById("cmd-grid");
-    const irqNicFilter = document.getElementById("irq-nic-filter");
-    const irqDirFilter = document.getElementById("irq-dir-filter");
-    const irqSearch = document.getElementById("irq-search");
-    const matrixSort = document.getElementById("matrix-sort");
-    const trendCanvas = document.getElementById("trend");
-    const trendCtx = trendCanvas.getContext("2d");
-    let ws = null;
-    let currentIrqRows = [];
-    let currentHostDetails = {};
+    const views = ["overview", "irq", "softirq", "cpu", "network", "interfaces", "diagnostics", "sessions", "logs", "settings"];
+    const state = {
+      host: "",
+      snapshot: null,
+      network: null,
+      interfaces: [],
+      sessions: [],
+      summary: [],
+      ws: null,
+      logs: [],
+      lastTs: 0,
+      activeSession: "",
+      staleMs: 5000,
+    };
 
-    if (!backend.value) {
-      backend.value = window.location.origin || "http://localhost:8080";
-    }
+    const el = {
+      nav: document.getElementById("nav"),
+      backend: document.getElementById("backend"),
+      host: document.getElementById("host"),
+      interval: document.getElementById("interval"),
+      refresh: document.getElementById("refresh"),
+      wsStatus: document.getElementById("ws-status"),
+      lastUpdated: document.getElementById("last-updated"),
+      staleInd: document.getElementById("stale-ind"),
+      logs: document.getElementById("logs"),
+    };
 
-    function api(path) { return backend.value.replace(/\/$/, "") + path; }
-
-    function switchView(name) {
-      document.querySelectorAll(".tab").forEach(t => {
-        t.classList.toggle("active", t.getAttribute("data-view") === name);
-      });
-      document.querySelectorAll(".view").forEach(v => {
-        v.classList.toggle("active", v.id === "view-" + name);
-      });
-    }
-
-    function heatColor(rate) {
-      if (rate >= 20000) return "#d1393a";
-      if (rate >= 7000) return "#c8790a";
-      if (rate >= 2000) return "#2f9f67";
-      return "#d7dee7";
-    }
-
-    function fmtBytesPerSec(v) {
+    function nowS() { return Date.now() / 1000; }
+    function fmtNum(n) { return Number(n || 0).toFixed(1); }
+    function fmtTs(ts) { return ts ? new Date(ts * 1000).toLocaleString() : "N/A"; }
+    function bytes(v) {
       const n = Number(v || 0);
       if (n >= 1e9) return (n / 1e9).toFixed(2) + " GB/s";
       if (n >= 1e6) return (n / 1e6).toFixed(2) + " MB/s";
       if (n >= 1e3) return (n / 1e3).toFixed(2) + " KB/s";
       return n.toFixed(0) + " B/s";
     }
-
-    function topCpuInfo(cpuRates) {
-      let topCpu = "-";
-      let topRate = -1;
-      let activeCount = 0;
-      for (const [cpu, rate] of Object.entries(cpuRates || {})) {
-        const n = Number(rate || 0);
-        if (n > 0) activeCount += 1;
-        if (n > topRate) {
-          topRate = n;
-          topCpu = cpu;
-        }
-      }
-      return { topCpu, topRate: Math.max(0, topRate), activeCount };
+    function api(path) { return el.backend.value.replace(/\/$/, "") + path; }
+    function log(level, component, message) {
+      const row = { ts: Date.now(), level, component, message };
+      state.logs.push(row);
+      if (state.logs.length > 500) state.logs.shift();
+      renderLogs();
     }
 
-    function parseAffinityList(affinityList) {
-      const out = new Set();
-      const text = (affinityList || "").trim();
-      if (!text) return out;
-      for (const part of text.split(",")) {
-        const item = part.trim();
-        if (!item) continue;
-        if (item.includes("-")) {
-          const [startRaw, endRaw] = item.split("-", 2);
-          const start = Number(startRaw);
-          const end = Number(endRaw);
-          if (!Number.isNaN(start) && !Number.isNaN(end) && end >= start) {
-            for (let i = start; i <= end; i++) out.add(String(i));
-          }
-        } else {
-          out.add(item);
-        }
-      }
-      return out;
-    }
-
-    function affinityMatch(topCpu, affinityList) {
-      if (!affinityList) return { cls: "match-na", label: "N/A" };
-      const cpus = parseAffinityList(affinityList);
-      if (!cpus.size || topCpu === "-") return { cls: "match-na", label: "N/A" };
-      return cpus.has(String(topCpu))
-        ? { cls: "match-ok", label: "OK" }
-        : { cls: "match-bad", label: "Miss" };
-    }
-
-    function directionBadge(direction) {
-      const value = direction || "Other";
-      const cls = value === "RX" ? "badge-rx" : value === "TX" ? "badge-tx" : value === "TxRx" ? "badge-txrx" : "badge-other";
-      return '<span class="badge ' + cls + '">' + value + '</span>';
-    }
-
-    function populateIrqFilters(rows) {
-      const prev = irqNicFilter.value || "all";
-      const nics = Array.from(new Set(rows.map(r => r.nic || "-").filter(Boolean))).sort();
-      irqNicFilter.innerHTML = '<option value="all">All NICs</option>';
-      for (const nic of nics) {
-        const option = document.createElement("option");
-        option.value = nic;
-        option.textContent = nic;
-        irqNicFilter.appendChild(option);
-      }
-      irqNicFilter.value = nics.includes(prev) || prev === "all" ? prev : "all";
-    }
-
-    function renderIrqTables() {
-      const nicFilter = irqNicFilter.value || "all";
-      const dirFilter = irqDirFilter.value || "all";
-      const search = (irqSearch.value || "").trim().toLowerCase();
-      const rows = currentIrqRows.filter(row => {
-        if (nicFilter !== "all" && (row.nic || "-") !== nicFilter) return false;
-        if (dirFilter !== "all" && (row.direction || "Other") !== dirFilter) return false;
-        if (search) {
-          const hay = [row.irq, row.irq_name, row.nic, row.queue, row.direction].join(" ").toLowerCase();
-          if (!hay.includes(search)) return false;
-        }
-        return true;
-      });
-
-      irqBody.innerHTML = "";
-      for (const row of rows.slice(0, 60)) {
-        const cpu = topCpuInfo(row.cpu_rates || {});
-        const match = affinityMatch(cpu.topCpu, row.affinity_list || "");
-        const tr = document.createElement("tr");
-        tr.innerHTML =
-          '<td class="mono">' + row.irq + '</td>' +
-          '<td class="mono">' + (row.nic || '-') + '</td>' +
-          '<td class="mono">' + (row.queue || '-') + '</td>' +
-          '<td>' + directionBadge(row.direction || 'Other') + '</td>' +
-          '<td>' + Number(row.total_rate || 0).toFixed(1) + '</td>' +
-          '<td class="mono">CPU ' + cpu.topCpu + ' (' + cpu.topRate.toFixed(0) + '/s)</td>' +
-          '<td>' + cpu.activeCount + '</td>' +
-          '<td class="mono">' + (row.affinity_list || '-') + '</td>' +
-          '<td class="' + match.cls + '">' + match.label + '</td>' +
-          '<td>' + row.irq_name + '</td>';
-        irqBody.appendChild(tr);
-      }
-
-      const queueAgg = {};
-      for (const row of rows) {
-        const key = (row.nic || '-') + '|' + (row.queue || '-');
-        if (!queueAgg[key]) {
-          queueAgg[key] = { nic: row.nic || '-', queue: row.queue || '-', RX: 0, TX: 0, TxRx: 0, total: 0, topCpu: '-', topRate: 0 };
-        }
-        const bucket = queueAgg[key];
-        const dir = row.direction || 'Other';
-        if (dir === 'RX' || dir === 'TX' || dir === 'TxRx') bucket[dir] += Number(row.total_rate || 0);
-        bucket.total += Number(row.total_rate || 0);
-        const cpu = topCpuInfo(row.cpu_rates || {});
-        if (cpu.topRate > bucket.topRate) {
-          bucket.topRate = cpu.topRate;
-          bucket.topCpu = cpu.topCpu;
-        }
-      }
-
-      queueBody.innerHTML = "";
-      for (const bucket of Object.values(queueAgg).sort((a, b) => b.total - a.total).slice(0, 40)) {
-        const tr = document.createElement("tr");
-        tr.innerHTML =
-          '<td class="mono">' + bucket.nic + '</td>' +
-          '<td class="mono">' + bucket.queue + '</td>' +
-          '<td>' + bucket.RX.toFixed(1) + '</td>' +
-          '<td>' + bucket.TX.toFixed(1) + '</td>' +
-          '<td>' + bucket.TxRx.toFixed(1) + '</td>' +
-          '<td>' + bucket.total.toFixed(1) + '</td>' +
-          '<td class="mono">CPU ' + bucket.topCpu + '</td>';
-        queueBody.appendChild(tr);
+    function buildNav() {
+      el.nav.innerHTML = "";
+      for (const view of views) {
+        const b = document.createElement("button");
+        b.textContent = view === "irq" ? "IRQ Monitor" : (view.charAt(0).toUpperCase() + view.slice(1));
+        b.className = view === "overview" ? "active" : "";
+        b.onclick = () => showView(view);
+        b.dataset.view = view;
+        el.nav.appendChild(b);
       }
     }
 
-    function levelClass(v) {
-      const n = Number(v || 0);
-      if (n >= 40) return "hot";
-      if (n >= 20) return "warn";
-      if (n >= 8) return "good";
-      return "";
+    function showView(name) {
+      for (const v of views) {
+        const pane = document.getElementById("view-" + v);
+        pane.classList.toggle("active", v === name);
+      }
+      [...el.nav.querySelectorAll("button")].forEach(btn => btn.classList.toggle("active", btn.dataset.view === name));
     }
 
-    function renderIrqTopMatrix() {
-      const d = currentHostDetails || {};
-      const util = d.cpu_util_pct || {};
-      const irqp = d.irq_pct || {};
-      const sirqp = d.sirq_pct || {};
-      const irqt = d.irq_total_cpu || {};
-      const sirqt = d.softirq_total_cpu || {};
-      const cpus = Array.from(new Set([...Object.keys(util), ...Object.keys(irqt), ...Object.keys(sirqt)]));
-      const rows = cpus.map(cpu => ({
-        cpu: Number(cpu),
-        cpuUtil: Number(util[cpu] || 0),
-        irqPct: Number(irqp[cpu] || 0),
-        sirqPct: Number(sirqp[cpu] || 0),
-        irqTotal: Number(irqt[cpu] || 0),
-        sirqTotal: Number(sirqt[cpu] || 0),
-      }));
-
-      const mode = matrixSort.value || "cpu";
-      if (mode === "irq") rows.sort((a, b) => b.irqTotal - a.irqTotal);
-      else if (mode === "util") rows.sort((a, b) => b.cpuUtil - a.cpuUtil);
-      else rows.sort((a, b) => a.cpu - b.cpu);
-
-      irqTopBody.innerHTML = "";
-      for (const r of rows) {
-        const tr = document.createElement("tr");
-        tr.innerHTML =
-          '<td class="mono">CPU ' + r.cpu + '</td>' +
-          '<td class="' + levelClass(r.cpuUtil) + '">' + r.cpuUtil.toFixed(1) + '%</td>' +
-          '<td class="' + levelClass(r.irqPct) + '">' + r.irqPct.toFixed(2) + '%</td>' +
-          '<td class="' + levelClass(r.sirqPct) + '">' + r.sirqPct.toFixed(2) + '%</td>' +
-          '<td class="mono">' + r.irqTotal.toFixed(1) + '</td>' +
-          '<td class="mono">' + r.sirqTotal.toFixed(1) + '</td>';
-        irqTopBody.appendChild(tr);
-      }
-      if (!rows.length) {
-        const tr = document.createElement("tr");
-        tr.innerHTML = '<td colspan="6">Waiting for collector details...</td>';
-        irqTopBody.appendChild(tr);
-      }
+    async function fetchJson(path) {
+      const res = await fetch(api(path));
+      if (!res.ok) throw new Error(path + " -> " + res.status);
+      return await res.json();
     }
 
-    function renderInterfaceTable() {
-      const d = currentHostDetails || {};
-      const rates = d.per_interface_rates || {};
-      const ifs = Array.from(new Set([...(d.interfaces || []), ...Object.keys(rates)])).sort();
-      ifaceBody.innerHTML = "";
-      for (const iface of ifs) {
-        const row = rates[iface] || {};
-        const tr = document.createElement("tr");
-        tr.innerHTML =
-          '<td class="mono">' + iface + '</td>' +
-          '<td>' + (Number(row.rx_bps || 0) / 1e6).toFixed(2) + '</td>' +
-          '<td>' + (Number(row.tx_bps || 0) / 1e6).toFixed(2) + '</td>' +
-          '<td>' + Number(row.rx_pps || 0).toFixed(1) + '</td>' +
-          '<td>' + Number(row.tx_pps || 0).toFixed(1) + '</td>' +
-          '<td>' + Number(row.rx_drop_ps || 0).toFixed(1) + '</td>' +
-          '<td>' + Number(row.tx_drop_ps || 0).toFixed(1) + '</td>';
-        ifaceBody.appendChild(tr);
-      }
-      if (!ifs.length) {
-        const tr = document.createElement("tr");
-        tr.innerHTML = '<td colspan="7">No interfaces discovered yet</td>';
-        ifaceBody.appendChild(tr);
-      }
-    }
-
-    function renderCommandPanels() {
-      const start = (currentHostDetails.startup || {});
-      const previews = start.command_preview || {};
-      cmdGrid.innerHTML = "";
-      const keys = Object.keys(previews).sort();
-      for (const key of keys) {
-        const card = document.createElement("div");
-        card.className = "card";
-        const h = document.createElement("h3");
-        h.textContent = key;
-        const p = document.createElement("pre");
-        p.textContent = previews[key] || "";
-        card.appendChild(h);
-        card.appendChild(p);
-        cmdGrid.appendChild(card);
-      }
-      if (!keys.length) {
-        const card = document.createElement("div");
-        card.className = "card";
-        card.innerHTML = "<h3>Waiting for startup capture...</h3>";
-        cmdGrid.appendChild(card);
-      }
-    }
-
-    function drawTrend(hostSamples) {
-      const W = trendCanvas.width;
-      const H = trendCanvas.height;
-      trendCtx.clearRect(0, 0, W, H);
-      trendCtx.fillStyle = "#ffffff";
-      trendCtx.fillRect(0, 0, W, H);
-
-      if (!hostSamples.length) {
-        trendCtx.fillStyle = "#60758d";
-        trendCtx.fillText("No host samples yet", 20, 30);
-        return;
-      }
-
-      const rx = hostSamples.map(x => Number(x.rx_bps || 0));
-      const tx = hostSamples.map(x => Number(x.tx_bps || 0));
-      const soft = hostSamples.map(x => {
-        const s = x.softirq_rates || {};
-        return Object.values(s).reduce((a, b) => a + Number(b || 0), 0);
-      });
-      const maxV = Math.max(1, ...rx, ...tx, ...soft);
-
-      function plot(vals, color) {
-        trendCtx.strokeStyle = color;
-        trendCtx.lineWidth = 2;
-        trendCtx.beginPath();
-        for (let i = 0; i < vals.length; i++) {
-          const x = 36 + (i * (W - 50)) / Math.max(1, vals.length - 1);
-          const y = H - 24 - ((vals[i] / maxV) * (H - 50));
-          if (i === 0) trendCtx.moveTo(x, y); else trendCtx.lineTo(x, y);
-        }
-        trendCtx.stroke();
-      }
-
-      trendCtx.strokeStyle = "#dce6f1";
-      trendCtx.strokeRect(30, 16, W - 40, H - 36);
-      plot(rx, "#1d6fe5");
-      plot(tx, "#f5a623");
-      plot(soft, "#1f9d63");
-
-      trendCtx.fillStyle = "#334a63";
-      trendCtx.fillText("RX", 44, 18);
-      trendCtx.fillText("TX", 84, 18);
-      trendCtx.fillText("SoftIRQ", 124, 18);
-      trendCtx.fillStyle = "#1d6fe5";
-      trendCtx.fillRect(34, 10, 8, 4);
-      trendCtx.fillStyle = "#f5a623";
-      trendCtx.fillRect(74, 10, 8, 4);
-      trendCtx.fillStyle = "#1f9d63";
-      trendCtx.fillRect(114, 10, 8, 4);
+    async function loadHealth() {
+      const h = await fetchJson("/api/health");
+      document.getElementById("sys-host").textContent = h.hostname || "N/A";
+      document.getElementById("sys-os").textContent = h.os_distribution || "N/A";
+      document.getElementById("sys-kernel").textContent = h.kernel || "N/A";
+      document.getElementById("sys-root").textContent = h.running_as_root ? "YES" : "NO";
+      document.getElementById("set-interval").textContent = (h.interval_seconds || 1) + " sec";
+      document.getElementById("set-output").textContent = "Configured on backend";
+      const deps = (h.dependencies || []).map(d => d.name + ": " + (d.available ? "Available" : "Missing")).join("; ");
+      document.getElementById("set-deps").textContent = deps || "N/A";
+      document.getElementById("kpi-cstatus").textContent = h.collector_status || "N/A";
+      state.staleMs = Math.max(3000, Number(h.interval_seconds || 1) * 3000);
     }
 
     async function loadHosts() {
-      const r = await fetch(api("/api/hosts"));
-      const d = await r.json();
-      const prev = hostSel.value;
-      hostSel.innerHTML = "";
-      const hosts = d.hosts || [];
+      const data = await fetchJson("/api/hosts");
+      const hosts = data.hosts || [];
+      const prev = state.host;
+      el.host.innerHTML = "";
       if (!hosts.length) {
         const o = document.createElement("option");
         o.value = "";
-        o.textContent = "Waiting for collector data...";
-        hostSel.appendChild(o);
-        hostSel.disabled = true;
-        currentIrqRows = [];
-        queueBody.innerHTML = "";
+        o.textContent = "Waiting for telemetry";
+        el.host.appendChild(o);
+        state.host = "";
         return;
       }
-      hostSel.disabled = false;
-      hosts.forEach(h => {
+      for (const h of hosts) {
         const o = document.createElement("option");
         o.value = h;
         o.textContent = h;
-        hostSel.appendChild(o);
-      });
-      if (prev && Array.from(hostSel.options).some(x => x.value === prev)) hostSel.value = prev;
+        el.host.appendChild(o);
+      }
+      state.host = hosts.includes(prev) ? prev : hosts[0];
+      el.host.value = state.host;
     }
 
-    async function refreshSummary() {
-      const r = await fetch(api("/api/summary/current"));
-      const d = await r.json();
-      summaryBody.innerHTML = "";
-      for (const row of (d.rows || [])) {
-        const tr = document.createElement("tr");
-        tr.innerHTML =
-          "<td class=\"mono\">" + row.sut_ip + "</td>" +
-          "<td class=\"mono\">" + (row.nic || "-") + "</td>" +
-          "<td>" + fmtBytesPerSec(row.rx_bps) + "</td>" +
-          "<td>" + fmtBytesPerSec(row.tx_bps) + "</td>" +
-          "<td>" + Number(row.softirq_total || 0).toFixed(0) + "</td>" +
-          "<td>" + Number(row.rx_drop_ps || 0).toFixed(1) + " / " + Number(row.tx_drop_ps || 0).toFixed(1) + "</td>" +
-          "<td>" + (row.top_irq || "-") + "</td>" +
-          "<td class=\"mono\">" + ((row.top_irq_queue || "-") ? (row.top_irq_queue || "-") : "-") + "</td>" +
-          "<td>" + directionBadge(row.top_irq_direction || "Other") + "</td>" +
-          "<td>" + Number(row.top_irq_rate || 0).toFixed(1) + "</td>";
-        summaryBody.appendChild(tr);
-      }
+    async function loadMainData() {
+      if (!state.host) return;
+      const [irq, softirq, network, interfaces, summary] = await Promise.all([
+        fetchJson("/api/irq/current?host=" + encodeURIComponent(state.host) + "&limit=400"),
+        fetchJson("/api/softirq/current?host=" + encodeURIComponent(state.host)),
+        fetchJson("/api/network/current?host=" + encodeURIComponent(state.host)),
+        fetchJson("/api/interfaces?host=" + encodeURIComponent(state.host)),
+        fetchJson("/api/summary/current"),
+      ]);
+      state.snapshot = { irq, softirq };
+      state.network = network;
+      state.interfaces = interfaces.interfaces || [];
+      state.summary = summary.rows || [];
+      state.lastTs = nowS();
+      renderAll();
     }
 
-    async function refreshHost() {
-      const h = hostSel.value;
-      if (!h) {
-        currentIrqRows = [];
-        irqBody.innerHTML = "";
-        queueBody.innerHTML = "";
-        softBody.innerHTML = "";
-        heat.innerHTML = "";
-        document.getElementById("kpi-rx-bps").textContent = "-";
-        document.getElementById("kpi-tx-bps").textContent = "-";
-        document.getElementById("kpi-rx-pps").textContent = "-";
-        document.getElementById("kpi-tx-pps").textContent = "-";
-        document.getElementById("kpi-soft").textContent = "-";
-        document.getElementById("kpi-drops").textContent = "-";
-        drawTrend([]);
-        status.textContent = "waiting for collector data";
-        return;
-      }
+    function renderAll() {
+      renderOverview();
+      renderIrq();
+      renderSoftirq();
+      renderCpu();
+      renderNetwork();
+      renderInterfaces();
+      renderSessions();
+      updateFreshness();
+    }
 
-      const irqUrl = api("/api/irq/latest?sut_ip=" + encodeURIComponent(h) + "&limit=500");
-      const hostUrl = api("/api/host/latest?sut_ip=" + encodeURIComponent(h) + "&limit=80");
-      const [r1, r2] = await Promise.all([fetch(irqUrl), fetch(hostUrl)]);
-      const irqData = await r1.json();
-      const hostData = await r2.json();
-      const irqSamples = irqData.samples || [];
-      const hostSamples = hostData.samples || [];
+    function renderOverview() {
+      const irqRows = (state.snapshot?.irq?.rows || []);
+      const soft = state.snapshot?.softirq?.sample?.rates || {};
+      const net = state.network?.global || {};
+      const irqps = irqRows.reduce((a, x) => a + Number(x.total_rate || 0), 0);
+      const softps = Object.values(soft).reduce((a, x) => a + Number(x || 0), 0);
 
-      const byIrq = {};
-      const cpuAgg = {};
-      for (const s of irqSamples) {
-        const key = [s.irq, s.irq_name, s.nic || "", s.queue || "", s.direction || "Other"].join("|");
-        if (!byIrq[key] || Number(s.total_rate || 0) > Number(byIrq[key].total_rate || 0)) byIrq[key] = s;
-        for (const [cpu, rate] of Object.entries(s.cpu_rates || {})) {
-          cpuAgg[cpu] = (cpuAgg[cpu] || 0) + Number(rate || 0);
+      document.getElementById("kpi-irqps").textContent = fmtNum(irqps);
+      document.getElementById("kpi-softps").textContent = fmtNum(softps);
+      const cpuRates = {};
+      for (const row of irqRows) {
+        for (const [cpu, rate] of Object.entries(row.cpu_rates || {})) {
+          cpuRates[cpu] = (cpuRates[cpu] || 0) + Number(rate || 0);
         }
       }
+      const cpuIrq = Object.values(cpuRates).reduce((a, x) => a + x, 0);
+      document.getElementById("kpi-cpuirq").textContent = fmtNum(cpuIrq);
+      document.getElementById("kpi-ifaces").textContent = String(net.interfaces || 0);
+      document.getElementById("kpi-rx").textContent = bytes(net.rx_bps || 0);
+      document.getElementById("kpi-tx").textContent = bytes(net.tx_bps || 0);
+      document.getElementById("kpi-activeirqs").textContent = String(irqRows.length);
 
-      currentIrqRows = Object.values(byIrq).sort((a, b) => Number(b.total_rate || 0) - Number(a.total_rate || 0));
-      populateIrqFilters(currentIrqRows);
-      renderIrqTables();
-
-      heat.innerHTML = "";
-      const cpus = Object.keys(cpuAgg).map(x => Number(x)).sort((a, b) => a - b);
-      for (const c of cpus) {
-        const r = Number(cpuAgg[String(c)] || 0);
-        const div = document.createElement("div");
-        div.className = "cell";
-        div.style.background = heatColor(r);
-        div.innerHTML = "<div class=\"mono\">CPU " + c + "</div><div>" + r.toFixed(0) + "/s</div>";
-        heat.appendChild(div);
-      }
-
-      const hs = hostSamples.length ? hostSamples[hostSamples.length - 1] : null;
-      currentHostDetails = hs ? (hs.details || {}) : {};
-      const soft = hs ? (hs.softirq_rates || {}) : {};
-      const softEntries = Object.entries(soft).sort((a, b) => Number(b[1]) - Number(a[1]));
-      const softTotal = softEntries.reduce((acc, x) => acc + Number(x[1] || 0), 0);
-
-      document.getElementById("kpi-rx-bps").textContent = hs ? fmtBytesPerSec(hs.rx_bps) : "-";
-      document.getElementById("kpi-tx-bps").textContent = hs ? fmtBytesPerSec(hs.tx_bps) : "-";
-      document.getElementById("kpi-rx-pps").textContent = hs ? Number(hs.rx_pps || 0).toFixed(0) + " pps" : "-";
-      document.getElementById("kpi-tx-pps").textContent = hs ? Number(hs.tx_pps || 0).toFixed(0) + " pps" : "-";
-      document.getElementById("kpi-soft").textContent = hs ? softTotal.toFixed(0) + " /s" : "-";
-      document.getElementById("kpi-drops").textContent = hs
-        ? Number(hs.rx_drop_ps || 0).toFixed(1) + " / " + Number(hs.tx_drop_ps || 0).toFixed(1)
-        : "-";
-
-      softBody.innerHTML = "";
-      for (const [name, rate] of softEntries.slice(0, 12)) {
+      const body = document.getElementById("fleet-body");
+      body.innerHTML = "";
+      for (const row of state.summary) {
         const tr = document.createElement("tr");
-        tr.innerHTML = "<td class=\"mono\">" + name + "</td><td>" + Number(rate).toFixed(1) + "</td>";
-        softBody.appendChild(tr);
+        tr.innerHTML = "<td class='mono'>" + row.sut_ip + "</td><td>" + bytes(row.rx_bps) + "</td><td>" + bytes(row.tx_bps) + "</td><td>" + fmtNum(row.softirq_total) + "</td><td>" + (row.top_irq || "N/A") + "</td><td>" + fmtNum(row.top_irq_rate) + "</td>";
+        body.appendChild(tr);
       }
-
-      drawTrend(hostSamples);
-      renderIrqTopMatrix();
-      renderInterfaceTable();
-      renderCommandPanels();
+      if (!state.summary.length) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = "<td colspan='6'>No hosts yet</td>";
+        body.appendChild(tr);
+      }
     }
 
-    async function refreshAll() {
-      status.textContent = "loading";
-      await loadHosts();
-      await refreshSummary();
-      await refreshHost();
-      status.textContent = "updated " + new Date().toLocaleTimeString();
+    function renderIrq() {
+      const rows = [...(state.snapshot?.irq?.rows || [])];
+      const q = (document.getElementById("irq-search").value || "").toLowerCase();
+      const sortBy = document.getElementById("irq-sort").value;
+
+      const filtered = rows.filter(r => !q || [r.irq, r.irq_name, r.device, r.nic].join(" ").toLowerCase().includes(q));
+      if (sortBy === "name") filtered.sort((a, b) => String(a.irq_name).localeCompare(String(b.irq_name)));
+      else if (sortBy === "irq") filtered.sort((a, b) => String(a.irq).localeCompare(String(b.irq)));
+      else filtered.sort((a, b) => Number(b.total_rate || 0) - Number(a.total_rate || 0));
+
+      const body = document.getElementById("irq-body");
+      body.innerHTML = "";
+      for (const row of filtered.slice(0, 200)) {
+        const cpuEntries = Object.entries(row.cpu_rates || {}).sort((a, b) => Number(b[1]) - Number(a[1]));
+        const top = cpuEntries[0] || ["N/A", 0];
+        const cpuDist = cpuEntries.slice(0, 4).map(x => x[0] + ":" + fmtNum(x[1])).join(" ");
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          "<td class='mono'>" + row.irq + "</td>" +
+          "<td>" + (row.irq_name || "N/A") + "</td>" +
+          "<td>" + (row.total_count || 0) + "</td>" +
+          "<td>" + fmtNum(row.total_rate) + "</td>" +
+          "<td class='mono'>" + (cpuDist || "N/A") + "</td>" +
+          "<td class='mono'>" + top[0] + "</td>" +
+          "<td>" + fmtNum(top[1]) + "</td>" +
+          "<td>" + (row.device || "N/A") + "</td>" +
+          "<td>" + (row.interrupt_type || "N/A") + "</td>" +
+          "<td class='mono'>" + (row.affinity_list || "N/A") + "</td>" +
+          "<td>" + (row.numa_node || "N/A") + "</td>";
+        body.appendChild(tr);
+      }
+      if (!filtered.length) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = "<td colspan='11'>No IRQ rows</td>";
+        body.appendChild(tr);
+      }
+
+      const topBody = document.getElementById("irq-top-body");
+      topBody.innerHTML = "";
+      for (const row of filtered.slice(0, 10)) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = "<td>" + row.irq_name + "</td><td>" + fmtNum(row.total_rate) + "</td>";
+        topBody.appendChild(tr);
+      }
+
+      const corrBody = document.getElementById("corr-body");
+      corrBody.innerHTML = "";
+      const correlations = estimateCorrelation(filtered, state.network?.interfaces || []);
+      for (const item of correlations) {
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          "<td class='mono'>" + item.interface + "</td>" +
+          "<td>" + item.rx_irqs + "</td>" +
+          "<td>" + item.tx_irqs + "</td>" +
+          "<td>" + fmtNum(item.rx_irq_rate) + "</td>" +
+          "<td>" + fmtNum(item.tx_irq_rate) + "</td>" +
+          "<td>" + fmtNum(item.rx_pps) + "</td>" +
+          "<td>" + fmtNum(item.tx_pps) + "</td>" +
+          "<td>" + (item.correlation_available ? "<span class='green'>Available</span>" : "<span class='gray'>Unavailable</span>") + "</td>";
+        corrBody.appendChild(tr);
+      }
     }
 
-    function connectWS() {
-      if (ws) {
-        try { ws.close(); } catch (e) {}
+    function estimateCorrelation(irqRows, netRows) {
+      const map = {};
+      for (const n of netRows) {
+        map[n.interface] = {
+          interface: n.interface,
+          rx_irqs: 0,
+          tx_irqs: 0,
+          rx_irq_rate: 0,
+          tx_irq_rate: 0,
+          rx_pps: Number(n.rx_pps || 0),
+          tx_pps: Number(n.tx_pps || 0),
+          correlation_available: false,
+        };
       }
-      const base = backend.value.replace(/\/$/, "");
-      const wsUrl = base.replace(/^http/, "ws") + "/ws";
-      try {
-        ws = new WebSocket(wsUrl);
-      } catch (e) {
+      for (const r of irqRows) {
+        const name = (r.nic || "").trim();
+        if (!name || !map[name]) continue;
+        if (r.direction === "RX") {
+          map[name].rx_irqs += 1;
+          map[name].rx_irq_rate += Number(r.total_rate || 0);
+        } else if (r.direction === "TX") {
+          map[name].tx_irqs += 1;
+          map[name].tx_irq_rate += Number(r.total_rate || 0);
+        } else {
+          map[name].rx_irq_rate += Number(r.total_rate || 0) / 2;
+          map[name].tx_irq_rate += Number(r.total_rate || 0) / 2;
+        }
+        map[name].correlation_available = true;
+      }
+      return Object.values(map).sort((a, b) => (b.rx_irq_rate + b.tx_irq_rate) - (a.rx_irq_rate + a.tx_irq_rate));
+    }
+
+    function renderSoftirq() {
+      const rates = state.snapshot?.softirq?.sample?.rates || {};
+      const rows = Object.entries(rates).sort((a, b) => Number(b[1]) - Number(a[1]));
+      const body = document.getElementById("softirq-body");
+      body.innerHTML = "";
+      for (const [name, rate] of rows) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = "<td class='mono'>" + name + "</td><td>" + fmtNum(rate) + "</td>";
+        body.appendChild(tr);
+      }
+    }
+
+    function renderCpu() {
+      const rows = state.snapshot?.irq?.rows || [];
+      const softCpu = state.snapshot?.softirq?.sample?.per_cpu_rates || {};
+      const cpu = {};
+      for (const row of rows) {
+        for (const [k, v] of Object.entries(row.cpu_rates || {})) cpu[k] = (cpu[k] || 0) + Number(v || 0);
+      }
+      const cpus = Array.from(new Set([...Object.keys(cpu), ...Object.keys(softCpu)])).sort((a, b) => Number(a) - Number(b));
+      const total = cpus.reduce((acc, k) => acc + Number(cpu[k] || 0), 0) || 1;
+
+      const body = document.getElementById("cpu-body");
+      body.innerHTML = "";
+      for (const id of cpus) {
+        const irq = Number(cpu[id] || 0);
+        const sirq = Number(softCpu[id] || 0);
+        const load = (irq / total) * 100;
+        const tr = document.createElement("tr");
+        tr.innerHTML = "<td class='mono'>CPU " + id + "</td><td>" + fmtNum(irq) + "</td><td>" + fmtNum(sirq) + "</td><td>" + fmtNum(load) + "%</td>";
+        body.appendChild(tr);
+      }
+    }
+
+    function renderNetwork() {
+      const net = state.network || { global: {}, interfaces: [] };
+      const g = net.global || {};
+      document.getElementById("net-ifaces").textContent = String(g.interfaces || 0);
+      document.getElementById("net-up").textContent = String(g.interfaces_up || 0);
+      document.getElementById("net-down").textContent = String(g.interfaces_down || 0);
+      document.getElementById("net-rxpps").textContent = fmtNum(g.rx_pps);
+      document.getElementById("net-txpps").textContent = fmtNum(g.tx_pps);
+      document.getElementById("net-rxbps").textContent = bytes(g.rx_bps);
+      document.getElementById("net-txbps").textContent = bytes(g.tx_bps);
+      document.getElementById("net-err").textContent = fmtNum((g.rx_err_ps || 0) + (g.tx_err_ps || 0));
+
+      const filter = document.getElementById("iface-filter");
+      const prev = filter.value || "ALL INTERFACES";
+      const names = (net.interfaces || []).map(x => x.interface).sort();
+      filter.innerHTML = "";
+      const all = document.createElement("option");
+      all.value = "ALL INTERFACES";
+      all.textContent = "ALL INTERFACES";
+      filter.appendChild(all);
+      for (const name of names) {
+        const o = document.createElement("option");
+        o.value = name;
+        o.textContent = name;
+        filter.appendChild(o);
+      }
+      filter.value = names.includes(prev) || prev === "ALL INTERFACES" ? prev : "ALL INTERFACES";
+
+      const body = document.getElementById("net-table");
+      body.innerHTML = "";
+      for (const row of (net.interfaces || [])) {
+        if (filter.value !== "ALL INTERFACES" && row.interface !== filter.value) continue;
+        const tr = document.createElement("tr");
+        tr.innerHTML = "<td class='mono'>" + row.interface + "</td><td>" + bytes(row.rx_bps) + "</td><td>" + bytes(row.tx_bps) + "</td><td>" + fmtNum(row.rx_pps) + "</td><td>" + fmtNum(row.tx_pps) + "</td><td>" + fmtNum(row.rx_err_ps) + "</td><td>" + fmtNum(row.tx_err_ps) + "</td><td>" + fmtNum(row.rx_drop_ps) + "</td><td>" + fmtNum(row.tx_drop_ps) + "</td>";
+        body.appendChild(tr);
+      }
+    }
+
+    function renderInterfaces() {
+      const root = document.getElementById("iface-cards");
+      root.innerHTML = "";
+      for (const iface of state.interfaces) {
+        const div = document.createElement("div");
+        div.className = "iface-card";
+        const stateClass = iface.state === "up" ? "green" : "gray";
+        div.innerHTML =
+          "<div class='name mono'>" + iface.name + "</div>" +
+          "<div>State: <span class='" + stateClass + "'>" + (iface.state || "N/A") + "</span></div>" +
+          "<div>MTU: " + (iface.mtu ?? "N/A") + "</div>" +
+          "<div>MAC: <span class='mono'>" + (iface.mac || "N/A") + "</span></div>" +
+          "<div>Speed: " + (iface.speed_mbps ?? "N/A") + " Mbps</div>" +
+          "<div>Duplex: " + (iface.duplex || "N/A") + "</div>" +
+          "<div>Driver: " + (iface.driver || "N/A") + "</div>" +
+          "<div>IPv4: " + ((iface.ipv4 || []).join(", ") || "N/A") + "</div>" +
+          "<div>IPv6: " + ((iface.ipv6 || []).join(", ") || "N/A") + "</div>";
+        root.appendChild(div);
+      }
+      if (!state.interfaces.length) {
+        root.textContent = "No interface metadata available.";
+      }
+    }
+
+    async function renderSessions() {
+      const data = await fetchJson("/api/sessions");
+      state.sessions = data.sessions || [];
+      const body = document.getElementById("sessions-body");
+      body.innerHTML = "";
+      for (const s of state.sessions) {
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          "<td class='mono'>" + s.session_id + "</td>" +
+          "<td>" + s.hostname + "</td>" +
+          "<td>" + fmtTs(s.start_time) + "</td>" +
+          "<td>" + fmtTs(s.end_time) + "</td>" +
+          "<td>" + s.status + "</td>" +
+          "<td><button onclick=\"window.irqlensShowFiles('" + s.session_id + "')\">Files</button></td>" +
+          "<td><a href='" + api("/api/sessions/" + encodeURIComponent(s.session_id) + "/download") + "'>Download</a></td>";
+        body.appendChild(tr);
+      }
+    }
+
+    async function showSessionFiles(sessionId) {
+      const data = await fetchJson("/api/sessions/" + encodeURIComponent(sessionId) + "/files");
+      const files = data.files || [];
+      const html = files.map(f => "<div><a href='" + api("/api/files?path=" + encodeURIComponent(f.path)) + "'>" + f.name + "</a> (" + f.format + ", " + f.size_bytes + " bytes)</div>").join("");
+      document.getElementById("diag-files").innerHTML = html || "No files";
+    }
+
+    function renderLogs() {
+      const level = document.getElementById("log-level").value;
+      const query = (document.getElementById("log-search").value || "").toLowerCase();
+      const rows = state.logs.filter(x => (level === "ALL" || x.level === level) && (!query || (x.component + " " + x.message).toLowerCase().includes(query)));
+      el.logs.textContent = rows.map(x => new Date(x.ts).toISOString() + " " + x.level + " " + x.component + " " + x.message).join("\n");
+      el.logs.scrollTop = el.logs.scrollHeight;
+    }
+
+    function updateFreshness() {
+      if (!state.lastTs) {
+        el.lastUpdated.textContent = "never";
         return;
       }
-      ws.onopen = function() { status.textContent = "live"; };
-      ws.onmessage = function() { refreshAll().catch(() => {}); };
-      ws.onclose = function() { status.textContent = "polling"; };
-    }
-
-    document.getElementById("refresh").onclick = function() { refreshAll().catch(err => status.textContent = "error: " + err); };
-    hostSel.onchange = function() { refreshHost().catch(err => status.textContent = "error: " + err); };
-    irqNicFilter.onchange = renderIrqTables;
-    irqDirFilter.onchange = renderIrqTables;
-    irqSearch.oninput = renderIrqTables;
-    matrixSort.onchange = renderIrqTopMatrix;
-    document.querySelectorAll(".tab").forEach(tab => {
-      tab.onclick = function() { switchView(tab.getAttribute("data-view")); };
-    });
-
-    async function boot() {
-      try {
-        await refreshAll();
-        connectWS();
-        setInterval(function() { refreshAll().catch(() => {}); }, 5000);
-      } catch (e) {
-        status.textContent = "error: " + e;
+      const ageMs = Date.now() - (state.lastTs * 1000);
+      el.lastUpdated.textContent = Math.round(ageMs / 1000) + " seconds ago";
+      if (ageMs > state.staleMs) {
+        el.staleInd.textContent = "STALE DATA";
+        el.staleInd.className = "status-badge status-err";
+      } else {
+        el.staleInd.textContent = "Fresh";
+        el.staleInd.className = "status-badge status-ok";
       }
     }
+
+    async function refresh() {
+      try {
+        await loadHealth();
+        await loadHosts();
+        await loadMainData();
+      } catch (err) {
+        log("ERROR", "ui", String(err));
+      }
+    }
+
+    function wsConnect() {
+      const wsUrl = el.backend.value.replace(/^http/, "ws").replace(/\/$/, "") + "/ws";
+      try {
+        state.ws = new WebSocket(wsUrl);
+      } catch (err) {
+        log("ERROR", "ws", "connect failed " + err);
+        return;
+      }
+      el.wsStatus.textContent = "Connecting...";
+      el.wsStatus.className = "status-badge status-warn";
+
+      state.ws.onopen = () => {
+        el.wsStatus.textContent = "Connected";
+        el.wsStatus.className = "status-badge status-ok";
+        log("INFO", "ws", "connected");
+      };
+      state.ws.onmessage = async (evt) => {
+        try {
+          const payload = JSON.parse(evt.data);
+          log("INFO", "ws", payload.type || "event");
+          await loadMainData();
+        } catch (err) {
+          log("ERROR", "ws", "message parse failed");
+        }
+      };
+      state.ws.onclose = () => {
+        el.wsStatus.textContent = "Reconnecting...";
+        el.wsStatus.className = "status-badge status-warn";
+        log("WARNING", "ws", "disconnected, retrying");
+        setTimeout(wsConnect, 1500);
+      };
+      state.ws.onerror = () => {
+        el.wsStatus.textContent = "Disconnected";
+        el.wsStatus.className = "status-badge status-err";
+      };
+    }
+
+    async function startDiagnostics() {
+      const categories = [...document.querySelectorAll(".diag-cat:checked")].map(x => x.value);
+      const data = await fetch(api("/api/sessions/start"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ categories }),
+      }).then(r => r.json());
+      state.activeSession = data.session?.session_id || "";
+      document.getElementById("diag-status").textContent = state.activeSession ? ("Running: " + state.activeSession) : "No active session";
+      const files = data.files || [];
+      document.getElementById("diag-files").innerHTML = files.map(f => "<div><a href='" + api("/api/files?path=" + encodeURIComponent(f.path)) + "'>" + f.name + "</a></div>").join("") || "No files";
+      await renderSessions();
+      log("INFO", "diag", "started session " + state.activeSession);
+    }
+
+    async function stopDiagnostics() {
+      if (!state.activeSession) return;
+      await fetch(api("/api/sessions/" + encodeURIComponent(state.activeSession) + "/stop"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "manual" }),
+      });
+      document.getElementById("diag-status").textContent = "Stopped: " + state.activeSession;
+      state.activeSession = "";
+      await renderSessions();
+      log("INFO", "diag", "session stopped");
+    }
+
+    async function boot() {
+      buildNav();
+      el.backend.value = window.location.origin || "http://localhost:8080";
+      el.interval.innerHTML = "";
+      for (const i of [0.1, 0.25, 0.5, 1, 2, 5, 10]) {
+        const o = document.createElement("option");
+        o.value = i;
+        o.textContent = i + " sec";
+        if (i === 1) o.selected = true;
+        el.interval.appendChild(o);
+      }
+
+      el.refresh.onclick = refresh;
+      el.host.onchange = async () => { state.host = el.host.value; await loadMainData(); };
+      document.getElementById("irq-search").oninput = renderIrq;
+      document.getElementById("irq-sort").onchange = renderIrq;
+      document.getElementById("iface-filter").onchange = renderNetwork;
+      document.getElementById("log-level").onchange = renderLogs;
+      document.getElementById("log-search").oninput = renderLogs;
+      document.getElementById("diag-start").onclick = startDiagnostics;
+      document.getElementById("diag-stop").onclick = stopDiagnostics;
+
+      window.irqlensShowFiles = showSessionFiles;
+
+      await refresh();
+      wsConnect();
+
+      setInterval(updateFreshness, 1000);
+      setInterval(async () => {
+        if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+          await refresh();
+        }
+      }, 5000);
+    }
+
     boot();
   </script>
 </body>

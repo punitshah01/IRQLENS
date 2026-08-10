@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import socket
 import os
+import platform
+import shutil
 import subprocess
 import sys
 import time
@@ -40,6 +42,21 @@ def _print_banner(url: str) -> None:
         "  └──────────────────────────────────────────────┘",
     ]
     print("\n".join(lines))
+
+
+def _dependency_status() -> list[tuple[str, str]]:
+    deps = ["ip", "ss", "ethtool", "sysctl", "lscpu", "numactl"]
+    out: list[tuple[str, str]] = []
+    for dep in deps:
+        exe = shutil.which(dep)
+        out.append((dep, exe if exe else "Missing"))
+    return out
+
+
+def _running_as_root() -> bool:
+    if hasattr(os, "geteuid"):
+        return os.geteuid() == 0
+    return False
 
 
 def _default_sut_id(host_ip: str) -> str:
@@ -86,6 +103,7 @@ def main() -> int:
 
     env = dict(os.environ)
     env.setdefault("IRQLENS_DB_PATH", str((backend / "data" / "irqlens.db").resolve()))
+    env.setdefault("IRQLENS_OUTPUT_DIR", "/root/irqlens")
     host_ip = _detect_host_ip()
     url = f"http://{host_ip}:8080"
     no_proxy_hosts = [host_ip, "127.0.0.1", "::1", "localhost"]
@@ -110,6 +128,11 @@ def main() -> int:
         "8080",
     ]
     print("Starting IRQLENS")
+    print(f"Platform: {platform.system()} {platform.release()}")
+    print(f"Running as root: {'YES' if _running_as_root() else 'NO'}")
+    print("Dependency status:")
+    for name, status in _dependency_status():
+        print(f"  - {name}: {status}")
     _print_banner(url)
 
     backend_proc = subprocess.Popen(backend_cmd, cwd=str(backend), env=env)
