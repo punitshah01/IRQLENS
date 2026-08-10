@@ -5,3 +5,4 @@ __pycache__/
 *.pyd
 *.log
 .DS_Store
+backend/data/*.db
