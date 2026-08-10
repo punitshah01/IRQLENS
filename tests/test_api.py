@@ -53,6 +53,18 @@ def test_visualization_endpoints():
                 "uptime_seconds": 10.0,
                 "interfaces": ["eth0"],
                 "ip_addresses": ["10.0.0.9"],
+                "cpu_topology": [
+                    {
+                        "cpu_id": 0,
+                        "socket_id": 0,
+                        "core_id": 0,
+                        "numa_node": 0,
+                        "online": True,
+                        "thread_siblings_list": "0-1",
+                        "core_siblings_list": "0-7",
+                        "cpu_model": "Intel",
+                    }
+                ],
             },
         )
         assert reg.status_code == 200
@@ -152,17 +164,36 @@ def test_visualization_endpoints():
                 ],
                 "irq_summary": {"total_irq_per_sec": 50.0},
                 "network_global": {"rx_bps": 100.0, "tx_bps": 50.0},
+                "cpu_topology": [
+                    {
+                        "cpu_id": 0,
+                        "socket_id": 0,
+                        "core_id": 0,
+                        "numa_node": 0,
+                        "online": True,
+                        "thread_siblings_list": "0-1",
+                        "core_siblings_list": "0-7",
+                        "cpu_model": "Intel",
+                    }
+                ],
             },
         )
         assert tel.status_code == 200
 
-        viz = client.get("/api/systems/viz-sut/visualization?window_seconds=300&top_n=10")
+        viz = client.get(f"/api/systems/viz-sut/visualization?from_ts={ts - 1}&to_ts={ts + 1}&top_n=10")
         assert viz.status_code == 200
         payload = viz.json()
         assert payload["sut_id"] == "viz-sut"
         assert "series" in payload
         assert "irq_heatmap" in payload
         assert "cpu_heatmap" in payload
+        assert payload["series"]["irq"]
+
+        topo = client.get("/api/systems/viz-sut/visualization/topology")
+        assert topo.status_code == 200
+        topo_payload = topo.json()
+        assert topo_payload["available"] is True
+        assert topo_payload["rows"]
 
         cmp = client.get("/api/visualization/compare?a=viz-sut&b=viz-sut")
         assert cmp.status_code == 200

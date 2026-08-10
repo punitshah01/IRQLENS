@@ -231,6 +231,17 @@ class SystemRecord(BaseModel):
     mode: Literal["local", "remote"] = "remote"
 
 
+class CPUTopologyEntry(BaseModel):
+    cpu_id: int
+    socket_id: Optional[int] = None
+    core_id: Optional[int] = None
+    numa_node: Optional[int] = None
+    online: Optional[bool] = None
+    thread_siblings_list: str = ""
+    core_siblings_list: str = ""
+    cpu_model: str = ""
+
+
 class SystemCreateRequest(BaseModel):
     id: str
     name: str
@@ -259,6 +270,7 @@ class AgentRegistrationRequest(BaseModel):
     uptime_seconds: float
     interfaces: List[str] = Field(default_factory=list)
     ip_addresses: List[str] = Field(default_factory=list)
+    cpu_topology: List[CPUTopologyEntry] = Field(default_factory=list)
 
 
 class AgentHeartbeatRequest(BaseModel):
@@ -279,3 +291,4 @@ class AgentTelemetryPayload(BaseModel):
     interfaces: List[InterfaceInfo]
     irq_summary: Dict[str, Any] = Field(default_factory=dict)
     network_global: Dict[str, float] = Field(default_factory=dict)
+    cpu_topology: List[CPUTopologyEntry] = Field(default_factory=list)

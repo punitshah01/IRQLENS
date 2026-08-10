@@ -80,6 +80,57 @@ def _to_irq_rows(sut_id: str, ts: float, irq_collector: IRQCollector, elapsed: f
     return rows[:256]
 
 
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore").strip()
+    except Exception:
+        return ""
+
+
+def _collect_cpu_topology(cpu_model: str) -> List[dict]:
+    root = Path("/sys/devices/system/cpu")
+    if not root.exists():
+        return []
+
+    rows: List[dict] = []
+    for cpu_dir in sorted(root.glob("cpu[0-9]*"), key=lambda p: int(p.name[3:])):
+        cpu_id = int(cpu_dir.name[3:])
+        topo = cpu_dir / "topology"
+
+        socket_raw = _read_text(topo / "physical_package_id")
+        core_raw = _read_text(topo / "core_id")
+        thread_siblings = _read_text(topo / "thread_siblings_list")
+        core_siblings = _read_text(topo / "core_siblings_list")
+
+        numa_node = None
+        for node in cpu_dir.glob("node*"):
+            if node.name.startswith("node"):
+                tail = node.name.replace("node", "")
+                if tail.isdigit():
+                    numa_node = int(tail)
+                break
+
+        online = None
+        online_raw = _read_text(cpu_dir / "online")
+        if online_raw in ("0", "1"):
+            online = online_raw == "1"
+
+        rows.append(
+            {
+                "cpu_id": cpu_id,
+                "socket_id": int(socket_raw) if socket_raw.isdigit() else None,
+                "core_id": int(core_raw) if core_raw.isdigit() else None,
+                "numa_node": numa_node,
+                "online": online,
+                "thread_siblings_list": thread_siblings,
+                "core_siblings_list": core_siblings,
+                "cpu_model": cpu_model,
+            }
+        )
+
+    return rows
+
+
 def run_agent(server: str, sut_id: str, name: str, token: str, telemetry_interval: float, heartbeat_interval: float) -> int:
     irq_collector = IRQCollector()
     soft_collector = SoftIRQCollector()
@@ -88,11 +139,15 @@ def run_agent(server: str, sut_id: str, name: str, token: str, telemetry_interva
 
     last_sample_monotonic = None
     last_heartbeat = 0.0
+    topology_cache: List[dict] = []
+    topology_updated_at = 0.0
 
     while True:
         try:
             ts = time.time()
             system = sys_collector.collect(ts)
+            topology_cache = _collect_cpu_topology(str(system.get("cpu_model", "")))
+            topology_updated_at = ts
             interfaces = net_collector.discover_interfaces()
             reg = {
                 "sut_id": sut_id,
@@ -114,6 +169,7 @@ def run_agent(server: str, sut_id: str, name: str, token: str, telemetry_interva
                 "uptime_seconds": float(system["uptime_seconds"]),
                 "interfaces": interfaces,
                 "ip_addresses": _ip_addrs(),
+                "cpu_topology": topology_cache,
             }
             _post_json(server.rstrip("/") + "/api/agent/register", reg, token)
             break
@@ -129,6 +185,11 @@ def run_agent(server: str, sut_id: str, name: str, token: str, telemetry_interva
         try:
             system = sys_collector.collect(ts)
             system["architecture"] = platform.machine() or "unknown"
+
+            # Refresh topology periodically to handle CPU online/offline changes.
+            if (ts - topology_updated_at) >= 60.0 or not topology_cache:
+                topology_cache = _collect_cpu_topology(str(system.get("cpu_model", "")))
+                topology_updated_at = ts
 
             irq_rows = _to_irq_rows(sut_id, ts, irq_collector, elapsed)
 
@@ -163,6 +224,7 @@ def run_agent(server: str, sut_id: str, name: str, token: str, telemetry_interva
                 "interfaces": iface_infos,
                 "irq_summary": irq_summary,
                 "network_global": net_global,
+                "cpu_topology": topology_cache,
             }
 
             _post_json(server.rstrip("/") + "/api/agent/telemetry", payload, token)

@@ -271,13 +271,18 @@
             <option value="900">Last 15 min</option>
             <option value="1800">Last 30 min</option>
             <option value="3600">Last 1 hour</option>
+            <option value="custom">Custom</option>
           </select>
+          <input id="range-from" type="datetime-local" class="hidden" />
+          <input id="range-to" type="datetime-local" class="hidden" />
+          <button id="apply-range" class="hidden">Apply Range</button>
           <select id="topn">
             <option value="10">Top 10 IRQ</option>
             <option value="20" selected>Top 20 IRQ</option>
             <option value="50">Top 50 IRQ</option>
           </select>
           <button id="live-toggle" title="Pause/resume live chart updates">LIVE</button>
+          <button id="reset-zoom" title="Reset chart zoom state">Reset Zoom</button>
           <select id="interval"></select>
           <button id="refresh">Refresh</button>
           <span id="ws-status" class="status-badge status-warn">Connecting...</span>
@@ -614,6 +619,8 @@
       staleMs: 5000,
       paused: false,
       windowSeconds: 60,
+      customFromTs: null,
+      customToTs: null,
       topN: 20,
       selectedCpu: "ALL",
       selectedIrq: "ALL",
@@ -627,6 +634,7 @@
         imbalance: 30.0,
       },
       charts: {},
+      zoomState: {},
     };
 
     const el = {
@@ -640,8 +648,12 @@
       staleInd: document.getElementById("stale-ind"),
       logs: document.getElementById("logs"),
       timeRange: document.getElementById("time-range"),
+      rangeFrom: document.getElementById("range-from"),
+      rangeTo: document.getElementById("range-to"),
+      applyRange: document.getElementById("apply-range"),
       topN: document.getElementById("topn"),
       liveToggle: document.getElementById("live-toggle"),
+      resetZoom: document.getElementById("reset-zoom"),
       netHeatMetric: document.getElementById("net-heat-metric"),
     };
 
@@ -715,6 +727,49 @@
 
     function toSeriesXY(rows, valueKey) {
       return (rows || []).map(x => [x.timestamp * 1000, Number(x[valueKey] || 0)]);
+    }
+
+    function parseDateTimeLocalToTs(value) {
+      if (!value) return null;
+      const t = Date.parse(value);
+      if (Number.isNaN(t)) return null;
+      return t / 1000;
+    }
+
+    function visualizationRangeQuery() {
+      if (el.timeRange.value === "custom" && state.customFromTs && state.customToTs) {
+        return "from_ts=" + encodeURIComponent(String(state.customFromTs)) + "&to_ts=" + encodeURIComponent(String(state.customToTs));
+      }
+      return "window_seconds=" + encodeURIComponent(String(state.windowSeconds));
+    }
+
+    function restoreZoom(chartKey, chart) {
+      const z = state.zoomState[chartKey];
+      if (!z || !chart) return;
+      chart.dispatchAction({
+        type: "dataZoom",
+        dataZoomIndex: 0,
+        start: z.start,
+        end: z.end,
+        startValue: z.startValue,
+        endValue: z.endValue,
+      });
+    }
+
+    function bindZoomPersistence(chartKey, chart) {
+      if (!chart) return;
+      chart.off("datazoom");
+      chart.on("datazoom", () => {
+        const opts = chart.getOption();
+        const dz = opts?.dataZoom?.[0];
+        if (!dz) return;
+        state.zoomState[chartKey] = {
+          start: dz.start,
+          end: dz.end,
+          startValue: dz.startValue,
+          endValue: dz.endValue,
+        };
+      });
     }
 
     async function loadHealth() {
@@ -814,7 +869,7 @@
 
     async function loadVisualizationData() {
       if (!state.host || state.host === "ALL SYSTEMS") return;
-      const path = "/api/systems/" + encodeURIComponent(state.host) + "/visualization?window_seconds=" + state.windowSeconds + "&top_n=" + state.topN;
+      const path = "/api/systems/" + encodeURIComponent(state.host) + "/visualization?" + visualizationRangeQuery() + "&top_n=" + state.topN;
       const payload = await fetchJson(path);
       state.vizByHost[state.host] = payload;
     }
@@ -1201,7 +1256,10 @@
           { name: "RX B/s", type: "line", smooth: true, showSymbol: false, data: rx, yAxisIndex: 1 },
           { name: "TX B/s", type: "line", smooth: true, showSymbol: false, data: tx, yAxisIndex: 1 },
         ],
+        dataZoom: [{ type: "inside", xAxisIndex: 0 }, { type: "slider", xAxisIndex: 0 }],
       });
+      bindZoomPersistence("overviewTrend", chart);
+      restoreZoom("overviewTrend", chart);
     }
 
     function renderTopIrqBar(payload) {
@@ -1240,6 +1298,8 @@
         visualMap: { min: 0, max: Math.max(1, ...values.map(x => x[2])), orient: "horizontal", left: "center", bottom: 0, inRange: { color: ["#1e2d45", "#2676c4", "#35b470", "#f0bd4e", "#d45050"] } },
         series: [{ type: "heatmap", data: values, progressive: 0 }],
       });
+      bindZoomPersistence("irqHeat", chart);
+      restoreZoom("irqHeat", chart);
       chart.off("click");
       chart.on("click", p => {
         const raw = p.data[3];
@@ -1288,6 +1348,8 @@
         visualMap: { min: 0, max: Math.max(1, ...data.map(x => x[2])), orient: "horizontal", left: "center", bottom: 0, inRange: { color: ["#1e2d45", "#2676c4", "#35b470", "#f0bd4e", "#d45050"] } },
         series: [{ type: "heatmap", data }],
       });
+      bindZoomPersistence("cpuHeat", chart);
+      restoreZoom("cpuHeat", chart);
       chart.off("click");
       chart.on("click", p => {
         state.selectedCpu = String(rows[p.data[0]].cpu);
@@ -1310,6 +1372,8 @@
         visualMap: { min: 0, max: Math.max(1, ...values.map(x => x[2])), orient: "horizontal", left: "center", bottom: 0, inRange: { color: ["#1e2d45", "#2676c4", "#35b470", "#f0bd4e", "#d45050"] } },
         series: [{ type: "heatmap", data: values }],
       });
+      bindZoomPersistence("cpuGrid", chart);
+      restoreZoom("cpuGrid", chart);
     }
 
     function renderSoftirqDist(payload) {
@@ -1339,7 +1403,10 @@
         xAxis: { type: "time", axisLabel: { color: "#9db0cb" } },
         yAxis: { type: "value", axisLabel: { color: "#9db0cb" } },
         series,
+        dataZoom: [{ type: "inside", xAxisIndex: 0 }, { type: "slider", xAxisIndex: 0 }],
       });
+      bindZoomPersistence("softTrend", chart);
+      restoreZoom("softTrend", chart);
     }
 
     function renderNetworkTrend(payload) {
@@ -1357,7 +1424,10 @@
           { name: "RX", type: "line", data: rx, showSymbol: false, smooth: true },
           { name: "TX", type: "line", data: tx, showSymbol: false, smooth: true },
         ],
+        dataZoom: [{ type: "inside", xAxisIndex: 0 }, { type: "slider", xAxisIndex: 0 }],
       });
+      bindZoomPersistence("netTrend", chart);
+      restoreZoom("netTrend", chart);
     }
 
     function renderNetworkHeatmap(payload) {
@@ -1411,7 +1481,10 @@
           { name: "Errors/s", type: "line", data: err, showSymbol: false, itemStyle: { color: "#d45050" } },
           { name: "Drops/s", type: "line", data: drop, showSymbol: false, itemStyle: { color: "#d5a53e" } },
         ],
+        dataZoom: [{ type: "inside", xAxisIndex: 0 }, { type: "slider", xAxisIndex: 0 }],
       });
+      bindZoomPersistence("netErrTrend", chart);
+      restoreZoom("netErrTrend", chart);
     }
 
     function renderCorrelation(payload) {
@@ -1499,13 +1572,15 @@
 
       const tree = {};
       for (const row of topo.rows || []) {
-        const socket = "Socket " + row.socket;
-        const numa = "NUMA " + row.numa;
-        const core = "Core " + row.core;
+        const socket = "Socket " + (row.socket_id ?? "N/A");
+        const numa = "NUMA " + (row.numa_node ?? "N/A");
+        const core = "Core " + (row.core_id ?? "N/A");
         tree[socket] = tree[socket] || {};
         tree[socket][numa] = tree[socket][numa] || {};
         tree[socket][numa][core] = tree[socket][numa][core] || [];
-        tree[socket][numa][core].push("CPU " + row.cpu + " (" + fmtNum(cpuLoad[String(row.cpu)] || 0) + "/s)");
+        const onlineTxt = row.online === null || row.online === undefined ? "unknown" : (row.online ? "online" : "offline");
+        const sib = row.thread_siblings_list || "N/A";
+        tree[socket][numa][core].push("CPU " + row.cpu_id + " (" + onlineTxt + ", siblings " + sib + ", " + fmtNum(cpuLoad[String(row.cpu_id)] || 0) + "/s)");
       }
 
       const lines = [];
@@ -1706,7 +1781,27 @@
         renderAll();
       };
       el.timeRange.onchange = async () => {
-        state.windowSeconds = Number(el.timeRange.value || 60);
+        const isCustom = el.timeRange.value === "custom";
+        el.rangeFrom.classList.toggle("hidden", !isCustom);
+        el.rangeTo.classList.toggle("hidden", !isCustom);
+        el.applyRange.classList.toggle("hidden", !isCustom);
+        if (!isCustom) {
+          state.customFromTs = null;
+          state.customToTs = null;
+          state.windowSeconds = Number(el.timeRange.value || 60);
+        }
+        await loadVisualizationData();
+        renderVisualizations();
+      };
+      el.applyRange.onclick = async () => {
+        const fromTs = parseDateTimeLocalToTs(el.rangeFrom.value);
+        const toTs = parseDateTimeLocalToTs(el.rangeTo.value);
+        if (!fromTs || !toTs) {
+          log("WARNING", "ui", "custom range requires valid from/to values");
+          return;
+        }
+        state.customFromTs = Math.min(fromTs, toTs);
+        state.customToTs = Math.max(fromTs, toTs);
         await loadVisualizationData();
         renderVisualizations();
       };
@@ -1723,6 +1818,17 @@
         }
       };
       el.netHeatMetric.onchange = renderVisualizations;
+      el.resetZoom.onclick = () => {
+        state.zoomState = {};
+        for (const chart of Object.values(state.charts)) {
+          try {
+            chart.dispatchAction({ type: "dataZoom", dataZoomIndex: 0, start: 0, end: 100 });
+          } catch (_) {
+            // Ignore charts without dataZoom.
+          }
+        }
+        renderVisualizations();
+      };
       document.getElementById("irq-search").oninput = renderIrq;
       document.getElementById("irq-sort").onchange = renderIrq;
       document.getElementById("iface-filter").onchange = () => {

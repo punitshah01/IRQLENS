@@ -70,3 +70,32 @@ Add a professional visualization layer on top of existing IRQLENS telemetry with
 ## Phase 17 End-to-end validation
 - Validate live behavior against real telemetry on local and remote SUTs.
 - Confirm existing tables, diagnostics, exports, websocket reconnection, and offline/stale indicators still work.
+
+## Final hardening execution notes
+
+### Item 1 Custom range + persistent zoom
+- Implemented backend support for bounded range queries with `from_ts`/`to_ts` in visualization APIs.
+- Added frontend custom datetime controls (`From`, `To`, `Apply Range`) and retained existing presets.
+- Added per-chart zoom state persistence and `Reset Zoom` behavior.
+
+### Item 2 Remote CPU topology from agent
+- Added Linux agent CPU topology collection from `/sys/devices/system/cpu/*`.
+- Added topology payload propagation in register + telemetry events.
+- Added backend topology persistence and remote topology visualization endpoint behavior.
+
+### Item 3 Real-SUT visualization validation script
+- Added `tools/validate_sut_visualization.py` to validate Linux proc/sys sources and IRQLENS API correspondence.
+- Added execution modes:
+	- `auto` (Linux local checks on Linux hosts, API-only elsewhere)
+	- `local` (force Linux source checks)
+	- `api-only` (backend payload validation only)
+
+### Validation evidence
+- Backend/API + math tests: `pytest -q` => `10 passed`.
+- Runtime verification performed with live backend and remote-agent telemetry payloads:
+	- Visualization endpoint reachable and returns CPU/IRQ heatmap points.
+	- Remote topology endpoint returns persisted topology rows.
+	- Custom range endpoint returns bounded data with `from_ts` and `to_ts`.
+- Validator execution:
+	- On Windows host in `local`-equivalent behavior: expected proc/sys FAILs (no `/proc`/`/sys`).
+	- In remote/API validation mode: passes endpoint-level validation for visualization/topology/network/IRQ.

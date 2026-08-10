@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse
 
 from .config import settings
 from .models import (
+    CPUTopologyEntry,
     AgentHeartbeatRequest,
     AgentRegistrationRequest,
     AgentTelemetryPayload,
@@ -172,6 +173,10 @@ def _parse_local_cpu_topology() -> Dict[str, Any]:
         return {"available": False, "reason": "topology files unavailable"}
 
     rows: List[Dict[str, Any]] = []
+    cpu_model = ""
+    sample = STORE.latest_system("local")
+    if sample:
+        cpu_model = sample.cpu_model
     for cpu_dir in sorted(root.glob("cpu[0-9]*"), key=lambda p: int(p.name[3:])):
         cpu_id = int(cpu_dir.name[3:])
         topo = cpu_dir / "topology"
@@ -190,7 +195,33 @@ def _parse_local_cpu_topology() -> Dict[str, Any]:
             if node_path.name.startswith("node"):
                 numa = node_path.name.replace("node", "")
                 break
-        rows.append({"cpu": cpu_id, "socket": package, "numa": numa, "core": core})
+        online = None
+        online_path = cpu_dir / "online"
+        if online_path.exists():
+            try:
+                online = online_path.read_text(encoding="utf-8", errors="ignore").strip() == "1"
+            except Exception:
+                online = None
+        thread_siblings = ""
+        core_siblings = ""
+        thread_path = topo / "thread_siblings_list"
+        core_sib_path = topo / "core_siblings_list"
+        if thread_path.exists():
+            thread_siblings = thread_path.read_text(encoding="utf-8", errors="ignore").strip()
+        if core_sib_path.exists():
+            core_siblings = core_sib_path.read_text(encoding="utf-8", errors="ignore").strip()
+        rows.append(
+            {
+                "cpu_id": cpu_id,
+                "socket_id": int(package) if package.isdigit() else None,
+                "core_id": int(core) if core.isdigit() else None,
+                "numa_node": int(numa) if numa.isdigit() else None,
+                "online": online,
+                "thread_siblings_list": thread_siblings,
+                "core_siblings_list": core_siblings,
+                "cpu_model": cpu_model,
+            }
+        )
 
     if not rows:
         return {"available": False, "reason": "no cpu topology rows"}
@@ -238,15 +269,26 @@ def _cpu_totals(rows: List[IRQSample], softirq_per_cpu: Dict[str, float]) -> Dic
     return data
 
 
-def _visualization_payload(sut_id: str, window_seconds: int = 300, top_n: int = 20) -> Dict[str, Any]:
+def _visualization_payload(
+    sut_id: str,
+    window_seconds: int = 300,
+    top_n: int = 20,
+    from_ts: float | None = None,
+    to_ts: float | None = None,
+) -> Dict[str, Any]:
     now = time.time()
-    since = now - max(30, min(3600, int(window_seconds)))
+    if to_ts is None:
+        to_ts = now
+    if from_ts is None:
+        from_ts = to_ts - max(30, min(3600, int(window_seconds)))
+    if from_ts > to_ts:
+        from_ts, to_ts = to_ts, from_ts
 
-    irq_series = STORE.irq_rate_series(sut_id, since)
-    network_series = STORE.network_rate_series(sut_id, since)
-    softirq_series = STORE.softirq_series(sut_id, since)
+    irq_series = STORE.irq_rate_series(sut_id, from_ts, to_ts=to_ts)
+    network_series = STORE.network_rate_series(sut_id, from_ts, to_ts=to_ts)
+    softirq_series = STORE.softirq_series(sut_id, from_ts, to_ts=to_ts)
 
-    latest_ts = STORE.latest_irq_timestamp(sut_id)
+    latest_ts = STORE.latest_irq_timestamp_at(sut_id, to_ts=to_ts)
     latest_irq_rows = STORE.irq_at_timestamp(sut_id, latest_ts, limit=max(50, top_n * 6)) if latest_ts is not None else []
     latest_softirq = STORE.latest_softirq(sut_id)
     latest_network = STORE.latest_network(sut_id, limit=500)
@@ -343,7 +385,9 @@ def _visualization_payload(sut_id: str, window_seconds: int = 300, top_n: int = 
 
     return {
         "sut_id": sut_id,
-        "window_seconds": int(window_seconds),
+        "window_seconds": int(max(1, to_ts - from_ts)),
+        "from_ts": float(from_ts),
+        "to_ts": float(to_ts),
         "timestamp": now,
         "series": {
             "irq": irq_series,
@@ -629,19 +673,32 @@ def systems() -> dict:
 
 
 @app.get("/api/systems/{sut_id}/visualization")
-def system_visualization(sut_id: str, window_seconds: int = 300, top_n: int = 20) -> dict:
+def system_visualization(
+    sut_id: str,
+    window_seconds: int = 300,
+    top_n: int = 20,
+    from_ts: float | None = None,
+    to_ts: float | None = None,
+) -> dict:
     if not STORE.get_system(sut_id) and sut_id != "local":
         raise HTTPException(status_code=404, detail="system not found")
-    return _visualization_payload(sut_id=sut_id, window_seconds=window_seconds, top_n=top_n)
+    return _visualization_payload(sut_id=sut_id, window_seconds=window_seconds, top_n=top_n, from_ts=from_ts, to_ts=to_ts)
 
 
 @app.get("/api/systems/{sut_id}/visualization/topology")
 def system_topology(sut_id: str) -> dict:
     if sut_id == "local":
-        return _parse_local_cpu_topology()
+        parsed = _parse_local_cpu_topology()
+        if parsed.get("available"):
+            rows = [CPUTopologyEntry.model_validate(row) for row in parsed.get("rows", [])]
+            STORE.add_cpu_topology("local", rows, timestamp=time.time())
+        return parsed
     system = STORE.get_system(sut_id)
     if not system:
         raise HTTPException(status_code=404, detail="system not found")
+    topo = STORE.latest_cpu_topology(sut_id)
+    if topo:
+        return {"available": True, "sut_id": sut_id, "rows": [row.model_dump() for row in topo]}
     return {
         "available": False,
         "reason": "topology metadata not provided by remote agent yet",
@@ -848,6 +905,8 @@ async def agent_register(payload: AgentRegistrationRequest, request: Request) ->
         mode="remote",
     )
     STORE.upsert_system(row)
+    if payload.cpu_topology:
+        STORE.add_cpu_topology(payload.sut_id, payload.cpu_topology, timestamp=now)
     await WS.broadcast({"type": "system_registered", "sut_id": payload.sut_id, "timestamp": now})
     return {"ok": True, "sut_id": payload.sut_id, "heartbeat_interval": settings.heartbeat_interval, "stale_threshold": settings.stale_threshold}
 
@@ -885,6 +944,8 @@ async def agent_telemetry(payload: AgentTelemetryPayload, request: Request) -> d
         net_rows.append(row.model_copy(update={"sut_ip": sut_id, "sut_id": sut_id}))
     if net_rows:
         STORE.add_network_samples(net_rows)
+    if payload.cpu_topology:
+        STORE.add_cpu_topology(sut_id, payload.cpu_topology, timestamp=payload.timestamp)
 
     existing = STORE.get_system(sut_id)
     now = time.time()

@@ -197,8 +197,20 @@ Session routing:
 
 Visualization endpoint notes:
 - `window_seconds` is bounded to `30..3600`.
+- `from_ts` and `to_ts` (unix epoch seconds) can be provided for explicit custom ranges.
 - `top_n` controls top IRQ rows for heatmap/ranking payloads.
 - Payload includes trend series, heatmaps, top sources, distribution, health, and anomaly events derived from real telemetry.
+
+Remote topology notes:
+- Linux agent sends `cpu_topology` during register and telemetry payloads.
+- Backend persists topology snapshots and serves them via `/api/systems/{sut_id}/visualization/topology`.
+- Topology rows include `cpu_id`, `socket_id`, `core_id`, `numa_node`, `online`, sibling lists, and CPU model.
+
+Visualization UX notes:
+- Time range presets: `30s`, `1m`, `5m`, `15m`, `30m`, `1h`, and `custom`.
+- In custom mode, set `From` and `To` and click `Apply Range` to query bounded history.
+- Chart zoom/pan state persists across refreshes while viewing the same selected SUT.
+- `Reset Zoom` clears all persisted zoom windows and restores full-range chart views.
 
 ## Visualization Metrics
 
@@ -316,6 +328,22 @@ Current tests cover:
 - JSON/CSV/XML/TXT export validity
 - health endpoint
 - diagnostics session lifecycle endpoint flow
+
+Real-SUT validation script:
+
+```bash
+python tools/validate_sut_visualization.py --server-url http://<server>:8080 --sut-id <sut-id>
+```
+
+Validation modes:
+- `--mode auto` (default): run Linux local source checks when executed on Linux, otherwise run API validation only.
+- `--mode local`: force local Linux `/proc` + `/sys` checks (expected to fail on non-Linux hosts).
+- `--mode api-only`: validate backend visualization/topology/network/IRQ payloads only.
+
+Output semantics:
+- `PASS`: required check succeeded.
+- `WARN`: data missing/idle/non-blocking mismatch.
+- `FAIL`: blocking validation failure; script exits non-zero.
 
 ## Troubleshooting
 

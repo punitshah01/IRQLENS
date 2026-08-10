@@ -7,7 +7,7 @@ from threading import Lock
 from typing import Any, Dict, List, Optional
 
 from .config import settings
-from .models import CollectionSession, ExportFile, InterfaceInfo, IRQSample, NetworkSample, SoftIRQSample, SystemInfo, SystemRecord
+from .models import CPUTopologyEntry, CollectionSession, ExportFile, InterfaceInfo, IRQSample, NetworkSample, SoftIRQSample, SystemInfo, SystemRecord
 
 
 class SqliteStore:
@@ -118,6 +118,18 @@ class SqliteStore:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_system_host_ts ON system_samples(sut_ip, timestamp)")
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cpu_topology_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp REAL NOT NULL,
+                    sut_id TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_cpu_topology_host_ts ON cpu_topology_samples(sut_id, timestamp)")
 
             conn.execute(
                 """
@@ -344,6 +356,42 @@ class SqliteStore:
                 )
                 self._trim_table(conn, "system_samples", sut_ip)
 
+    def add_cpu_topology(self, sut_id: str, topology: List[CPUTopologyEntry], timestamp: Optional[float] = None) -> None:
+        if not topology:
+            return
+        ts = float(timestamp or time.time())
+        payload = [item.model_dump() for item in topology]
+        with self._lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO cpu_topology_samples(timestamp, sut_id, payload_json)
+                    VALUES(?, ?, ?)
+                    """,
+                    (ts, sut_id, json.dumps(payload, separators=(",", ":"))),
+                )
+
+    def latest_cpu_topology(self, sut_id: str) -> List[CPUTopologyEntry]:
+        with self._conn() as conn:
+            row = conn.execute(
+                """
+                SELECT payload_json
+                FROM cpu_topology_samples
+                WHERE sut_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (sut_id,),
+            ).fetchone()
+        if not row:
+            return []
+        data = json.loads(row["payload_json"] or "[]")
+        out: List[CPUTopologyEntry] = []
+        for item in data:
+            out.append(CPUTopologyEntry.model_validate(item))
+        out.sort(key=lambda x: x.cpu_id)
+        return out
+
     def hosts(self) -> List[str]:
         with self._conn() as conn:
             rows = conn.execute(
@@ -402,6 +450,30 @@ class SqliteStore:
                 """,
                 (sut_ip,),
             ).fetchone()
+        if not row or row["ts"] is None:
+            return None
+        return float(row["ts"])
+
+    def latest_irq_timestamp_at(self, sut_ip: str, to_ts: Optional[float] = None) -> Optional[float]:
+        with self._conn() as conn:
+            if to_ts is None:
+                row = conn.execute(
+                    """
+                    SELECT MAX(timestamp) AS ts
+                    FROM irq_samples
+                    WHERE sut_ip = ?
+                    """,
+                    (sut_ip,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT MAX(timestamp) AS ts
+                    FROM irq_samples
+                    WHERE sut_ip = ? AND timestamp <= ?
+                    """,
+                    (sut_ip, float(to_ts)),
+                ).fetchone()
         if not row or row["ts"] is None:
             return None
         return float(row["ts"])
@@ -500,40 +572,72 @@ class SqliteStore:
             )
         return out
 
-    def irq_rate_series(self, sut_ip: str, since_ts: float) -> List[Dict[str, float]]:
+    def irq_rate_series(self, sut_ip: str, since_ts: float, to_ts: Optional[float] = None) -> List[Dict[str, float]]:
         with self._conn() as conn:
-            rows = conn.execute(
-                """
-                SELECT timestamp, SUM(total_rate) AS irq_rate
-                FROM irq_samples
-                WHERE sut_ip = ? AND timestamp >= ?
-                GROUP BY timestamp
-                ORDER BY timestamp ASC
-                """,
-                (sut_ip, since_ts),
-            ).fetchall()
+            if to_ts is None:
+                rows = conn.execute(
+                    """
+                    SELECT timestamp, SUM(total_rate) AS irq_rate
+                    FROM irq_samples
+                    WHERE sut_ip = ? AND timestamp >= ?
+                    GROUP BY timestamp
+                    ORDER BY timestamp ASC
+                    """,
+                    (sut_ip, since_ts),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT timestamp, SUM(total_rate) AS irq_rate
+                    FROM irq_samples
+                    WHERE sut_ip = ? AND timestamp >= ? AND timestamp <= ?
+                    GROUP BY timestamp
+                    ORDER BY timestamp ASC
+                    """,
+                    (sut_ip, since_ts, float(to_ts)),
+                ).fetchall()
         return [{"timestamp": float(r["timestamp"]), "irq_rate": float(r["irq_rate"] or 0.0)} for r in rows]
 
-    def network_rate_series(self, sut_ip: str, since_ts: float) -> List[Dict[str, float]]:
+    def network_rate_series(self, sut_ip: str, since_ts: float, to_ts: Optional[float] = None) -> List[Dict[str, float]]:
         with self._conn() as conn:
-            rows = conn.execute(
-                """
-                SELECT timestamp,
-                       SUM(rx_bps) AS rx_bps,
-                       SUM(tx_bps) AS tx_bps,
-                       SUM(rx_pps) AS rx_pps,
-                       SUM(tx_pps) AS tx_pps,
-                       SUM(rx_err_ps) AS rx_err_ps,
-                       SUM(tx_err_ps) AS tx_err_ps,
-                       SUM(rx_drop_ps) AS rx_drop_ps,
-                       SUM(tx_drop_ps) AS tx_drop_ps
-                FROM network_samples
-                WHERE sut_ip = ? AND timestamp >= ?
-                GROUP BY timestamp
-                ORDER BY timestamp ASC
-                """,
-                (sut_ip, since_ts),
-            ).fetchall()
+            if to_ts is None:
+                rows = conn.execute(
+                    """
+                    SELECT timestamp,
+                           SUM(rx_bps) AS rx_bps,
+                           SUM(tx_bps) AS tx_bps,
+                           SUM(rx_pps) AS rx_pps,
+                           SUM(tx_pps) AS tx_pps,
+                           SUM(rx_err_ps) AS rx_err_ps,
+                           SUM(tx_err_ps) AS tx_err_ps,
+                           SUM(rx_drop_ps) AS rx_drop_ps,
+                           SUM(tx_drop_ps) AS tx_drop_ps
+                    FROM network_samples
+                    WHERE sut_ip = ? AND timestamp >= ?
+                    GROUP BY timestamp
+                    ORDER BY timestamp ASC
+                    """,
+                    (sut_ip, since_ts),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT timestamp,
+                           SUM(rx_bps) AS rx_bps,
+                           SUM(tx_bps) AS tx_bps,
+                           SUM(rx_pps) AS rx_pps,
+                           SUM(tx_pps) AS tx_pps,
+                           SUM(rx_err_ps) AS rx_err_ps,
+                           SUM(tx_err_ps) AS tx_err_ps,
+                           SUM(rx_drop_ps) AS rx_drop_ps,
+                           SUM(tx_drop_ps) AS tx_drop_ps
+                    FROM network_samples
+                    WHERE sut_ip = ? AND timestamp >= ? AND timestamp <= ?
+                    GROUP BY timestamp
+                    ORDER BY timestamp ASC
+                    """,
+                    (sut_ip, since_ts, float(to_ts)),
+                ).fetchall()
         out: List[Dict[str, float]] = []
         for row in rows:
             out.append(
@@ -551,17 +655,28 @@ class SqliteStore:
             )
         return out
 
-    def softirq_series(self, sut_ip: str, since_ts: float) -> List[Dict[str, Any]]:
+    def softirq_series(self, sut_ip: str, since_ts: float, to_ts: Optional[float] = None) -> List[Dict[str, Any]]:
         with self._conn() as conn:
-            rows = conn.execute(
-                """
-                SELECT timestamp, rates_json, per_cpu_rates_json
-                FROM softirq_samples
-                WHERE sut_ip = ? AND timestamp >= ?
-                ORDER BY timestamp ASC
-                """,
-                (sut_ip, since_ts),
-            ).fetchall()
+            if to_ts is None:
+                rows = conn.execute(
+                    """
+                    SELECT timestamp, rates_json, per_cpu_rates_json
+                    FROM softirq_samples
+                    WHERE sut_ip = ? AND timestamp >= ?
+                    ORDER BY timestamp ASC
+                    """,
+                    (sut_ip, since_ts),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT timestamp, rates_json, per_cpu_rates_json
+                    FROM softirq_samples
+                    WHERE sut_ip = ? AND timestamp >= ? AND timestamp <= ?
+                    ORDER BY timestamp ASC
+                    """,
+                    (sut_ip, since_ts, float(to_ts)),
+                ).fetchall()
         out: List[Dict[str, Any]] = []
         for row in rows:
             rates = json.loads(row["rates_json"] or "{}")
