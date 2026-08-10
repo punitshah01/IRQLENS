@@ -99,7 +99,9 @@ python run_irqlens.py
 
 This starts backend + dashboard UI on:
 
-- `http://localhost:8080`
+- `http://<detected-host-ip>:8080`
+
+IRQLENS prints the reachable URL in the terminal, similar to PRISM.
 
 ### 1. Start backend
 

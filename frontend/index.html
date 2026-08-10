@@ -92,7 +92,7 @@
       <div class="sub">IRQ, SoftIRQ, and Network Operations Dashboard</div>
     </div>
     <div class="ctrl">
-      <input id="backend" value="http://localhost:8080" size="24" />
+      <input id="backend" value="" size="24" />
       <select id="host"></select>
       <button id="refresh">Refresh</button>
     </div>
@@ -166,6 +166,10 @@
     const trendCanvas = document.getElementById("trend");
     const trendCtx = trendCanvas.getContext("2d");
     let ws = null;
+
+    if (!backend.value) {
+      backend.value = window.location.origin || "http://localhost:8080";
+    }
 
     function api(path) { return backend.value.replace(/\/$/, "") + path; }
 
