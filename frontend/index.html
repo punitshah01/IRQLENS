@@ -176,6 +176,56 @@
     }
     .tiny { font-size: 11px; color: var(--muted); }
     .hidden { display: none; }
+    .chart {
+      width: 100%;
+      height: 280px;
+    }
+    .chart.tall {
+      height: 360px;
+    }
+    .scroll-x {
+      overflow-x: auto;
+    }
+    .health-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .meter {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      background: #111a28;
+      font-size: 12px;
+    }
+    .meter .bar {
+      height: 8px;
+      border-radius: 8px;
+      background: #22334b;
+      margin-top: 5px;
+      position: relative;
+      overflow: hidden;
+    }
+    .meter .fill {
+      height: 100%;
+      background: linear-gradient(90deg, #2f8fce, #2dc77a);
+    }
+    .timeline {
+      max-height: 220px;
+      overflow-y: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      background: #0f1724;
+      font-size: 12px;
+    }
+    .timeline .evt {
+      padding: 6px;
+      border-bottom: 1px solid #1f2e44;
+    }
+    .timeline .evt:last-child {
+      border-bottom: 0;
+    }
     @media (max-width: 1200px) {
       .kpi { grid-column: span 6; }
       .half { grid-column: span 12; }
@@ -214,6 +264,20 @@
         <div class="controls">
           <input id="backend" size="28" />
           <select id="host"></select>
+          <select id="time-range">
+            <option value="30">Last 30 sec</option>
+            <option value="60" selected>Last 1 min</option>
+            <option value="300">Last 5 min</option>
+            <option value="900">Last 15 min</option>
+            <option value="1800">Last 30 min</option>
+            <option value="3600">Last 1 hour</option>
+          </select>
+          <select id="topn">
+            <option value="10">Top 10 IRQ</option>
+            <option value="20" selected>Top 20 IRQ</option>
+            <option value="50">Top 50 IRQ</option>
+          </select>
+          <button id="live-toggle" title="Pause/resume live chart updates">LIVE</button>
           <select id="interval"></select>
           <button id="refresh">Refresh</button>
           <span id="ws-status" class="status-badge status-warn">Connecting...</span>
@@ -229,7 +293,61 @@
           <div class="card kpi"><div class="l">RX</div><div class="v" id="kpi-rx">0</div></div>
           <div class="card kpi"><div class="l">TX</div><div class="v" id="kpi-tx">0</div></div>
           <div class="card kpi"><div class="l">Active IRQs</div><div class="v" id="kpi-activeirqs">0</div></div>
+          <div class="card kpi"><div class="l">Active CPUs</div><div class="v" id="kpi-activecpus">0</div></div>
+          <div class="card kpi"><div class="l">Network Errors/s</div><div class="v" id="kpi-errors">0</div></div>
+          <div class="card kpi"><div class="l">Network Drops/s</div><div class="v" id="kpi-drops">0</div></div>
+          <div class="card kpi"><div class="l">IRQ Balance</div><div class="v" id="kpi-balance">0</div></div>
           <div class="card kpi"><div class="l">Collection Status</div><div class="v" id="kpi-cstatus">N/A</div></div>
+
+          <div class="card wide">
+            <h3>IRQ + Network Trend</h3>
+            <div id="chart-overview-trend" class="chart"></div>
+          </div>
+
+          <div class="card half">
+            <h3>CPU IRQ Heatmap</h3>
+            <div id="chart-cpu-heatmap" class="chart"></div>
+          </div>
+
+          <div class="card half">
+            <h3>Top IRQ Sources</h3>
+            <div id="chart-top-irq" class="chart"></div>
+          </div>
+
+          <div class="card half">
+            <h3>Interface Heatmap</h3>
+            <div class="controls">
+              <select id="net-heat-metric">
+                <option value="rx_bps" selected>RX bytes/sec</option>
+                <option value="tx_bps">TX bytes/sec</option>
+                <option value="rx_pps">RX packets/sec</option>
+                <option value="tx_pps">TX packets/sec</option>
+                <option value="errors_ps">Errors/sec</option>
+                <option value="drops_ps">Drops/sec</option>
+              </select>
+            </div>
+            <div id="chart-net-heatmap" class="chart"></div>
+          </div>
+
+          <div class="card half">
+            <h3>SoftIRQ Distribution</h3>
+            <div id="chart-softirq-dist" class="chart"></div>
+          </div>
+
+          <div class="card wide">
+            <h3>Interface -> IRQ -> CPU Correlation</h3>
+            <div id="chart-correlation" class="chart tall"></div>
+          </div>
+
+          <div class="card half">
+            <h3>System Health</h3>
+            <div class="health-grid" id="health-grid"></div>
+          </div>
+
+          <div class="card half">
+            <h3>Live Activity Timeline</h3>
+            <div class="timeline" id="activity-timeline"></div>
+          </div>
 
           <div class="card wide">
             <h3>Fleet Summary</h3>
@@ -252,6 +370,16 @@
 
       <section id="view-irq" class="view">
         <div class="grid">
+          <div class="card half">
+            <h3>IRQ -> CPU Heatmap</h3>
+            <div id="chart-irq-heatmap" class="chart"></div>
+          </div>
+
+          <div class="card half">
+            <h3>IRQ Source Distribution</h3>
+            <div id="chart-irq-dist" class="chart"></div>
+          </div>
+
           <div class="card wide">
             <h3>IRQ Monitor</h3>
             <div class="controls">
@@ -288,6 +416,10 @@
       <section id="view-softirq" class="view">
         <div class="grid">
           <div class="card wide">
+            <h3>SoftIRQ Trend</h3>
+            <div id="chart-softirq-trend" class="chart"></div>
+          </div>
+          <div class="card wide">
             <h3>SoftIRQ Classes</h3>
             <table><thead><tr><th>Class</th><th>Rate/s</th></tr></thead><tbody id="softirq-body"></tbody></table>
           </div>
@@ -296,6 +428,21 @@
 
       <section id="view-cpu" class="view">
         <div class="grid">
+          <div class="card half">
+            <h3>CPU Load Grid</h3>
+            <div id="chart-cpu-grid" class="chart"></div>
+          </div>
+
+          <div class="card half">
+            <h3>NUMA IRQ Distribution</h3>
+            <div id="chart-numa" class="chart"></div>
+          </div>
+
+          <div class="card wide">
+            <h3>CPU Topology (if available)</h3>
+            <div id="cpu-topology" class="timeline"></div>
+          </div>
+
           <div class="card wide">
             <h3>CPU IRQ Distribution</h3>
             <table>
@@ -316,6 +463,21 @@
           <div class="card kpi"><div class="l">RX bytes/s</div><div class="v" id="net-rxbps">0</div></div>
           <div class="card kpi"><div class="l">TX bytes/s</div><div class="v" id="net-txbps">0</div></div>
           <div class="card kpi"><div class="l">Errors/s</div><div class="v" id="net-err">0</div></div>
+
+          <div class="card wide">
+            <h3>Network Throughput Trend</h3>
+            <div id="chart-network-trend" class="chart"></div>
+          </div>
+
+          <div class="card half">
+            <h3>Interface Traffic Ranking</h3>
+            <div id="chart-network-rank" class="chart"></div>
+          </div>
+
+          <div class="card half">
+            <h3>Error/Drop Trend</h3>
+            <div id="chart-network-errors" class="chart"></div>
+          </div>
 
           <div class="card wide">
             <h3>Interface Statistics</h3>
@@ -389,18 +551,54 @@
         </div>
       </section>
 
+      <section id="view-compare" class="view">
+        <div class="grid">
+          <div class="card wide">
+            <h3>Multi-SUT Comparison</h3>
+            <div class="controls">
+              <select id="compare-a"></select>
+              <select id="compare-b"></select>
+              <button id="compare-run">Compare</button>
+            </div>
+          </div>
+          <div class="card half">
+            <h3>Comparison KPI Bars</h3>
+            <div id="chart-compare-bars" class="chart"></div>
+          </div>
+          <div class="card half">
+            <h3>Comparison Summary</h3>
+            <table>
+              <thead><tr><th>Metric</th><th id="cmp-a-h">A</th><th id="cmp-b-h">B</th><th>Delta (A-B)</th></tr></thead>
+              <tbody id="compare-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
       <section id="view-settings" class="view">
         <div class="grid">
           <div class="card third"><h3>Collection Interval</h3><div id="set-interval">1 sec</div></div>
           <div class="card third"><h3>Output Directory</h3><div id="set-output">N/A</div></div>
           <div class="card third"><h3>Dependencies</h3><div id="set-deps">N/A</div></div>
+          <div class="card wide">
+            <h3>Threshold Configuration</h3>
+            <div class="controls">
+              <label>IRQ spike multiplier <input id="th-irq-spike" type="number" min="1" step="0.1" value="2.0" /></label>
+              <label>Network error threshold (/s) <input id="th-net-err" type="number" min="0" step="0.1" value="0" /></label>
+              <label>Network drop threshold (/s) <input id="th-net-drop" type="number" min="0" step="1" value="100" /></label>
+              <label>CPU imbalance deviation (%) <input id="th-imbalance" type="number" min="1" step="1" value="30" /></label>
+            </div>
+            <div class="tiny">Used by anomaly timeline and imbalance indicators.</div>
+          </div>
         </div>
       </section>
     </main>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+
   <script>
-    const views = ["overview", "systems", "irq", "softirq", "cpu", "network", "interfaces", "diagnostics", "sessions", "logs", "settings"];
+    const views = ["overview", "systems", "irq", "softirq", "cpu", "network", "interfaces", "diagnostics", "sessions", "logs", "compare", "settings"];
     const state = {
       host: "",
       systems: [],
@@ -414,6 +612,21 @@
       lastTs: 0,
       activeSession: "",
       staleMs: 5000,
+      paused: false,
+      windowSeconds: 60,
+      topN: 20,
+      selectedCpu: "ALL",
+      selectedIrq: "ALL",
+      selectedIface: "ALL",
+      vizByHost: {},
+      topologyByHost: {},
+      thresholds: {
+        irqSpike: 2.0,
+        netErr: 0.0,
+        netDrop: 100.0,
+        imbalance: 30.0,
+      },
+      charts: {},
     };
 
     const el = {
@@ -426,6 +639,10 @@
       lastUpdated: document.getElementById("last-updated"),
       staleInd: document.getElementById("stale-ind"),
       logs: document.getElementById("logs"),
+      timeRange: document.getElementById("time-range"),
+      topN: document.getElementById("topn"),
+      liveToggle: document.getElementById("live-toggle"),
+      netHeatMetric: document.getElementById("net-heat-metric"),
     };
 
     function nowS() { return Date.now() / 1000; }
@@ -439,10 +656,11 @@
       return n.toFixed(0) + " B/s";
     }
     function api(path) { return el.backend.value.replace(/\/$/, "") + path; }
+    function asPct(v) { return Number(v || 0).toFixed(1) + "%"; }
     function log(level, component, message) {
       const row = { ts: Date.now(), level, component, message };
       state.logs.push(row);
-      if (state.logs.length > 500) state.logs.shift();
+      if (state.logs.length > 800) state.logs.shift();
       renderLogs();
     }
 
@@ -464,12 +682,39 @@
         pane.classList.toggle("active", v === name);
       }
       [...el.nav.querySelectorAll("button")].forEach(btn => btn.classList.toggle("active", btn.dataset.view === name));
+      resizeCharts();
     }
 
     async function fetchJson(path) {
       const res = await fetch(api(path));
       if (!res.ok) throw new Error(path + " -> " + res.status);
       return await res.json();
+    }
+
+    function ensureChart(key, id) {
+      if (!window.echarts) return null;
+      if (!state.charts[key]) {
+        const node = document.getElementById(id);
+        if (!node) return null;
+        state.charts[key] = echarts.init(node);
+      }
+      return state.charts[key];
+    }
+
+    function resizeCharts() {
+      for (const c of Object.values(state.charts)) c.resize();
+    }
+
+    function chartTheme() {
+      return {
+        textStyle: { color: "#dce5f2" },
+        backgroundColor: "transparent",
+        grid: { left: 60, right: 28, top: 40, bottom: 55 },
+      };
+    }
+
+    function toSeriesXY(rows, valueKey) {
+      return (rows || []).map(x => [x.timestamp * 1000, Number(x[valueKey] || 0)]);
     }
 
     async function loadHealth() {
@@ -515,6 +760,22 @@
       }
       state.host = hosts.includes(prev) ? prev : (hosts[0] || "ALL SYSTEMS");
       el.host.value = state.host;
+
+      const compareA = document.getElementById("compare-a");
+      const compareB = document.getElementById("compare-b");
+      compareA.innerHTML = "";
+      compareB.innerHTML = "";
+      for (const h of hosts) {
+        const oa = document.createElement("option");
+        oa.value = h;
+        oa.textContent = h;
+        const ob = document.createElement("option");
+        ob.value = h;
+        ob.textContent = h;
+        compareA.appendChild(oa);
+        compareB.appendChild(ob);
+      }
+      if (hosts.length > 1) compareB.value = hosts[1];
     }
 
     async function loadMainData() {
@@ -538,7 +799,7 @@
         return;
       }
       const [irq, softirq, network, interfaces, summary] = await Promise.all([
-        fetchJson("/api/irq/current?sut_id=" + encodeURIComponent(state.host) + "&limit=400"),
+        fetchJson("/api/irq/current?sut_id=" + encodeURIComponent(state.host) + "&limit=2000"),
         fetchJson("/api/softirq/current?sut_id=" + encodeURIComponent(state.host)),
         fetchJson("/api/network/current?sut_id=" + encodeURIComponent(state.host)),
         fetchJson("/api/interfaces?sut_id=" + encodeURIComponent(state.host)),
@@ -549,18 +810,31 @@
       state.interfaces = interfaces.interfaces || [];
       state.summary = summary.rows || [];
       state.lastTs = nowS();
-      renderAll();
+    }
+
+    async function loadVisualizationData() {
+      if (!state.host || state.host === "ALL SYSTEMS") return;
+      const path = "/api/systems/" + encodeURIComponent(state.host) + "/visualization?window_seconds=" + state.windowSeconds + "&top_n=" + state.topN;
+      const payload = await fetchJson(path);
+      state.vizByHost[state.host] = payload;
+    }
+
+    async function loadTopologyData() {
+      if (!state.host || state.host === "ALL SYSTEMS") return;
+      const payload = await fetchJson("/api/systems/" + encodeURIComponent(state.host) + "/visualization/topology");
+      state.topologyByHost[state.host] = payload;
     }
 
     function renderAll() {
+      renderSystems();
       renderOverview();
       renderIrq();
       renderSoftirq();
       renderCpu();
       renderNetwork();
       renderInterfaces();
-      renderSystems();
       renderSessions();
+      renderVisualizations();
       updateFreshness();
     }
 
@@ -584,9 +858,7 @@
           "<div style='margin-top:6px'><button onclick=\"window.irqlensSelectSystem('" + s.id + "')\">Open Dashboard</button></div>";
         root.appendChild(card);
       }
-      if (!state.systems.length) {
-        root.textContent = "No systems registered yet.";
-      }
+      if (!state.systems.length) root.textContent = "No systems registered yet.";
     }
 
     function renderOverview() {
@@ -596,20 +868,26 @@
       const irqps = irqRows.reduce((a, x) => a + Number(x.total_rate || 0), 0);
       const softps = Object.values(soft).reduce((a, x) => a + Number(x || 0), 0);
 
+      const cpuRates = {};
+      for (const row of irqRows) for (const [cpu, rate] of Object.entries(row.cpu_rates || {})) cpuRates[cpu] = (cpuRates[cpu] || 0) + Number(rate || 0);
+      const cpuIrq = Object.values(cpuRates).reduce((a, x) => a + x, 0);
+      const drops = Number(net.rx_drop_ps || 0) + Number(net.tx_drop_ps || 0);
+      const errors = Number(net.rx_err_ps || 0) + Number(net.tx_err_ps || 0);
+
       document.getElementById("kpi-irqps").textContent = fmtNum(irqps);
       document.getElementById("kpi-softps").textContent = fmtNum(softps);
-      const cpuRates = {};
-      for (const row of irqRows) {
-        for (const [cpu, rate] of Object.entries(row.cpu_rates || {})) {
-          cpuRates[cpu] = (cpuRates[cpu] || 0) + Number(rate || 0);
-        }
-      }
-      const cpuIrq = Object.values(cpuRates).reduce((a, x) => a + x, 0);
       document.getElementById("kpi-cpuirq").textContent = fmtNum(cpuIrq);
       document.getElementById("kpi-ifaces").textContent = String(net.interfaces || 0);
       document.getElementById("kpi-rx").textContent = bytes(net.rx_bps || 0);
       document.getElementById("kpi-tx").textContent = bytes(net.tx_bps || 0);
       document.getElementById("kpi-activeirqs").textContent = String(irqRows.length);
+      document.getElementById("kpi-activecpus").textContent = String(Object.keys(cpuRates).length);
+      document.getElementById("kpi-errors").textContent = fmtNum(errors);
+      document.getElementById("kpi-drops").textContent = fmtNum(drops);
+
+      const viz = state.vizByHost[state.host] || null;
+      const bal = viz?.cpu_heatmap?.balance?.score ?? 0;
+      document.getElementById("kpi-balance").textContent = fmtNum(bal) + "/100";
 
       const body = document.getElementById("fleet-body");
       body.innerHTML = "";
@@ -625,22 +903,35 @@
       }
     }
 
-    function renderIrq() {
+    function filteredIrqRows() {
       const rows = [...(state.snapshot?.irq?.rows || [])];
       const q = (document.getElementById("irq-search").value || "").toLowerCase();
-      const sortBy = document.getElementById("irq-sort").value;
+      const selectedCpu = state.selectedCpu;
+      const selectedIrq = state.selectedIrq;
+      const selectedIface = state.selectedIface;
 
-      const filtered = rows.filter(r => !q || [r.irq, r.irq_name, r.device, r.nic].join(" ").toLowerCase().includes(q));
-      if (sortBy === "name") filtered.sort((a, b) => String(a.irq_name).localeCompare(String(b.irq_name)));
-      else if (sortBy === "irq") filtered.sort((a, b) => String(a.irq).localeCompare(String(b.irq)));
-      else filtered.sort((a, b) => Number(b.total_rate || 0) - Number(a.total_rate || 0));
+      return rows.filter(r => {
+        if (q && ![r.irq, r.irq_name, r.device, r.nic].join(" ").toLowerCase().includes(q)) return false;
+        if (selectedIrq !== "ALL" && String(r.irq) !== String(selectedIrq)) return false;
+        if (selectedCpu !== "ALL" && Number((r.cpu_rates || {})[selectedCpu] || 0) <= 0) return false;
+        if (selectedIface !== "ALL" && String(r.nic || "") !== String(selectedIface)) return false;
+        return true;
+      });
+    }
+
+    function renderIrq() {
+      const rows = filteredIrqRows();
+      const sortBy = document.getElementById("irq-sort").value;
+      if (sortBy === "name") rows.sort((a, b) => String(a.irq_name).localeCompare(String(b.irq_name)));
+      else if (sortBy === "irq") rows.sort((a, b) => String(a.irq).localeCompare(String(b.irq)));
+      else rows.sort((a, b) => Number(b.total_rate || 0) - Number(a.total_rate || 0));
 
       const body = document.getElementById("irq-body");
       body.innerHTML = "";
-      for (const row of filtered.slice(0, 200)) {
+      for (const row of rows.slice(0, 500)) {
         const cpuEntries = Object.entries(row.cpu_rates || {}).sort((a, b) => Number(b[1]) - Number(a[1]));
         const top = cpuEntries[0] || ["N/A", 0];
-        const cpuDist = cpuEntries.slice(0, 4).map(x => x[0] + ":" + fmtNum(x[1])).join(" ");
+        const cpuDist = cpuEntries.slice(0, 6).map(x => x[0] + ":" + fmtNum(x[1])).join(" ");
         const tr = document.createElement("tr");
         tr.innerHTML =
           "<td class='mono'>" + row.irq + "</td>" +
@@ -656,7 +947,7 @@
           "<td>" + (row.numa_node || "N/A") + "</td>";
         body.appendChild(tr);
       }
-      if (!filtered.length) {
+      if (!rows.length) {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td colspan='11'>No IRQ rows</td>";
         body.appendChild(tr);
@@ -664,7 +955,7 @@
 
       const topBody = document.getElementById("irq-top-body");
       topBody.innerHTML = "";
-      for (const row of filtered.slice(0, 10)) {
+      for (const row of rows.slice(0, 20)) {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td>" + row.irq_name + "</td><td>" + fmtNum(row.total_rate) + "</td>";
         topBody.appendChild(tr);
@@ -672,7 +963,7 @@
 
       const corrBody = document.getElementById("corr-body");
       corrBody.innerHTML = "";
-      const correlations = estimateCorrelation(filtered, state.network?.interfaces || []);
+      const correlations = estimateCorrelation(rows, state.network?.interfaces || []);
       for (const item of correlations) {
         const tr = document.createElement("tr");
         tr.innerHTML =
@@ -733,12 +1024,10 @@
     }
 
     function renderCpu() {
-      const rows = state.snapshot?.irq?.rows || [];
+      const rows = filteredIrqRows();
       const softCpu = state.snapshot?.softirq?.sample?.per_cpu_rates || {};
       const cpu = {};
-      for (const row of rows) {
-        for (const [k, v] of Object.entries(row.cpu_rates || {})) cpu[k] = (cpu[k] || 0) + Number(v || 0);
-      }
+      for (const row of rows) for (const [k, v] of Object.entries(row.cpu_rates || {})) cpu[k] = (cpu[k] || 0) + Number(v || 0);
       const cpus = Array.from(new Set([...Object.keys(cpu), ...Object.keys(softCpu)])).sort((a, b) => Number(a) - Number(b));
       const total = cpus.reduce((acc, k) => acc + Number(cpu[k] || 0), 0) || 1;
 
@@ -748,8 +1037,9 @@
         const irq = Number(cpu[id] || 0);
         const sirq = Number(softCpu[id] || 0);
         const load = (irq / total) * 100;
+        const warn = load > state.thresholds.imbalance ? "<span class='yellow'> !</span>" : "";
         const tr = document.createElement("tr");
-        tr.innerHTML = "<td class='mono'>CPU " + id + "</td><td>" + fmtNum(irq) + "</td><td>" + fmtNum(sirq) + "</td><td>" + fmtNum(load) + "%</td>";
+        tr.innerHTML = "<td class='mono'>CPU " + id + warn + "</td><td>" + fmtNum(irq) + "</td><td>" + fmtNum(sirq) + "</td><td>" + fmtNum(load) + "%</td>";
         body.appendChild(tr);
       }
     }
@@ -767,7 +1057,7 @@
       document.getElementById("net-err").textContent = fmtNum((g.rx_err_ps || 0) + (g.tx_err_ps || 0));
 
       const filter = document.getElementById("iface-filter");
-      const prev = filter.value || "ALL INTERFACES";
+      const prev = state.selectedIface !== "ALL" ? state.selectedIface : (filter.value || "ALL INTERFACES");
       const names = (net.interfaces || []).map(x => x.interface).sort();
       filter.innerHTML = "";
       const all = document.createElement("option");
@@ -786,8 +1076,9 @@
       body.innerHTML = "";
       for (const row of (net.interfaces || [])) {
         if (filter.value !== "ALL INTERFACES" && row.interface !== filter.value) continue;
+        const highlight = (Number(row.rx_err_ps || 0) + Number(row.tx_err_ps || 0)) > 0 || (Number(row.rx_drop_ps || 0) + Number(row.tx_drop_ps || 0)) > state.thresholds.netDrop;
         const tr = document.createElement("tr");
-        tr.innerHTML = "<td class='mono'>" + row.interface + "</td><td>" + bytes(row.rx_bps) + "</td><td>" + bytes(row.tx_bps) + "</td><td>" + fmtNum(row.rx_pps) + "</td><td>" + fmtNum(row.tx_pps) + "</td><td>" + fmtNum(row.rx_err_ps) + "</td><td>" + fmtNum(row.tx_err_ps) + "</td><td>" + fmtNum(row.rx_drop_ps) + "</td><td>" + fmtNum(row.tx_drop_ps) + "</td>";
+        tr.innerHTML = "<td class='mono'>" + row.interface + "</td><td>" + bytes(row.rx_bps) + "</td><td>" + bytes(row.tx_bps) + "</td><td>" + fmtNum(row.rx_pps) + "</td><td>" + fmtNum(row.tx_pps) + "</td><td" + (highlight ? " class='red'" : "") + ">" + fmtNum(row.rx_err_ps) + "</td><td" + (highlight ? " class='red'" : "") + ">" + fmtNum(row.tx_err_ps) + "</td><td" + (highlight ? " class='yellow'" : "") + ">" + fmtNum(row.rx_drop_ps) + "</td><td" + (highlight ? " class='yellow'" : "") + ">" + fmtNum(row.tx_drop_ps) + "</td>";
         body.appendChild(tr);
       }
     }
@@ -811,9 +1102,7 @@
           "<div>IPv6: " + ((iface.ipv6 || []).join(", ") || "N/A") + "</div>";
         root.appendChild(div);
       }
-      if (!state.interfaces.length) {
-        root.textContent = "No interface metadata available.";
-      }
+      if (!state.interfaces.length) root.textContent = "No interface metadata available.";
     }
 
     async function renderSessions() {
@@ -866,11 +1155,456 @@
       }
     }
 
+    function renderVisualizations() {
+      if (!state.host || state.host === "ALL SYSTEMS") return;
+      const payload = state.vizByHost[state.host];
+      if (!payload) return;
+
+      renderOverviewTrend(payload);
+      renderTopIrqBar(payload);
+      renderIrqHeatmap(payload);
+      renderIrqDistribution(payload);
+      renderCpuHeatmap(payload);
+      renderCpuGrid(payload);
+      renderSoftirqDist(payload);
+      renderSoftirqTrend(payload);
+      renderNetworkTrend(payload);
+      renderNetworkHeatmap(payload);
+      renderNetworkRanking(payload);
+      renderNetworkErrorTrend(payload);
+      renderCorrelation(payload);
+      renderNuma(payload);
+      renderTopology();
+      renderHealth(payload);
+      renderTimeline(payload);
+    }
+
+    function renderOverviewTrend(payload) {
+      const chart = ensureChart("overviewTrend", "chart-overview-trend");
+      if (!chart) return;
+      const irq = toSeriesXY(payload.series.irq || [], "irq_rate");
+      const soft = (payload.series.softirq_total || []).map(x => [x.timestamp * 1000, Number(x.value || 0)]);
+      const rx = toSeriesXY(payload.series.network || [], "rx_bps");
+      const tx = toSeriesXY(payload.series.network || [], "tx_bps");
+      chart.setOption({
+        ...chartTheme(),
+        tooltip: { trigger: "axis" },
+        legend: { textStyle: { color: "#dce5f2" } },
+        xAxis: { type: "time", axisLabel: { color: "#9db0cb" } },
+        yAxis: [
+          { type: "value", name: "IRQ/s", axisLabel: { color: "#9db0cb" } },
+          { type: "value", name: "B/s", axisLabel: { color: "#9db0cb" } },
+        ],
+        series: [
+          { name: "IRQ/s", type: "line", smooth: true, showSymbol: false, data: irq, yAxisIndex: 0 },
+          { name: "SoftIRQ/s", type: "line", smooth: true, showSymbol: false, data: soft, yAxisIndex: 0 },
+          { name: "RX B/s", type: "line", smooth: true, showSymbol: false, data: rx, yAxisIndex: 1 },
+          { name: "TX B/s", type: "line", smooth: true, showSymbol: false, data: tx, yAxisIndex: 1 },
+        ],
+      });
+    }
+
+    function renderTopIrqBar(payload) {
+      const chart = ensureChart("topIrq", "chart-top-irq");
+      if (!chart) return;
+      const rows = payload.top_irq_sources || [];
+      chart.setOption({
+        ...chartTheme(),
+        tooltip: {
+          trigger: "item",
+          formatter: p => "IRQ " + rows[p.dataIndex].irq + "<br/>" + rows[p.dataIndex].name + "<br/>Rate: " + fmtNum(p.value) + "/s",
+        },
+        xAxis: { type: "value", axisLabel: { color: "#9db0cb" } },
+        yAxis: { type: "category", data: rows.map(x => x.name), axisLabel: { color: "#9db0cb" } },
+        series: [{ type: "bar", data: rows.map(x => Number(x.rate || 0)), itemStyle: { color: "#4da4ff" } }],
+      });
+    }
+
+    function renderIrqHeatmap(payload) {
+      const chart = ensureChart("irqHeat", "chart-irq-heatmap");
+      if (!chart) return;
+      const cpus = payload.irq_heatmap?.cpus || [];
+      const irqs = (payload.irq_heatmap?.irqs || []).map(x => x.irq + " " + x.name);
+      const values = (payload.irq_heatmap?.values || []).map(v => [v[1], v[0], v[2], v]);
+      chart.setOption({
+        ...chartTheme(),
+        tooltip: {
+          formatter: p => {
+            const raw = p.data[3];
+            return "IRQ: " + raw[4] + "<br/>CPU: " + cpus[p.data[0]] + "<br/>IRQ/s: " + fmtNum(raw[2]) + "<br/>Total: " + raw[3] + "<br/>Source: " + raw[5] + "<br/>Device: " + raw[6];
+          },
+        },
+        xAxis: { type: "category", data: cpus, axisLabel: { color: "#9db0cb", interval: cpus.length > 64 ? Math.ceil(cpus.length / 24) : 0 } },
+        yAxis: { type: "category", data: irqs, axisLabel: { color: "#9db0cb" } },
+        dataZoom: [{ type: "inside", xAxisIndex: 0 }, { type: "slider", xAxisIndex: 0 }],
+        visualMap: { min: 0, max: Math.max(1, ...values.map(x => x[2])), orient: "horizontal", left: "center", bottom: 0, inRange: { color: ["#1e2d45", "#2676c4", "#35b470", "#f0bd4e", "#d45050"] } },
+        series: [{ type: "heatmap", data: values, progressive: 0 }],
+      });
+      chart.off("click");
+      chart.on("click", p => {
+        const raw = p.data[3];
+        state.selectedCpu = String(cpus[p.data[0]]);
+        state.selectedIrq = String(raw[4]);
+        renderIrq();
+        renderCpu();
+      });
+    }
+
+    function renderIrqDistribution(payload) {
+      const chart = ensureChart("irqDist", "chart-irq-dist");
+      if (!chart) return;
+      const rows = payload.irq_distribution || [];
+      chart.setOption({
+        ...chartTheme(),
+        tooltip: { trigger: "item", formatter: p => p.name + ": " + fmtNum(p.value) + "/s (" + asPct(rows[p.dataIndex].percent) + ")" },
+        xAxis: { type: "value", axisLabel: { color: "#9db0cb" } },
+        yAxis: { type: "category", data: rows.map(x => x.source_class), axisLabel: { color: "#9db0cb" } },
+        series: [{ type: "bar", data: rows.map(x => Number(x.rate || 0)), itemStyle: { color: "#7bc2ff" } }],
+      });
+    }
+
+    function renderCpuHeatmap(payload) {
+      const chart = ensureChart("cpuHeat", "chart-cpu-heatmap");
+      if (!chart) return;
+      const rows = payload.cpu_heatmap?.values || [];
+      const cpus = rows.map(x => String(x.cpu));
+      const data = [];
+      for (let i = 0; i < rows.length; i++) {
+        data.push([i, 0, Number(rows[i].irq_rate || 0), rows[i]]);
+        data.push([i, 1, Number(rows[i].softirq_rate || 0), rows[i]]);
+      }
+      chart.setOption({
+        ...chartTheme(),
+        tooltip: {
+          formatter: p => {
+            const row = p.data[3];
+            const metric = p.data[1] === 0 ? "IRQ/s" : "SoftIRQ/s";
+            return "CPU " + row.cpu + "<br/>" + metric + ": " + fmtNum(p.data[2]) + "<br/>Total: " + fmtNum(row.total_rate);
+          },
+        },
+        xAxis: { type: "category", data: cpus, axisLabel: { color: "#9db0cb", interval: cpus.length > 64 ? Math.ceil(cpus.length / 24) : 0 } },
+        yAxis: { type: "category", data: ["IRQ/s", "SoftIRQ/s"], axisLabel: { color: "#9db0cb" } },
+        dataZoom: [{ type: "inside", xAxisIndex: 0 }, { type: "slider", xAxisIndex: 0 }],
+        visualMap: { min: 0, max: Math.max(1, ...data.map(x => x[2])), orient: "horizontal", left: "center", bottom: 0, inRange: { color: ["#1e2d45", "#2676c4", "#35b470", "#f0bd4e", "#d45050"] } },
+        series: [{ type: "heatmap", data }],
+      });
+      chart.off("click");
+      chart.on("click", p => {
+        state.selectedCpu = String(rows[p.data[0]].cpu);
+        renderIrq();
+        renderCpu();
+      });
+    }
+
+    function renderCpuGrid(payload) {
+      const chart = ensureChart("cpuGrid", "chart-cpu-grid");
+      if (!chart) return;
+      const rows = payload.cpu_heatmap?.values || [];
+      const cols = Math.min(32, Math.max(8, Math.ceil(Math.sqrt(rows.length || 1))));
+      const values = rows.map((r, idx) => [idx % cols, Math.floor(idx / cols), Number(r.total_rate || 0), r]);
+      chart.setOption({
+        ...chartTheme(),
+        tooltip: { formatter: p => "CPU " + p.data[3].cpu + "<br/>IRQ/s " + fmtNum(p.data[3].irq_rate) + "<br/>SoftIRQ/s " + fmtNum(p.data[3].softirq_rate) },
+        xAxis: { type: "category", data: Array.from({ length: cols }, (_, i) => "C" + i), axisLabel: { color: "#9db0cb" } },
+        yAxis: { type: "category", data: Array.from({ length: Math.ceil(rows.length / cols) }, (_, i) => "R" + i), axisLabel: { color: "#9db0cb" } },
+        visualMap: { min: 0, max: Math.max(1, ...values.map(x => x[2])), orient: "horizontal", left: "center", bottom: 0, inRange: { color: ["#1e2d45", "#2676c4", "#35b470", "#f0bd4e", "#d45050"] } },
+        series: [{ type: "heatmap", data: values }],
+      });
+    }
+
+    function renderSoftirqDist(payload) {
+      const chart = ensureChart("softDist", "chart-softirq-dist");
+      if (!chart) return;
+      const rates = state.snapshot?.softirq?.sample?.rates || {};
+      const rows = Object.entries(rates).sort((a, b) => Number(b[1]) - Number(a[1]));
+      chart.setOption({
+        ...chartTheme(),
+        tooltip: { trigger: "axis" },
+        xAxis: { type: "value", axisLabel: { color: "#9db0cb" } },
+        yAxis: { type: "category", data: rows.map(x => x[0]), axisLabel: { color: "#9db0cb" } },
+        series: [{ type: "bar", data: rows.map(x => Number(x[1])), itemStyle: { color: "#58c3ff" } }],
+      });
+    }
+
+    function renderSoftirqTrend(payload) {
+      const chart = ensureChart("softTrend", "chart-softirq-trend");
+      if (!chart) return;
+      const cls = payload.series.softirq_classes || {};
+      const keys = Object.keys(cls).slice(0, 8);
+      const series = keys.map(key => ({ name: key, type: "line", showSymbol: false, data: (cls[key] || []).map(x => [x[0] * 1000, x[1]]) }));
+      chart.setOption({
+        ...chartTheme(),
+        tooltip: { trigger: "axis" },
+        legend: { data: keys, textStyle: { color: "#dce5f2" } },
+        xAxis: { type: "time", axisLabel: { color: "#9db0cb" } },
+        yAxis: { type: "value", axisLabel: { color: "#9db0cb" } },
+        series,
+      });
+    }
+
+    function renderNetworkTrend(payload) {
+      const chart = ensureChart("netTrend", "chart-network-trend");
+      if (!chart) return;
+      const rx = toSeriesXY(payload.series.network || [], "rx_bps");
+      const tx = toSeriesXY(payload.series.network || [], "tx_bps");
+      chart.setOption({
+        ...chartTheme(),
+        tooltip: { trigger: "axis" },
+        legend: { data: ["RX", "TX"], textStyle: { color: "#dce5f2" } },
+        xAxis: { type: "time", axisLabel: { color: "#9db0cb" } },
+        yAxis: { type: "value", axisLabel: { color: "#9db0cb" } },
+        series: [
+          { name: "RX", type: "line", data: rx, showSymbol: false, smooth: true },
+          { name: "TX", type: "line", data: tx, showSymbol: false, smooth: true },
+        ],
+      });
+    }
+
+    function renderNetworkHeatmap(payload) {
+      const chart = ensureChart("netHeat", "chart-net-heatmap");
+      if (!chart) return;
+      const metric = el.netHeatMetric.value;
+      const rows = payload.network_interfaces?.rows || [];
+      const values = rows.map((r, i) => [0, i, Number(r[metric] || 0), r]);
+      chart.setOption({
+        ...chartTheme(),
+        tooltip: { formatter: p => p.data[3].interface + "<br/>" + metric + ": " + fmtNum(p.data[2]) },
+        xAxis: { type: "category", data: [metric], axisLabel: { color: "#9db0cb" } },
+        yAxis: { type: "category", data: rows.map(r => r.interface), axisLabel: { color: "#9db0cb" } },
+        visualMap: { min: 0, max: Math.max(1, ...values.map(x => x[2])), orient: "horizontal", left: "center", bottom: 0, inRange: { color: ["#1e2d45", "#2676c4", "#35b470", "#f0bd4e", "#d45050"] } },
+        series: [{ type: "heatmap", data: values }],
+      });
+      chart.off("click");
+      chart.on("click", p => {
+        state.selectedIface = p.data[3].interface;
+        document.getElementById("iface-filter").value = state.selectedIface;
+        renderNetwork();
+        renderIrq();
+      });
+    }
+
+    function renderNetworkRanking(payload) {
+      const chart = ensureChart("netRank", "chart-network-rank");
+      if (!chart) return;
+      const rows = (payload.network_interfaces?.ranking_rx || []).slice(0, 20);
+      chart.setOption({
+        ...chartTheme(),
+        tooltip: { trigger: "item", formatter: p => rows[p.dataIndex].interface + "<br/>RX: " + bytes(p.value) + "<br/>TX: " + bytes(rows[p.dataIndex].tx_bps) },
+        xAxis: { type: "value", axisLabel: { color: "#9db0cb" } },
+        yAxis: { type: "category", data: rows.map(x => x.interface), axisLabel: { color: "#9db0cb" } },
+        series: [{ type: "bar", data: rows.map(x => Number(x.rx_bps || 0)), itemStyle: { color: "#74b8ff" } }],
+      });
+    }
+
+    function renderNetworkErrorTrend(payload) {
+      const chart = ensureChart("netErrTrend", "chart-network-errors");
+      if (!chart) return;
+      const err = (payload.series.network || []).map(r => [r.timestamp * 1000, Number(r.rx_err_ps || 0) + Number(r.tx_err_ps || 0)]);
+      const drop = (payload.series.network || []).map(r => [r.timestamp * 1000, Number(r.rx_drop_ps || 0) + Number(r.tx_drop_ps || 0)]);
+      chart.setOption({
+        ...chartTheme(),
+        tooltip: { trigger: "axis" },
+        legend: { data: ["Errors/s", "Drops/s"], textStyle: { color: "#dce5f2" } },
+        xAxis: { type: "time", axisLabel: { color: "#9db0cb" } },
+        yAxis: { type: "value", axisLabel: { color: "#9db0cb" } },
+        series: [
+          { name: "Errors/s", type: "line", data: err, showSymbol: false, itemStyle: { color: "#d45050" } },
+          { name: "Drops/s", type: "line", data: drop, showSymbol: false, itemStyle: { color: "#d5a53e" } },
+        ],
+      });
+    }
+
+    function renderCorrelation(payload) {
+      const chart = ensureChart("corr", "chart-correlation");
+      if (!chart) return;
+      const top = (payload.top_irq_sources || []).slice(0, 20);
+      const ifaceNodes = {};
+      const irqNodes = {};
+      const cpuNodes = {};
+      const links = [];
+
+      for (const row of filteredIrqRows().slice(0, 120)) {
+        if (!row.nic) continue;
+        ifaceNodes[row.nic] = true;
+        const irqKey = "IRQ " + row.irq;
+        irqNodes[irqKey] = true;
+        links.push({ source: row.nic, target: irqKey, value: Number(row.total_rate || 0) });
+        const cpuEntries = Object.entries(row.cpu_rates || {}).sort((a, b) => Number(b[1]) - Number(a[1])).slice(0, 2);
+        for (const [cpu, rate] of cpuEntries) {
+          const cpuKey = "CPU " + cpu;
+          cpuNodes[cpuKey] = true;
+          links.push({ source: irqKey, target: cpuKey, value: Number(rate || 0) });
+        }
+      }
+
+      const nodes = [
+        ...Object.keys(ifaceNodes).map(x => ({ name: x })),
+        ...Object.keys(irqNodes).map(x => ({ name: x })),
+        ...Object.keys(cpuNodes).map(x => ({ name: x })),
+      ];
+
+      if (!nodes.length) {
+        chart.setOption({ title: { text: "Correlation unavailable", textStyle: { color: "#8fa0ba", fontSize: 14 } }, series: [] });
+        return;
+      }
+
+      chart.setOption({
+        tooltip: { trigger: "item" },
+        series: [{
+          type: "sankey",
+          data: nodes,
+          links,
+          lineStyle: { color: "gradient", curveness: 0.5 },
+          emphasis: { focus: "adjacency" },
+          nodeGap: 12,
+        }],
+      });
+    }
+
+    function renderNuma(payload) {
+      const chart = ensureChart("numa", "chart-numa");
+      if (!chart) return;
+      const bucket = {};
+      for (const row of filteredIrqRows()) {
+        const key = row.numa_node || "N/A";
+        bucket[key] = (bucket[key] || 0) + Number(row.total_rate || 0);
+      }
+      const labels = Object.keys(bucket);
+      chart.setOption({
+        ...chartTheme(),
+        tooltip: { trigger: "item" },
+        xAxis: { type: "category", data: labels, axisLabel: { color: "#9db0cb" } },
+        yAxis: { type: "value", axisLabel: { color: "#9db0cb" } },
+        series: [{ type: "bar", data: labels.map(k => bucket[k]), itemStyle: { color: "#4da4ff" } }],
+      });
+    }
+
+    function renderTopology() {
+      const root = document.getElementById("cpu-topology");
+      const topo = state.topologyByHost[state.host];
+      if (!topo) {
+        root.textContent = "Topology loading...";
+        return;
+      }
+      if (!topo.available) {
+        root.textContent = "Topology unavailable: " + (topo.reason || "unknown");
+        return;
+      }
+      const cpuLoad = {};
+      for (const row of filteredIrqRows()) {
+        for (const [cpu, rate] of Object.entries(row.cpu_rates || {})) {
+          cpuLoad[cpu] = (cpuLoad[cpu] || 0) + Number(rate || 0);
+        }
+      }
+
+      const tree = {};
+      for (const row of topo.rows || []) {
+        const socket = "Socket " + row.socket;
+        const numa = "NUMA " + row.numa;
+        const core = "Core " + row.core;
+        tree[socket] = tree[socket] || {};
+        tree[socket][numa] = tree[socket][numa] || {};
+        tree[socket][numa][core] = tree[socket][numa][core] || [];
+        tree[socket][numa][core].push("CPU " + row.cpu + " (" + fmtNum(cpuLoad[String(row.cpu)] || 0) + "/s)");
+      }
+
+      const lines = [];
+      for (const [socket, numas] of Object.entries(tree)) {
+        lines.push(socket);
+        for (const [numa, cores] of Object.entries(numas)) {
+          lines.push("  |- " + numa);
+          for (const [core, cpus] of Object.entries(cores)) {
+            lines.push("  |  |- " + core);
+            for (const cpu of cpus) lines.push("  |  |  |- " + cpu);
+          }
+        }
+      }
+      root.textContent = lines.join("\n");
+    }
+
+    function renderHealth(payload) {
+      const root = document.getElementById("health-grid");
+      const balance = payload.cpu_heatmap?.balance || { score: 0, status: "Unavailable" };
+      const irqCurrent = Number(payload.stats?.irq?.current || 0);
+      const softCurrent = Number(payload.stats?.softirq?.current || 0);
+      const netCurrent = Number(payload.stats?.network_rx?.current || 0) + Number(payload.stats?.network_tx?.current || 0);
+
+      const normalize = v => Math.min(100, v > 0 ? Math.log10(v + 1) * 22 : 0);
+      const items = [
+        { label: "IRQ Load", pct: normalize(irqCurrent), value: fmtNum(irqCurrent) + "/s" },
+        { label: "SoftIRQ Load", pct: normalize(softCurrent), value: fmtNum(softCurrent) + "/s" },
+        { label: "Network Load", pct: normalize(netCurrent), value: bytes(netCurrent) },
+        { label: "IRQ Balance", pct: Number(balance.score || 0), value: fmtNum(balance.score || 0) + " / 100 (" + (balance.status || "N/A") + ")" },
+      ];
+      root.innerHTML = items.map(i => "<div class='meter'><div>" + i.label + " <span class='tiny'>" + i.value + "</span></div><div class='bar'><div class='fill' style='width:" + i.pct.toFixed(1) + "%'></div></div></div>").join("");
+    }
+
+    function renderTimeline(payload) {
+      const root = document.getElementById("activity-timeline");
+      const events = [];
+      for (const evt of payload.anomalies || []) {
+        if (evt.metric === "network_errors" && Number(evt.current || 0) <= state.thresholds.netErr) continue;
+        if (evt.metric === "network_drops" && Number(evt.current || 0) <= state.thresholds.netDrop) continue;
+        if (evt.type === "spike" && Number(evt.ratio || 0) < state.thresholds.irqSpike) continue;
+        events.push(evt);
+      }
+      const balance = payload.cpu_heatmap?.balance || {};
+      if (balance.coefficient_variation && Number(balance.coefficient_variation) * 100 > state.thresholds.imbalance) {
+        events.unshift({
+          type: "imbalance",
+          metric: "cpu_irq_imbalance",
+          timestamp: payload.timestamp,
+          current: Number(balance.coefficient_variation) * 100,
+        });
+      }
+      root.innerHTML = events.slice(0, 40).map(e => {
+        const t = new Date(Number(e.timestamp || 0) * 1000).toLocaleTimeString();
+        const ratio = e.ratio ? (" ratio " + Number(e.ratio).toFixed(2) + "x") : "";
+        return "<div class='evt'><span class='tiny'>" + t + "</span><br/>" + (e.metric || e.type) + ": " + fmtNum(e.current || 0) + ratio + "</div>";
+      }).join("") || "No anomalies in selected window.";
+    }
+
+    async function runCompare() {
+      const a = document.getElementById("compare-a").value;
+      const b = document.getElementById("compare-b").value;
+      if (!a || !b) return;
+      const data = await fetchJson("/api/visualization/compare?a=" + encodeURIComponent(a) + "&b=" + encodeURIComponent(b) + "&window_seconds=" + state.windowSeconds);
+      document.getElementById("cmp-a-h").textContent = a;
+      document.getElementById("cmp-b-h").textContent = b;
+      const rows = [
+        ["IRQ/sec", data.systems[a].irq_per_sec, data.systems[b].irq_per_sec, data.deltas.irq_per_sec],
+        ["SoftIRQ/sec", data.systems[a].softirq_per_sec, data.systems[b].softirq_per_sec, data.deltas.softirq_per_sec],
+        ["Network RX", data.systems[a].network_rx_bps, data.systems[b].network_rx_bps, data.deltas.network_rx_bps],
+        ["Network TX", data.systems[a].network_tx_bps, data.systems[b].network_tx_bps, data.deltas.network_tx_bps],
+        ["Errors", data.systems[a].network_errors, data.systems[b].network_errors, data.deltas.network_errors],
+        ["Drops", data.systems[a].network_drops, data.systems[b].network_drops, data.deltas.network_drops],
+        ["IRQ Balance", data.systems[a].irq_balance, data.systems[b].irq_balance, data.deltas.irq_balance],
+      ];
+      document.getElementById("compare-body").innerHTML = rows.map(r => "<tr><td>" + r[0] + "</td><td>" + fmtNum(r[1]) + "</td><td>" + fmtNum(r[2]) + "</td><td>" + fmtNum(r[3]) + "</td></tr>").join("");
+
+      const chart = ensureChart("compareBars", "chart-compare-bars");
+      if (!chart) return;
+      chart.setOption({
+        ...chartTheme(),
+        tooltip: { trigger: "axis" },
+        legend: { data: [a, b], textStyle: { color: "#dce5f2" } },
+        xAxis: { type: "value", axisLabel: { color: "#9db0cb" } },
+        yAxis: { type: "category", data: rows.map(r => r[0]), axisLabel: { color: "#9db0cb" } },
+        series: [
+          { name: a, type: "bar", data: rows.map(r => Number(r[1])) },
+          { name: b, type: "bar", data: rows.map(r => Number(r[2])) },
+        ],
+      });
+    }
+
     async function refresh() {
       try {
         await loadHealth();
         await loadHosts();
         await loadMainData();
+        await loadVisualizationData();
+        await loadTopologyData();
+        renderAll();
       } catch (err) {
         log("ERROR", "ui", String(err));
       }
@@ -895,8 +1629,15 @@
       state.ws.onmessage = async (evt) => {
         try {
           const payload = JSON.parse(evt.data);
+          if (!state.paused) {
+            const sut = payload.sut_id || payload.host || "";
+            if (!state.host || state.host === "ALL SYSTEMS" || !sut || sut === state.host || state.host === "local") {
+              await loadMainData();
+              await loadVisualizationData();
+              renderAll();
+            }
+          }
           log("INFO", "ws", payload.type || "event");
-          await loadMainData();
         } catch (err) {
           log("ERROR", "ws", "message parse failed");
         }
@@ -954,20 +1695,62 @@
       }
 
       el.refresh.onclick = refresh;
-      el.host.onchange = async () => { state.host = el.host.value; await loadMainData(); };
+      el.host.onchange = async () => {
+        state.host = el.host.value;
+        state.selectedCpu = "ALL";
+        state.selectedIrq = "ALL";
+        state.selectedIface = "ALL";
+        await loadMainData();
+        await loadVisualizationData();
+        await loadTopologyData();
+        renderAll();
+      };
+      el.timeRange.onchange = async () => {
+        state.windowSeconds = Number(el.timeRange.value || 60);
+        await loadVisualizationData();
+        renderVisualizations();
+      };
+      el.topN.onchange = async () => {
+        state.topN = Number(el.topN.value || 20);
+        await loadVisualizationData();
+        renderVisualizations();
+      };
+      el.liveToggle.onclick = async () => {
+        state.paused = !state.paused;
+        el.liveToggle.textContent = state.paused ? "PAUSED" : "LIVE";
+        if (!state.paused) {
+          await refresh();
+        }
+      };
+      el.netHeatMetric.onchange = renderVisualizations;
       document.getElementById("irq-search").oninput = renderIrq;
       document.getElementById("irq-sort").onchange = renderIrq;
-      document.getElementById("iface-filter").onchange = renderNetwork;
+      document.getElementById("iface-filter").onchange = () => {
+        const v = document.getElementById("iface-filter").value;
+        state.selectedIface = v === "ALL INTERFACES" ? "ALL" : v;
+        renderNetwork();
+        renderIrq();
+      };
       document.getElementById("log-level").onchange = renderLogs;
       document.getElementById("log-search").oninput = renderLogs;
       document.getElementById("diag-start").onclick = startDiagnostics;
       document.getElementById("diag-stop").onclick = stopDiagnostics;
+      document.getElementById("compare-run").onclick = runCompare;
 
+      document.getElementById("th-irq-spike").onchange = () => { state.thresholds.irqSpike = Number(document.getElementById("th-irq-spike").value || 2.0); renderVisualizations(); };
+      document.getElementById("th-net-err").onchange = () => { state.thresholds.netErr = Number(document.getElementById("th-net-err").value || 0.0); renderVisualizations(); };
+      document.getElementById("th-net-drop").onchange = () => { state.thresholds.netDrop = Number(document.getElementById("th-net-drop").value || 100.0); renderVisualizations(); };
+      document.getElementById("th-imbalance").onchange = () => { state.thresholds.imbalance = Number(document.getElementById("th-imbalance").value || 30.0); renderVisualizations(); };
+
+      window.addEventListener("resize", resizeCharts);
       window.irqlensShowFiles = showSessionFiles;
       window.irqlensSelectSystem = async function(sutId) {
         state.host = sutId;
         el.host.value = sutId;
         await loadMainData();
+        await loadVisualizationData();
+        await loadTopologyData();
+        renderAll();
       };
 
       await refresh();

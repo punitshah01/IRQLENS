@@ -171,6 +171,9 @@ Core endpoints:
 - `GET /api/softirq/current`
 - `GET /api/network/current`
 - `GET /api/network/{interface}`
+- `GET /api/systems/{sut_id}/visualization`
+- `GET /api/systems/{sut_id}/visualization/topology`
+- `GET /api/visualization/compare?a=<sut-a>&b=<sut-b>&window_seconds=<sec>`
 - `GET /api/sessions`
 - `GET /api/sessions/{session_id}`
 - `POST /api/sessions/start`
@@ -191,6 +194,51 @@ Session routing:
 - `POST /api/sessions/start` accepts body `{"categories": [...], "sut_id": "<sut-id>"}`
 - `POST /api/systems/{sut_id}/sessions/start`
 - `POST /api/systems/{sut_id}/sessions/{session_id}/stop`
+
+Visualization endpoint notes:
+- `window_seconds` is bounded to `30..3600`.
+- `top_n` controls top IRQ rows for heatmap/ranking payloads.
+- Payload includes trend series, heatmaps, top sources, distribution, health, and anomaly events derived from real telemetry.
+
+## Visualization Metrics
+
+Derived metrics are deterministic and based on recorded telemetry:
+
+- IRQ rate:
+	- `IRQ/sec = delta IRQ count / elapsed seconds`
+- SoftIRQ total rate:
+	- `sum(softirq_class_rate_i)` for each sample timestamp
+- Network totals:
+	- `RX B/s = sum(interface.rx_bps)`
+	- `TX B/s = sum(interface.tx_bps)`
+	- `Errors/s = sum(rx_err_ps + tx_err_ps)`
+	- `Drops/s = sum(rx_drop_ps + tx_drop_ps)`
+
+IRQ balance score uses normalized entropy of per-CPU IRQ load:
+
+- Let CPU IRQ rates be `x_i` for `i in [1..N]`, total `T = sum(x_i)`
+- Probabilities: `p_i = x_i / T`
+- Entropy: `H = -sum(p_i * ln(p_i))`
+- Normalized entropy: `Hn = H / ln(N)`
+- Balance score: `score = 100 * Hn`, clamped to `[0, 100]`
+
+Reported together with coefficient of variation:
+
+- `mean = T / N`
+- `std = sqrt(sum((x_i - mean)^2) / N)`
+- `CV = std / mean`
+
+Status mapping:
+- `Balanced`: score >= 80 and CV < 0.40
+- `Moderately Imbalanced`: score >= 60 and CV < 0.70
+- `Highly Imbalanced`: otherwise
+
+Spike detection (timeline events):
+
+- Baseline window uses previous 8 points
+- Baseline = mean(previous 8 values)
+- Spike when `current >= baseline * multiplier`
+- Default multiplier is `2.0` (configurable in UI settings)
 
 Compatibility endpoints retained:
 - `POST /api/irq/ingest`

@@ -392,6 +392,55 @@ class SqliteStore:
             )
         return out
 
+    def latest_irq_timestamp(self, sut_ip: str) -> Optional[float]:
+        with self._conn() as conn:
+            row = conn.execute(
+                """
+                SELECT MAX(timestamp) AS ts
+                FROM irq_samples
+                WHERE sut_ip = ?
+                """,
+                (sut_ip,),
+            ).fetchone()
+        if not row or row["ts"] is None:
+            return None
+        return float(row["ts"])
+
+    def irq_at_timestamp(self, sut_ip: str, timestamp: float, limit: int = 2000) -> List[IRQSample]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM irq_samples
+                WHERE sut_ip = ? AND timestamp = ?
+                ORDER BY total_rate DESC
+                LIMIT ?
+                """,
+                (sut_ip, timestamp, limit),
+            ).fetchall()
+        out: List[IRQSample] = []
+        for row in rows:
+            out.append(
+                IRQSample(
+                    timestamp=row["timestamp"],
+                    sut_ip=row["sut_ip"],
+                    irq=row["irq"],
+                    irq_name=row["irq_name"],
+                    device=row["device"],
+                    interrupt_type=row["interrupt_type"],
+                    affinity_list=row["affinity_list"],
+                    numa_node=row["numa_node"],
+                    nic=row["nic"],
+                    queue=row["queue"],
+                    direction=row["direction"],
+                    source_class=row["source_class"],
+                    total_count=row["total_count"],
+                    total_rate=row["total_rate"],
+                    cpu_rates=json.loads(row["cpu_rates_json"] or "{}"),
+                )
+            )
+        return out
+
     def latest_softirq(self, sut_ip: str) -> Optional[SoftIRQSample]:
         with self._conn() as conn:
             row = conn.execute(
@@ -448,6 +497,81 @@ class SqliteStore:
                     rx_drop_ps=row["rx_drop_ps"],
                     tx_drop_ps=row["tx_drop_ps"],
                 )
+            )
+        return out
+
+    def irq_rate_series(self, sut_ip: str, since_ts: float) -> List[Dict[str, float]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT timestamp, SUM(total_rate) AS irq_rate
+                FROM irq_samples
+                WHERE sut_ip = ? AND timestamp >= ?
+                GROUP BY timestamp
+                ORDER BY timestamp ASC
+                """,
+                (sut_ip, since_ts),
+            ).fetchall()
+        return [{"timestamp": float(r["timestamp"]), "irq_rate": float(r["irq_rate"] or 0.0)} for r in rows]
+
+    def network_rate_series(self, sut_ip: str, since_ts: float) -> List[Dict[str, float]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT timestamp,
+                       SUM(rx_bps) AS rx_bps,
+                       SUM(tx_bps) AS tx_bps,
+                       SUM(rx_pps) AS rx_pps,
+                       SUM(tx_pps) AS tx_pps,
+                       SUM(rx_err_ps) AS rx_err_ps,
+                       SUM(tx_err_ps) AS tx_err_ps,
+                       SUM(rx_drop_ps) AS rx_drop_ps,
+                       SUM(tx_drop_ps) AS tx_drop_ps
+                FROM network_samples
+                WHERE sut_ip = ? AND timestamp >= ?
+                GROUP BY timestamp
+                ORDER BY timestamp ASC
+                """,
+                (sut_ip, since_ts),
+            ).fetchall()
+        out: List[Dict[str, float]] = []
+        for row in rows:
+            out.append(
+                {
+                    "timestamp": float(row["timestamp"]),
+                    "rx_bps": float(row["rx_bps"] or 0.0),
+                    "tx_bps": float(row["tx_bps"] or 0.0),
+                    "rx_pps": float(row["rx_pps"] or 0.0),
+                    "tx_pps": float(row["tx_pps"] or 0.0),
+                    "rx_err_ps": float(row["rx_err_ps"] or 0.0),
+                    "tx_err_ps": float(row["tx_err_ps"] or 0.0),
+                    "rx_drop_ps": float(row["rx_drop_ps"] or 0.0),
+                    "tx_drop_ps": float(row["tx_drop_ps"] or 0.0),
+                }
+            )
+        return out
+
+    def softirq_series(self, sut_ip: str, since_ts: float) -> List[Dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT timestamp, rates_json, per_cpu_rates_json
+                FROM softirq_samples
+                WHERE sut_ip = ? AND timestamp >= ?
+                ORDER BY timestamp ASC
+                """,
+                (sut_ip, since_ts),
+            ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            rates = json.loads(row["rates_json"] or "{}")
+            per_cpu = json.loads(row["per_cpu_rates_json"] or "{}")
+            out.append(
+                {
+                    "timestamp": float(row["timestamp"]),
+                    "rates": {k: float(v) for k, v in rates.items()},
+                    "per_cpu_rates": {str(k): float(v) for k, v in per_cpu.items()},
+                }
             )
         return out
 

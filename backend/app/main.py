@@ -4,7 +4,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,7 +23,7 @@ from .models import (
     SystemInfo,
     SystemRecord,
 )
-from .services import DiagnosticSessionService, HealthService, TelemetrySampler
+from .services import DiagnosticSessionService, HealthService, TelemetrySampler, detect_spikes, irq_balance_score
 from .store import STORE
 from .ws import WS
 
@@ -164,6 +164,252 @@ def _safe_path_in_output(path_str: str) -> Path:
     if base == target or base in target.parents:
         return target
     raise HTTPException(status_code=403, detail="file outside output directory")
+
+
+def _parse_local_cpu_topology() -> Dict[str, Any]:
+    root = Path("/sys/devices/system/cpu")
+    if not root.exists():
+        return {"available": False, "reason": "topology files unavailable"}
+
+    rows: List[Dict[str, Any]] = []
+    for cpu_dir in sorted(root.glob("cpu[0-9]*"), key=lambda p: int(p.name[3:])):
+        cpu_id = int(cpu_dir.name[3:])
+        topo = cpu_dir / "topology"
+        package = "0"
+        core = str(cpu_id)
+        if topo.exists():
+            pkg_path = topo / "physical_package_id"
+            core_path = topo / "core_id"
+            if pkg_path.exists():
+                package = pkg_path.read_text(encoding="utf-8", errors="ignore").strip() or "0"
+            if core_path.exists():
+                core = core_path.read_text(encoding="utf-8", errors="ignore").strip() or str(cpu_id)
+
+        numa = "0"
+        for node_path in cpu_dir.glob("node*"):
+            if node_path.name.startswith("node"):
+                numa = node_path.name.replace("node", "")
+                break
+        rows.append({"cpu": cpu_id, "socket": package, "numa": numa, "core": core})
+
+    if not rows:
+        return {"available": False, "reason": "no cpu topology rows"}
+    return {"available": True, "rows": rows}
+
+
+def _range_stats(values: List[float]) -> Dict[str, float]:
+    if not values:
+        return {"current": 0.0, "min": 0.0, "max": 0.0, "avg": 0.0}
+    return {
+        "current": float(values[-1]),
+        "min": float(min(values)),
+        "max": float(max(values)),
+        "avg": float(sum(values) / len(values)),
+    }
+
+
+def _source_distribution(rows: List[IRQSample]) -> List[Dict[str, Any]]:
+    bucket: Dict[str, float] = {}
+    for row in rows:
+        key = (row.source_class or "other").strip() or "other"
+        bucket[key] = bucket.get(key, 0.0) + float(row.total_rate)
+    total = sum(bucket.values()) or 1.0
+    out = []
+    for key, value in sorted(bucket.items(), key=lambda kv: kv[1], reverse=True):
+        out.append({"source_class": key, "rate": value, "percent": (value / total) * 100.0})
+    return out
+
+
+def _cpu_totals(rows: List[IRQSample], softirq_per_cpu: Dict[str, float]) -> Dict[str, Dict[str, float]]:
+    data: Dict[str, Dict[str, float]] = {}
+    for row in rows:
+        for cpu, rate in row.cpu_rates.items():
+            key = str(cpu)
+            if key not in data:
+                data[key] = {"irq": 0.0, "softirq": 0.0, "total": 0.0}
+            data[key]["irq"] += float(rate)
+    for cpu, rate in softirq_per_cpu.items():
+        key = str(cpu)
+        if key not in data:
+            data[key] = {"irq": 0.0, "softirq": 0.0, "total": 0.0}
+        data[key]["softirq"] += float(rate)
+    for cpu in data:
+        data[cpu]["total"] = data[cpu]["irq"] + data[cpu]["softirq"]
+    return data
+
+
+def _visualization_payload(sut_id: str, window_seconds: int = 300, top_n: int = 20) -> Dict[str, Any]:
+    now = time.time()
+    since = now - max(30, min(3600, int(window_seconds)))
+
+    irq_series = STORE.irq_rate_series(sut_id, since)
+    network_series = STORE.network_rate_series(sut_id, since)
+    softirq_series = STORE.softirq_series(sut_id, since)
+
+    latest_ts = STORE.latest_irq_timestamp(sut_id)
+    latest_irq_rows = STORE.irq_at_timestamp(sut_id, latest_ts, limit=max(50, top_n * 6)) if latest_ts is not None else []
+    latest_softirq = STORE.latest_softirq(sut_id)
+    latest_network = STORE.latest_network(sut_id, limit=500)
+
+    top_irq = sorted(latest_irq_rows, key=lambda x: float(x.total_rate), reverse=True)[: max(5, top_n)]
+
+    cpu_ids = sorted(
+        {
+            str(cpu)
+            for row in latest_irq_rows
+            for cpu in row.cpu_rates.keys()
+        }
+        | set((latest_softirq.per_cpu_rates if latest_softirq else {}).keys()),
+        key=lambda x: int(x),
+    )
+    cpu_index = {cpu: idx for idx, cpu in enumerate(cpu_ids)}
+    irq_rows_for_heatmap = top_irq
+
+    irq_heat_values: List[List[Any]] = []
+    for irq_idx, row in enumerate(irq_rows_for_heatmap):
+        for cpu, rate in row.cpu_rates.items():
+            if str(cpu) not in cpu_index:
+                continue
+            irq_heat_values.append(
+                [
+                    irq_idx,
+                    cpu_index[str(cpu)],
+                    float(rate),
+                    int(row.total_count),
+                    row.irq,
+                    row.irq_name,
+                    row.device,
+                    row.source_class,
+                ]
+            )
+
+    soft_cpu = latest_softirq.per_cpu_rates if latest_softirq else {}
+    cpu_totals = _cpu_totals(latest_irq_rows, soft_cpu)
+    balance = irq_balance_score({cpu: data["irq"] for cpu, data in cpu_totals.items()})
+
+    iface_map: Dict[str, Dict[str, float]] = {}
+    for row in latest_network:
+        iface_map[row.interface] = {
+            "rx_bps": float(row.rx_bps),
+            "tx_bps": float(row.tx_bps),
+            "rx_pps": float(row.rx_pps),
+            "tx_pps": float(row.tx_pps),
+            "errors_ps": float(row.rx_err_ps + row.tx_err_ps),
+            "drops_ps": float(row.rx_drop_ps + row.tx_drop_ps),
+        }
+    iface_rows = [{"interface": k, **v} for k, v in sorted(iface_map.items())]
+
+    softirq_classes: Dict[str, List[List[float]]] = {}
+    for row in softirq_series:
+        ts = float(row["timestamp"])
+        for key, val in row["rates"].items():
+            softirq_classes.setdefault(key, []).append([ts, float(val)])
+
+    irq_values = [float(row["irq_rate"]) for row in irq_series]
+    rx_values = [float(row["rx_bps"]) for row in network_series]
+    tx_values = [float(row["tx_bps"]) for row in network_series]
+    soft_values = [float(sum(row["rates"].values())) for row in softirq_series]
+    err_values = [float(row["rx_err_ps"] + row["tx_err_ps"]) for row in network_series]
+    drop_values = [float(row["rx_drop_ps"] + row["tx_drop_ps"]) for row in network_series]
+
+    anomaly_events: List[Dict[str, Any]] = []
+    anomaly_events.extend(
+        [dict(x, metric="irq_rate") for x in detect_spikes([(r["timestamp"], r["irq_rate"]) for r in irq_series], multiplier=2.0)]
+    )
+    anomaly_events.extend(
+        [dict(x, metric="net_rx_bps") for x in detect_spikes([(r["timestamp"], r["rx_bps"]) for r in network_series], multiplier=2.0)]
+    )
+    anomaly_events.extend(
+        [dict(x, metric="net_tx_bps") for x in detect_spikes([(r["timestamp"], r["tx_bps"]) for r in network_series], multiplier=2.0)]
+    )
+    for row in network_series:
+        total_err = float(row["rx_err_ps"] + row["tx_err_ps"])
+        total_drop = float(row["rx_drop_ps"] + row["tx_drop_ps"])
+        if total_err > 0.0:
+            anomaly_events.append({"type": "error", "metric": "network_errors", "timestamp": row["timestamp"], "current": total_err})
+        if total_drop > 0.0:
+            anomaly_events.append({"type": "drop", "metric": "network_drops", "timestamp": row["timestamp"], "current": total_drop})
+
+    anomaly_events.sort(key=lambda x: float(x.get("timestamp", 0.0)), reverse=True)
+    anomaly_events = anomaly_events[:100]
+
+    source_dist = _source_distribution(latest_irq_rows)
+    health = {
+        "irq_load_score": min(100.0, _range_stats(irq_values)["current"]),
+        "softirq_load_score": min(100.0, _range_stats(soft_values)["current"]),
+        "network_load_score": min(100.0, (_range_stats(rx_values)["current"] + _range_stats(tx_values)["current"]) / 2.0),
+        "irq_balance": balance,
+    }
+
+    return {
+        "sut_id": sut_id,
+        "window_seconds": int(window_seconds),
+        "timestamp": now,
+        "series": {
+            "irq": irq_series,
+            "network": network_series,
+            "softirq_total": [
+                {"timestamp": row["timestamp"], "value": float(sum(row["rates"].values()))}
+                for row in softirq_series
+            ],
+            "softirq_classes": softirq_classes,
+        },
+        "stats": {
+            "irq": _range_stats(irq_values),
+            "softirq": _range_stats(soft_values),
+            "network_rx": _range_stats(rx_values),
+            "network_tx": _range_stats(tx_values),
+            "network_errors": _range_stats(err_values),
+            "network_drops": _range_stats(drop_values),
+        },
+        "top_irq_sources": [
+            {
+                "irq": row.irq,
+                "name": row.irq_name,
+                "source_class": row.source_class,
+                "device": row.device,
+                "rate": row.total_rate,
+                "total_count": row.total_count,
+            }
+            for row in top_irq
+        ],
+        "irq_distribution": source_dist,
+        "irq_heatmap": {
+            "irqs": [
+                {
+                    "irq": row.irq,
+                    "name": row.irq_name,
+                    "device": row.device,
+                    "source_class": row.source_class,
+                    "total_rate": row.total_rate,
+                    "total_count": row.total_count,
+                }
+                for row in irq_rows_for_heatmap
+            ],
+            "cpus": cpu_ids,
+            "values": irq_heat_values,
+        },
+        "cpu_heatmap": {
+            "cpus": cpu_ids,
+            "values": [
+                {
+                    "cpu": cpu,
+                    "irq_rate": cpu_totals.get(cpu, {}).get("irq", 0.0),
+                    "softirq_rate": cpu_totals.get(cpu, {}).get("softirq", 0.0),
+                    "total_rate": cpu_totals.get(cpu, {}).get("total", 0.0),
+                }
+                for cpu in cpu_ids
+            ],
+            "balance": balance,
+        },
+        "network_interfaces": {
+            "rows": iface_rows,
+            "ranking_rx": sorted(iface_rows, key=lambda x: x["rx_bps"], reverse=True),
+            "ranking_tx": sorted(iface_rows, key=lambda x: x["tx_bps"], reverse=True),
+        },
+        "anomalies": anomaly_events,
+        "health": health,
+    }
 
 
 @app.on_event("startup")
@@ -380,6 +626,64 @@ def systems() -> dict:
     _register_local_system_snapshot()
     _refresh_system_statuses()
     return {"systems": [item.model_dump() for item in STORE.list_systems()]}
+
+
+@app.get("/api/systems/{sut_id}/visualization")
+def system_visualization(sut_id: str, window_seconds: int = 300, top_n: int = 20) -> dict:
+    if not STORE.get_system(sut_id) and sut_id != "local":
+        raise HTTPException(status_code=404, detail="system not found")
+    return _visualization_payload(sut_id=sut_id, window_seconds=window_seconds, top_n=top_n)
+
+
+@app.get("/api/systems/{sut_id}/visualization/topology")
+def system_topology(sut_id: str) -> dict:
+    if sut_id == "local":
+        return _parse_local_cpu_topology()
+    system = STORE.get_system(sut_id)
+    if not system:
+        raise HTTPException(status_code=404, detail="system not found")
+    return {
+        "available": False,
+        "reason": "topology metadata not provided by remote agent yet",
+        "sut_id": sut_id,
+        "numa_nodes": system.numa_nodes,
+        "cpu_count": system.cpu_count,
+    }
+
+
+@app.get("/api/visualization/compare")
+def visualization_compare(a: str, b: str, window_seconds: int = 300) -> dict:
+    if not a or not b:
+        raise HTTPException(status_code=400, detail="both systems must be specified")
+    first = _visualization_payload(a, window_seconds=window_seconds, top_n=10)
+    second = _visualization_payload(b, window_seconds=window_seconds, top_n=10)
+
+    def _snapshot(payload: dict) -> dict:
+        return {
+            "irq_per_sec": payload["stats"]["irq"]["current"],
+            "softirq_per_sec": payload["stats"]["softirq"]["current"],
+            "network_rx_bps": payload["stats"]["network_rx"]["current"],
+            "network_tx_bps": payload["stats"]["network_tx"]["current"],
+            "network_errors": payload["stats"]["network_errors"]["current"],
+            "network_drops": payload["stats"]["network_drops"]["current"],
+            "irq_balance": payload["cpu_heatmap"]["balance"]["score"],
+        }
+
+    a_now = _snapshot(first)
+    b_now = _snapshot(second)
+
+    deltas: Dict[str, float] = {}
+    for key in a_now.keys():
+        deltas[key] = float(a_now[key]) - float(b_now[key])
+
+    return {
+        "window_seconds": int(window_seconds),
+        "systems": {
+            a: a_now,
+            b: b_now,
+        },
+        "deltas": deltas,
+    }
 
 
 @app.post("/api/systems")
