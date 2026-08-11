@@ -1073,6 +1073,12 @@ function bindDiagnosticsActions() {
   const viewButton = qs("diag-view-session");
   if (viewButton) {
     viewButton.onclick = async () => {
+      if (!state.diag.completedSessionId) {
+        await loadSessions();
+        const latest = (state.sessions || [])[0];
+        if (!latest?.session_id) return;
+        state.diag.completedSessionId = latest.session_id;
+      }
       state.view = "sessions";
       storage.set("irqlens:view", state.view);
       state.selectedSessionId = state.diag.completedSessionId;
@@ -1229,6 +1235,7 @@ function render() {
   renderNetwork();
   renderCpu();
   renderDiagnostics();
+  bindDiagnosticsActions();
   renderSessions();
   renderSettings();
   resizeCharts();
