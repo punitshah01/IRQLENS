@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import platform
+import subprocess
 import socket
 import sys
 import time
@@ -26,7 +27,9 @@ def _post_json(url: str, payload: dict, token: str) -> dict:
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(req, timeout=10) as resp:
+    # Bypass environment proxies for agent-to-server telemetry posts.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(req, timeout=10) as resp:
         raw = resp.read().decode("utf-8")
     return json.loads(raw) if raw else {}
 
@@ -37,6 +40,18 @@ def _hostname() -> str:
 
 def _ip_addrs() -> List[str]:
     ips: List[str] = []
+    # Prefer local interface enumeration to avoid blocking DNS lookups.
+    try:
+        out = subprocess.check_output(["hostname", "-I"], text=True, timeout=2)
+        for token in out.split():
+            ip = token.strip()
+            if ip and ip not in ips:
+                ips.append(ip)
+        if ips:
+            return ips
+    except Exception:
+        pass
+
     try:
         for item in socket.getaddrinfo(_hostname(), None):
             ip = item[4][0]
@@ -173,7 +188,8 @@ def run_agent(server: str, sut_id: str, name: str, token: str, telemetry_interva
             }
             _post_json(server.rstrip("/") + "/api/agent/register", reg, token)
             break
-        except Exception:
+        except Exception as exc:
+            print(f"[irqlens-agent] register retry: {exc}")
             time.sleep(2)
 
     while True:
