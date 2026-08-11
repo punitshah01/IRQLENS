@@ -146,6 +146,52 @@ def _collect_cpu_topology(cpu_model: str) -> List[dict]:
     return rows
 
 
+def _read_cpu_stat_counters() -> Dict[str, tuple[int, int]]:
+    counters: Dict[str, tuple[int, int]] = {}
+    stat_path = Path("/proc/stat")
+    if not stat_path.exists():
+        return counters
+    for line in stat_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        if not line.startswith("cpu") or line.startswith("cpu "):
+            continue
+        parts = line.split()
+        cpu_label = parts[0]
+        if not cpu_label.startswith("cpu") or not cpu_label[3:].isdigit():
+            continue
+        nums: List[int] = []
+        for token in parts[1:]:
+            try:
+                nums.append(int(token))
+            except ValueError:
+                nums.append(0)
+        while len(nums) < 8:
+            nums.append(0)
+        user, nice, system, idle, iowait, irq, softirq, steal = nums[:8]
+        total = user + nice + system + idle + iowait + irq + softirq + steal
+        idle_total = idle + iowait
+        counters[cpu_label[3:]] = (total, idle_total)
+    return counters
+
+
+def _cpu_utilization_percent(
+    previous: Dict[str, tuple[int, int]],
+    current: Dict[str, tuple[int, int]],
+) -> Dict[str, float]:
+    utilization: Dict[str, float] = {}
+    for cpu, (cur_total, cur_idle) in current.items():
+        prev = previous.get(cpu)
+        if not prev:
+            continue
+        prev_total, prev_idle = prev
+        total_delta = cur_total - prev_total
+        idle_delta = cur_idle - prev_idle
+        if total_delta <= 0:
+            continue
+        busy = max(0, total_delta - idle_delta)
+        utilization[cpu] = max(0.0, min(100.0, (busy / total_delta) * 100.0))
+    return utilization
+
+
 def run_agent(server: str, sut_id: str, name: str, token: str, telemetry_interval: float, heartbeat_interval: float) -> int:
     irq_collector = IRQCollector()
     soft_collector = SoftIRQCollector()
@@ -156,6 +202,7 @@ def run_agent(server: str, sut_id: str, name: str, token: str, telemetry_interva
     last_heartbeat = 0.0
     topology_cache: List[dict] = []
     topology_updated_at = 0.0
+    previous_cpu_stat: Dict[str, tuple[int, int]] = _read_cpu_stat_counters()
 
     while True:
         try:
@@ -207,6 +254,10 @@ def run_agent(server: str, sut_id: str, name: str, token: str, telemetry_interva
                 topology_cache = _collect_cpu_topology(str(system.get("cpu_model", "")))
                 topology_updated_at = ts
 
+            current_cpu_stat = _read_cpu_stat_counters()
+            cpu_utilization = _cpu_utilization_percent(previous_cpu_stat, current_cpu_stat)
+            previous_cpu_stat = current_cpu_stat
+
             irq_rows = _to_irq_rows(sut_id, ts, irq_collector, elapsed)
 
             soft_totals, soft_per_cpu = soft_collector.parse()
@@ -241,6 +292,7 @@ def run_agent(server: str, sut_id: str, name: str, token: str, telemetry_interva
                 "irq_summary": irq_summary,
                 "network_global": net_global,
                 "cpu_topology": topology_cache,
+                "cpu_utilization": cpu_utilization,
             }
 
             _post_json(server.rstrip("/") + "/api/agent/telemetry", payload, token)

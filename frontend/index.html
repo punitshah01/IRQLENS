@@ -11,17 +11,12 @@
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark">IRQLENS</div>
-        <div class="brand-sub">IRQ and network observability for Linux systems, organized for fast investigation.</div>
+        <div class="brand-sub">Simple Linux SUT monitoring and diagnostics focused on fast IRQ and CPU investigation.</div>
       </div>
 
       <div class="nav-group">
         <div class="nav-label">Primary</div>
         <div id="primary-nav"></div>
-      </div>
-
-      <div class="sidebar-footer">
-        <div class="nav-label">Admin</div>
-        <div id="secondary-nav"></div>
       </div>
     </aside>
 
@@ -34,10 +29,12 @@
               <h1 class="headline" id="sut-title">Select a SUT</h1>
               <div class="subline">
                 <span class="dot-badge"><span id="sut-status-dot" class="dot info"></span><span id="sut-status-label">No selection</span></span>
-                <span class="badge" id="sut-meta">Open Systems to choose a target.</span>
+                <span class="badge" id="sut-meta">Waiting for SUT telemetry.</span>
               </div>
             </div>
             <div class="hero-actions">
+              <label for="sut-selector" class="overline" style="align-self:center;">SUT</label>
+              <select id="sut-selector" class="select" style="min-width:260px;"></select>
               <span class="badge" id="ws-pill">WebSocket: connecting</span>
               <span class="badge">Last update: <strong id="last-updated">never</strong></span>
               <button class="action-button ghost" id="refresh-button">Refresh</button>
@@ -47,13 +44,13 @@
 
           <div>
             <div class="overline">Context</div>
-            <div class="subline"><span id="breadcrumb" class="breadcrumb">Systems</span></div>
+            <div class="subline"><span id="breadcrumb" class="breadcrumb">Overview</span></div>
           </div>
 
           <div class="topology-heading">
             <div>
-              <h2 class="card-title" id="page-title">Systems</h2>
-              <div class="card-subtitle" id="page-subtitle">Choose a target system and open its dashboard.</div>
+              <h2 class="card-title" id="page-title">Overview</h2>
+              <div class="card-subtitle" id="page-subtitle">See what is happening on the selected SUT right now.</div>
             </div>
             <div class="time-row">
               <div id="time-controls" class="time-row"></div>
@@ -64,18 +61,6 @@
             <input id="custom-from" class="text-input" type="datetime-local" />
             <input id="custom-to" class="text-input" type="datetime-local" />
             <button id="custom-apply" class="action-button primary">Apply</button>
-          </div>
-        </section>
-
-        <section id="section-systems" class="section active">
-          <div class="card">
-            <div class="card-head">
-              <div>
-                <h3 class="card-title">Systems</h3>
-                <div class="card-subtitle">Choose a system, then open the dashboard with that SUT pinned across navigation.</div>
-              </div>
-            </div>
-            <div id="systems-list" class="system-grid"></div>
           </div>
         </section>
 
@@ -255,15 +240,24 @@
         <section id="section-cpu" class="section">
           <div class="grid">
             <div class="card span-12 compact">
-              <div class="button-row">
-                <span class="muted">View:</span>
-                <button class="metric-toggle active" data-cpu-metric="irq">IRQ</button>
-                <button class="metric-toggle" data-cpu-metric="softirq">SoftIRQ</button>
-                <button class="metric-toggle disabled" data-cpu-metric="load" title="CPU load is unavailable in current telemetry">CPU Load</button>
+              <div class="filter-row">
+                <label for="cpu-metric-selector"><strong>Metric:</strong></label>
+                <select id="cpu-metric-selector" class="select">
+                  <option value="irq">IRQ Rate</option>
+                  <option value="softirq">SoftIRQ Rate</option>
+                  <option value="util">CPU Utilization</option>
+                </select>
+                <div id="cpu-legend" class="legend"></div>
               </div>
             </div>
 
             <div class="card span-8">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">CPU Activity Matrix</h3>
+                  <div class="card-subtitle">Heatmap of real SUT CPU IDs grouped by NUMA nodes.</div>
+                </div>
+              </div>
               <div id="cpu-topology"></div>
             </div>
 
@@ -277,25 +271,6 @@
               <div id="cpu-detail"></div>
             </div>
 
-            <div class="card span-5">
-              <div class="card-head">
-                <div>
-                  <h3 class="card-title">Hottest CPUs</h3>
-                  <div class="card-subtitle">Ranked by current IRQ ownership.</div>
-                </div>
-              </div>
-              <div id="cpu-hot-list" class="rank-list"></div>
-            </div>
-
-            <div class="card span-7">
-              <div class="card-head">
-                <div>
-                  <h3 class="card-title">NUMA Summary</h3>
-                  <div class="card-subtitle">Which NUMA node is absorbing the visible IRQ load?</div>
-                </div>
-              </div>
-              <div id="cpu-numa-bars"></div>
-            </div>
           </div>
         </section>
 
@@ -364,20 +339,11 @@
           </div>
         </section>
 
-        <section id="section-settings" class="section">
-          <div class="card">
-            <div class="card-head">
-              <div>
-                <h3 class="card-title">Settings</h3>
-                <div class="card-subtitle">Backend health and dependency context kept separate from primary monitoring.</div>
-              </div>
-            </div>
-            <div id="settings-content"></div>
-          </div>
-        </section>
       </div>
     </main>
   </div>
+
+  <div id="cpu-hover-tooltip" class="cpu-hover-tooltip hidden"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
   <script src="/frontend/app.js"></script>

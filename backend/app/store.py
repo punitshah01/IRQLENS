@@ -133,6 +133,18 @@ class SqliteStore:
 
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS cpu_utilization_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp REAL NOT NULL,
+                    sut_id TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_cpu_util_host_ts ON cpu_utilization_samples(sut_id, timestamp)")
+
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS sessions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL UNIQUE,
@@ -370,6 +382,44 @@ class SqliteStore:
                     """,
                     (ts, sut_id, json.dumps(payload, separators=(",", ":"))),
                 )
+
+    def add_cpu_utilization(self, sut_id: str, cpu_utilization: Dict[str, float], timestamp: Optional[float] = None) -> None:
+        if not cpu_utilization:
+            return
+        ts = float(timestamp or time.time())
+        payload = {str(k): float(v) for k, v in cpu_utilization.items()}
+        with self._lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO cpu_utilization_samples(timestamp, sut_id, payload_json)
+                    VALUES(?, ?, ?)
+                    """,
+                    (ts, sut_id, json.dumps(payload, separators=(",", ":"))),
+                )
+
+    def latest_cpu_utilization(self, sut_id: str) -> Dict[str, float]:
+        with self._conn() as conn:
+            row = conn.execute(
+                """
+                SELECT payload_json
+                FROM cpu_utilization_samples
+                WHERE sut_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (sut_id,),
+            ).fetchone()
+        if not row:
+            return {}
+        data = json.loads(row["payload_json"] or "{}")
+        out: Dict[str, float] = {}
+        for key, value in data.items():
+            try:
+                out[str(key)] = float(value)
+            except Exception:
+                continue
+        return out
 
     def latest_cpu_topology(self, sut_id: str) -> List[CPUTopologyEntry]:
         with self._conn() as conn:

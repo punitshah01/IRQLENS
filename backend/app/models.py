@@ -180,6 +180,7 @@ class DashboardSnapshot(BaseModel):
     interfaces: List[InterfaceInfo]
     network_samples: List[NetworkSample]
     network_correlation: List[NetworkCorrelation]
+    cpu_utilization: Dict[str, float] = Field(default_factory=dict)
 
 
 class SessionStartRequest(BaseModel):
@@ -292,3 +293,4 @@ class AgentTelemetryPayload(BaseModel):
     irq_summary: Dict[str, Any] = Field(default_factory=dict)
     network_global: Dict[str, float] = Field(default_factory=dict)
     cpu_topology: List[CPUTopologyEntry] = Field(default_factory=list)
+    cpu_utilization: Dict[str, float] = Field(default_factory=dict)

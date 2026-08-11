@@ -535,6 +535,47 @@ button {
   text-align: left;
 }
 
+.cpu-cell.compact {
+  min-height: 72px;
+  padding: 8px;
+  gap: 4px;
+}
+
+.cpu-cell.compact .cpu-name {
+  font-size: 12px;
+}
+
+.cpu-cell.compact .cpu-metric {
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.cpu-matrix-grid {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+
+.cpu-cell-placeholder {
+  border: 1px dashed #d7dfeb;
+  border-radius: 12px;
+  background: rgba(237, 243, 255, 0.35);
+  min-height: 56px;
+}
+
+.cpu-hover-tooltip {
+  position: fixed;
+  z-index: 2000;
+  width: min(380px, calc(100vw - 24px));
+  max-height: min(80vh, 620px);
+  overflow: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 16px 40px rgba(31, 36, 48, 0.24);
+  padding: 12px;
+}
+
 .cpu-cell.active {
   outline: 2px solid var(--blue);
   outline-offset: 1px;
@@ -783,4 +824,10 @@ button {
   .headline { font-size: 28px; }
   .kpi-grid { grid-template-columns: 1fr; }
   .bar-row { grid-template-columns: 1fr; }
+  .cpu-cell.compact {
+    min-height: 64px;
+    padding: 6px;
+  }
+  .cpu-cell.compact .cpu-name { font-size: 11px; }
+  .cpu-cell.compact .cpu-metric { font-size: 10px; }
 }

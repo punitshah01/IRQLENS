@@ -330,6 +330,7 @@ def _visualization_payload(
 
     soft_cpu = latest_softirq.per_cpu_rates if latest_softirq else {}
     cpu_totals = _cpu_totals(latest_irq_rows, soft_cpu)
+    cpu_utilization = STORE.latest_cpu_utilization(sut_id)
     balance = irq_balance_score({cpu: data["irq"] for cpu, data in cpu_totals.items()})
 
     iface_map: Dict[str, Dict[str, float]] = {}
@@ -444,11 +445,13 @@ def _visualization_payload(
                     "irq_rate": cpu_totals.get(cpu, {}).get("irq", 0.0),
                     "softirq_rate": cpu_totals.get(cpu, {}).get("softirq", 0.0),
                     "total_rate": cpu_totals.get(cpu, {}).get("total", 0.0),
+                    "cpu_utilization": cpu_utilization.get(cpu, 0.0),
                 }
                 for cpu in cpu_ids
             ],
             "balance": balance,
         },
+        "cpu_utilization": cpu_utilization,
         "network_interfaces": {
             "rows": iface_rows,
             "ranking_rx": sorted(iface_rows, key=lambda x: x["rx_bps"], reverse=True),
@@ -949,6 +952,8 @@ async def agent_telemetry(payload: AgentTelemetryPayload, request: Request) -> d
         STORE.add_network_samples(net_rows)
     if payload.cpu_topology:
         STORE.add_cpu_topology(sut_id, payload.cpu_topology, timestamp=payload.timestamp)
+    if payload.cpu_utilization:
+        STORE.add_cpu_utilization(sut_id, payload.cpu_utilization, timestamp=payload.timestamp)
 
     existing = STORE.get_system(sut_id)
     now = time.time()
