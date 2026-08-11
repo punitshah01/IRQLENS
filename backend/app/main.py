@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .models import (
@@ -36,7 +37,9 @@ logging.basicConfig(
 logger = logging.getLogger("irqlens.api")
 
 app = FastAPI(title="IRQLENS API", version="0.2.0")
+FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 FRONTEND_INDEX = Path(__file__).resolve().parents[2] / "frontend" / "index.html"
+app.mount("/frontend", StaticFiles(directory=str(FRONTEND_DIR)), name="frontend")
 
 app.add_middleware(
     CORSMiddleware,

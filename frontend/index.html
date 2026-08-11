@@ -4,1873 +4,382 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>IRQLENS</title>
-  <style>
-    :root {
-      --bg: #0c1118;
-      --bg2: #111826;
-      --panel: #151f2e;
-      --panel2: #1a2436;
-      --line: #263246;
-      --text: #dce5f2;
-      --muted: #8fa0ba;
-      --green: #33b07a;
-      --yellow: #d5a53e;
-      --red: #d45050;
-      --blue: #4da4ff;
-      --gray: #6f7f96;
-      --accent: #5eb0ff;
-      --font: "Segoe UI", "Calibri", sans-serif;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      color: var(--text);
-      background: radial-gradient(circle at 10% 0%, #16243a 0%, transparent 30%), radial-gradient(circle at 100% 0%, #0f1c32 0%, transparent 35%), var(--bg);
-      font-family: var(--font);
-    }
-    .app {
-      display: grid;
-      grid-template-columns: 240px 1fr;
-      min-height: 100vh;
-    }
-    .sidebar {
-      border-right: 1px solid var(--line);
-      background: linear-gradient(180deg, #0f1623 0%, #0b111a 100%);
-      padding: 14px 10px;
-      position: sticky;
-      top: 0;
-      height: 100vh;
-      overflow-y: auto;
-    }
-    .brand {
-      margin-bottom: 12px;
-      padding: 8px;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #141e2f;
-    }
-    .brand .h1 { font-size: 22px; font-weight: 700; letter-spacing: 1px; }
-    .brand .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
-    .nav button {
-      width: 100%;
-      text-align: left;
-      border: 1px solid transparent;
-      background: transparent;
-      color: var(--text);
-      padding: 9px 10px;
-      border-radius: 8px;
-      margin-bottom: 4px;
-      cursor: pointer;
-      font-size: 13px;
-    }
-    .nav button:hover { background: #1a2638; }
-    .nav button.active { border-color: #3f5877; background: #1c2b42; color: #bdddff; }
-    .content { padding: 12px; }
-    .top {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 10px;
-      align-items: center;
-      margin-bottom: 10px;
-    }
-    .sys {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
-      font-size: 12px;
-      color: var(--muted);
-    }
-    .status-badge {
-      border: 1px solid var(--line);
-      background: var(--panel);
-      padding: 4px 8px;
-      border-radius: 999px;
-      font-size: 11px;
-    }
-    .status-ok { color: var(--green); }
-    .status-warn { color: var(--yellow); }
-    .status-err { color: var(--red); }
-    .controls { display: flex; gap: 8px; flex-wrap: wrap; }
-    select, input, button {
-      background: var(--panel);
-      color: var(--text);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 7px 8px;
-      font-size: 12px;
-    }
-    button { cursor: pointer; }
-    button:hover { border-color: #3b5170; }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(12, minmax(0, 1fr));
-      gap: 10px;
-    }
-    .card {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: linear-gradient(180deg, var(--panel) 0%, var(--panel2) 100%);
-      padding: 10px;
-      min-height: 84px;
-    }
-    .card h3 {
-      margin: 0 0 8px;
-      color: #a8b8cd;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: .4px;
-    }
-    .kpi { grid-column: span 3; }
-    .kpi .v { font-size: 20px; font-weight: 700; }
-    .kpi .l { color: var(--muted); font-size: 11px; }
-    .wide { grid-column: span 12; }
-    .half { grid-column: span 6; }
-    .third { grid-column: span 4; }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 12px;
-    }
-    th, td {
-      border-bottom: 1px solid #243043;
-      text-align: left;
-      padding: 6px 4px;
-      vertical-align: top;
-    }
-    th { color: #b6c5d7; font-weight: 600; }
-    .mono { font-family: Consolas, monospace; }
-    .tag {
-      padding: 2px 6px;
-      border-radius: 999px;
-      border: 1px solid #2c3a53;
-      font-size: 10px;
-      display: inline-block;
-    }
-    .green { color: var(--green); }
-    .yellow { color: var(--yellow); }
-    .red { color: var(--red); }
-    .blue { color: var(--blue); }
-    .gray { color: var(--gray); }
-    .view { display: none; }
-    .view.active { display: block; }
-    .card-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-    .iface-card {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 8px;
-      background: #111a29;
-      font-size: 12px;
-    }
-    .iface-card .name { font-weight: 700; margin-bottom: 4px; }
-    .logs {
-      max-height: 320px;
-      overflow-y: auto;
-      background: #0a0f17;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 8px;
-      font-size: 12px;
-      font-family: Consolas, monospace;
-      white-space: pre-wrap;
-    }
-    .tiny { font-size: 11px; color: var(--muted); }
-    .hidden { display: none; }
-    .chart {
-      width: 100%;
-      height: 280px;
-    }
-    .chart.tall {
-      height: 360px;
-    }
-    .scroll-x {
-      overflow-x: auto;
-    }
-    .health-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 8px;
-    }
-    .meter {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 8px;
-      background: #111a28;
-      font-size: 12px;
-    }
-    .meter .bar {
-      height: 8px;
-      border-radius: 8px;
-      background: #22334b;
-      margin-top: 5px;
-      position: relative;
-      overflow: hidden;
-    }
-    .meter .fill {
-      height: 100%;
-      background: linear-gradient(90deg, #2f8fce, #2dc77a);
-    }
-    .timeline {
-      max-height: 220px;
-      overflow-y: auto;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 8px;
-      background: #0f1724;
-      font-size: 12px;
-    }
-    .timeline .evt {
-      padding: 6px;
-      border-bottom: 1px solid #1f2e44;
-    }
-    .timeline .evt:last-child {
-      border-bottom: 0;
-    }
-    @media (max-width: 1200px) {
-      .kpi { grid-column: span 6; }
-      .half { grid-column: span 12; }
-      .third { grid-column: span 6; }
-      .card-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    }
-    @media (max-width: 900px) {
-      .app { grid-template-columns: 1fr; }
-      .sidebar { position: static; height: auto; }
-      .kpi { grid-column: span 12; }
-      .third { grid-column: span 12; }
-      .card-row { grid-template-columns: 1fr; }
-    }
-  </style>
+  <link rel="stylesheet" href="/frontend/styles.css" />
 </head>
 <body>
-  <div class="app">
+  <div class="app-shell">
     <aside class="sidebar">
       <div class="brand">
-        <div class="h1">IRQLENS</div>
-        <div class="sub">Linux IRQ + Network Diagnostics</div>
+        <div class="brand-mark">IRQLENS</div>
+        <div class="brand-sub">IRQ and network observability for Linux systems, organized for fast investigation.</div>
       </div>
-      <nav class="nav" id="nav"></nav>
+
+      <div class="nav-group">
+        <div class="nav-label">Primary</div>
+        <div id="primary-nav"></div>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="nav-label">Admin</div>
+        <div id="secondary-nav"></div>
+      </div>
     </aside>
 
-    <main class="content">
-      <section class="top">
-        <div class="sys" id="sys-line">
-          <span class="status-badge">System: <span id="sys-host">N/A</span></span>
-          <span class="status-badge">OS: <span id="sys-os">N/A</span></span>
-          <span class="status-badge">Kernel: <span id="sys-kernel">N/A</span></span>
-          <span class="status-badge">Root: <span id="sys-root">N/A</span></span>
-          <span class="status-badge">Last updated: <span id="last-updated">never</span></span>
-          <span class="status-badge" id="stale-ind">Fresh</span>
-        </div>
-        <div class="controls">
-          <input id="backend" size="28" />
-          <select id="host"></select>
-          <select id="time-range">
-            <option value="30">Last 30 sec</option>
-            <option value="60" selected>Last 1 min</option>
-            <option value="300">Last 5 min</option>
-            <option value="900">Last 15 min</option>
-            <option value="1800">Last 30 min</option>
-            <option value="3600">Last 1 hour</option>
-            <option value="custom">Custom</option>
-          </select>
-          <input id="range-from" type="datetime-local" class="hidden" />
-          <input id="range-to" type="datetime-local" class="hidden" />
-          <button id="apply-range" class="hidden">Apply Range</button>
-          <select id="topn">
-            <option value="10">Top 10 IRQ</option>
-            <option value="20" selected>Top 20 IRQ</option>
-            <option value="50">Top 50 IRQ</option>
-          </select>
-          <button id="live-toggle" title="Pause/resume live chart updates">LIVE</button>
-          <button id="reset-zoom" title="Reset chart zoom state">Reset Zoom</button>
-          <select id="interval"></select>
-          <button id="refresh">Refresh</button>
-          <span id="ws-status" class="status-badge status-warn">Connecting...</span>
-        </div>
-      </section>
-
-      <section id="view-overview" class="view active">
-        <div class="grid">
-          <div class="card kpi"><div class="l">IRQ/sec</div><div class="v" id="kpi-irqps">0</div></div>
-          <div class="card kpi"><div class="l">SoftIRQ/sec</div><div class="v" id="kpi-softps">0</div></div>
-          <div class="card kpi"><div class="l">CPU IRQ %</div><div class="v" id="kpi-cpuirq">0</div></div>
-          <div class="card kpi"><div class="l">Active Interfaces</div><div class="v" id="kpi-ifaces">0</div></div>
-          <div class="card kpi"><div class="l">RX</div><div class="v" id="kpi-rx">0</div></div>
-          <div class="card kpi"><div class="l">TX</div><div class="v" id="kpi-tx">0</div></div>
-          <div class="card kpi"><div class="l">Active IRQs</div><div class="v" id="kpi-activeirqs">0</div></div>
-          <div class="card kpi"><div class="l">Active CPUs</div><div class="v" id="kpi-activecpus">0</div></div>
-          <div class="card kpi"><div class="l">Network Errors/s</div><div class="v" id="kpi-errors">0</div></div>
-          <div class="card kpi"><div class="l">Network Drops/s</div><div class="v" id="kpi-drops">0</div></div>
-          <div class="card kpi"><div class="l">IRQ Balance</div><div class="v" id="kpi-balance">0</div></div>
-          <div class="card kpi"><div class="l">Collection Status</div><div class="v" id="kpi-cstatus">N/A</div></div>
-
-          <div class="card wide">
-            <h3>IRQ + Network Trend</h3>
-            <div id="chart-overview-trend" class="chart"></div>
-          </div>
-
-          <div class="card half">
-            <h3>CPU IRQ Heatmap</h3>
-            <div id="chart-cpu-heatmap" class="chart"></div>
-          </div>
-
-          <div class="card half">
-            <h3>Top IRQ Sources</h3>
-            <div id="chart-top-irq" class="chart"></div>
-          </div>
-
-          <div class="card half">
-            <h3>Interface Heatmap</h3>
-            <div class="controls">
-              <select id="net-heat-metric">
-                <option value="rx_bps" selected>RX bytes/sec</option>
-                <option value="tx_bps">TX bytes/sec</option>
-                <option value="rx_pps">RX packets/sec</option>
-                <option value="tx_pps">TX packets/sec</option>
-                <option value="errors_ps">Errors/sec</option>
-                <option value="drops_ps">Drops/sec</option>
-              </select>
+    <main class="main">
+      <div class="page-stack">
+        <section class="hero">
+          <div class="hero-top">
+            <div class="hero-title">
+              <div class="overline">Selected System</div>
+              <h1 class="headline" id="sut-title">Select a SUT</h1>
+              <div class="subline">
+                <span class="dot-badge"><span id="sut-status-dot" class="dot info"></span><span id="sut-status-label">No selection</span></span>
+                <span class="badge" id="sut-meta">Open Systems to choose a target.</span>
+              </div>
             </div>
-            <div id="chart-net-heatmap" class="chart"></div>
-          </div>
-
-          <div class="card half">
-            <h3>SoftIRQ Distribution</h3>
-            <div id="chart-softirq-dist" class="chart"></div>
-          </div>
-
-          <div class="card wide">
-            <h3>Interface -> IRQ -> CPU Correlation</h3>
-            <div id="chart-correlation" class="chart tall"></div>
-          </div>
-
-          <div class="card half">
-            <h3>System Health</h3>
-            <div class="health-grid" id="health-grid"></div>
-          </div>
-
-          <div class="card half">
-            <h3>Live Activity Timeline</h3>
-            <div class="timeline" id="activity-timeline"></div>
-          </div>
-
-          <div class="card wide">
-            <h3>Fleet Summary</h3>
-            <table>
-              <thead><tr><th>Host</th><th>RX</th><th>TX</th><th>SoftIRQ/s</th><th>Top IRQ</th><th>Rate/s</th></tr></thead>
-              <tbody id="fleet-body"></tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      <section id="view-systems" class="view">
-        <div class="grid">
-          <div class="card wide">
-            <h3>Systems</h3>
-            <div class="card-row" id="systems-cards"></div>
-          </div>
-        </div>
-      </section>
-
-      <section id="view-irq" class="view">
-        <div class="grid">
-          <div class="card half">
-            <h3>IRQ -> CPU Heatmap</h3>
-            <div id="chart-irq-heatmap" class="chart"></div>
-          </div>
-
-          <div class="card half">
-            <h3>IRQ Source Distribution</h3>
-            <div id="chart-irq-dist" class="chart"></div>
-          </div>
-
-          <div class="card wide">
-            <h3>IRQ Monitor</h3>
-            <div class="controls">
-              <input id="irq-search" placeholder="Search IRQ/source" size="24" />
-              <select id="irq-sort">
-                <option value="rate">Sort by IRQ/sec</option>
-                <option value="name">Sort by name</option>
-                <option value="irq">Sort by IRQ ID</option>
-              </select>
+            <div class="hero-actions">
+              <span class="badge" id="ws-pill">WebSocket: connecting</span>
+              <span class="badge">Last update: <strong id="last-updated">never</strong></span>
+              <button class="action-button ghost" id="refresh-button">Refresh</button>
+              <button class="action-button ghost" id="live-button">Pause Live</button>
             </div>
-            <table>
-              <thead>
-                <tr>
-                  <th>IRQ</th><th>IRQ Name / Source</th><th>Total Count</th><th>IRQ/sec</th><th>CPU Distribution</th><th>Top CPU</th><th>Top CPU IRQ/sec</th><th>Device</th><th>Interrupt Type</th><th>Affinity</th><th>NUMA Node</th>
-                </tr>
-              </thead>
-              <tbody id="irq-body"></tbody>
-            </table>
-          </div>
-          <div class="card half">
-            <h3>Top IRQ Sources</h3>
-            <table><thead><tr><th>Source</th><th>Rate/s</th></tr></thead><tbody id="irq-top-body"></tbody></table>
-          </div>
-          <div class="card half">
-            <h3>Network IRQ Correlation</h3>
-            <table>
-              <thead><tr><th>Interface</th><th>RX IRQs</th><th>TX IRQs</th><th>RX IRQ/s</th><th>TX IRQ/s</th><th>RX pps</th><th>TX pps</th><th>Status</th></tr></thead>
-              <tbody id="corr-body"></tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      <section id="view-softirq" class="view">
-        <div class="grid">
-          <div class="card wide">
-            <h3>SoftIRQ Trend</h3>
-            <div id="chart-softirq-trend" class="chart"></div>
-          </div>
-          <div class="card wide">
-            <h3>SoftIRQ Classes</h3>
-            <table><thead><tr><th>Class</th><th>Rate/s</th></tr></thead><tbody id="softirq-body"></tbody></table>
-          </div>
-        </div>
-      </section>
-
-      <section id="view-cpu" class="view">
-        <div class="grid">
-          <div class="card half">
-            <h3>CPU Load Grid</h3>
-            <div id="chart-cpu-grid" class="chart"></div>
           </div>
 
-          <div class="card half">
-            <h3>NUMA IRQ Distribution</h3>
-            <div id="chart-numa" class="chart"></div>
+          <div>
+            <div class="overline">Context</div>
+            <div class="subline"><span id="breadcrumb" class="breadcrumb">Systems</span></div>
           </div>
 
-          <div class="card wide">
-            <h3>CPU Topology (if available)</h3>
-            <div id="cpu-topology" class="timeline"></div>
-          </div>
-
-          <div class="card wide">
-            <h3>CPU IRQ Distribution</h3>
-            <table>
-              <thead><tr><th>CPU</th><th>IRQ/sec</th><th>SoftIRQ/sec</th><th>% CPU IRQ load</th></tr></thead>
-              <tbody id="cpu-body"></tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      <section id="view-network" class="view">
-        <div class="grid">
-          <div class="card kpi"><div class="l">Interfaces</div><div class="v" id="net-ifaces">0</div></div>
-          <div class="card kpi"><div class="l">UP</div><div class="v" id="net-up">0</div></div>
-          <div class="card kpi"><div class="l">DOWN</div><div class="v" id="net-down">0</div></div>
-          <div class="card kpi"><div class="l">RX pps</div><div class="v" id="net-rxpps">0</div></div>
-          <div class="card kpi"><div class="l">TX pps</div><div class="v" id="net-txpps">0</div></div>
-          <div class="card kpi"><div class="l">RX bytes/s</div><div class="v" id="net-rxbps">0</div></div>
-          <div class="card kpi"><div class="l">TX bytes/s</div><div class="v" id="net-txbps">0</div></div>
-          <div class="card kpi"><div class="l">Errors/s</div><div class="v" id="net-err">0</div></div>
-
-          <div class="card wide">
-            <h3>Network Throughput Trend</h3>
-            <div id="chart-network-trend" class="chart"></div>
-          </div>
-
-          <div class="card half">
-            <h3>Interface Traffic Ranking</h3>
-            <div id="chart-network-rank" class="chart"></div>
-          </div>
-
-          <div class="card half">
-            <h3>Error/Drop Trend</h3>
-            <div id="chart-network-errors" class="chart"></div>
-          </div>
-
-          <div class="card wide">
-            <h3>Interface Statistics</h3>
-            <div class="controls"><select id="iface-filter"></select></div>
-            <table>
-              <thead><tr><th>Interface</th><th>RX bytes/s</th><th>TX bytes/s</th><th>RX pps</th><th>TX pps</th><th>RX errors/s</th><th>TX errors/s</th><th>RX drops/s</th><th>TX drops/s</th></tr></thead>
-              <tbody id="net-table"></tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      <section id="view-interfaces" class="view">
-        <div class="grid">
-          <div class="card wide">
-            <h3>Interface Cards</h3>
-            <div class="card-row" id="iface-cards"></div>
-          </div>
-        </div>
-      </section>
-
-      <section id="view-diagnostics" class="view">
-        <div class="grid">
-          <div class="card half">
-            <h3>Collect Diagnostics</h3>
+          <div class="topology-heading">
             <div>
-              <label><input type="checkbox" class="diag-cat" value="irq" checked /> IRQ</label><br />
-              <label><input type="checkbox" class="diag-cat" value="softirq" checked /> SoftIRQ</label><br />
-              <label><input type="checkbox" class="diag-cat" value="network" checked /> Network</label><br />
-              <label><input type="checkbox" class="diag-cat" value="interfaces" checked /> Interfaces</label><br />
-              <label><input type="checkbox" class="diag-cat" value="routes" checked /> Routes</label><br />
-              <label><input type="checkbox" class="diag-cat" value="sockets" checked /> Sockets</label><br />
-              <label><input type="checkbox" class="diag-cat" value="ethtool" checked /> ethtool</label><br />
-              <label><input type="checkbox" class="diag-cat" value="system" checked /> System</label>
+              <h2 class="card-title" id="page-title">Systems</h2>
+              <div class="card-subtitle" id="page-subtitle">Choose a target system and open its dashboard.</div>
             </div>
-            <div class="controls" style="margin-top:8px;">
-              <button id="diag-start">Start Collection</button>
-              <button id="diag-stop">Stop Collection</button>
+            <div class="time-row">
+              <div id="time-controls" class="time-row"></div>
             </div>
-            <div class="tiny" id="diag-status">No active session</div>
           </div>
-          <div class="card half">
-            <h3>Session Files</h3>
-            <div id="diag-files" class="tiny">No files yet</div>
-          </div>
-        </div>
-      </section>
 
-      <section id="view-sessions" class="view">
-        <div class="grid">
-          <div class="card wide">
-            <h3>Sessions</h3>
-            <table>
-              <thead><tr><th>Session ID</th><th>Hostname</th><th>Start</th><th>End</th><th>Status</th><th>Files</th><th>Download</th></tr></thead>
-              <tbody id="sessions-body"></tbody>
-            </table>
+          <div id="custom-range" class="custom-range">
+            <input id="custom-from" class="text-input" type="datetime-local" />
+            <input id="custom-to" class="text-input" type="datetime-local" />
+            <button id="custom-apply" class="action-button primary">Apply</button>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <section id="view-logs" class="view">
-        <div class="grid">
-          <div class="card wide">
-            <h3>Live Logs</h3>
-            <div class="controls">
-              <select id="log-level"><option value="ALL">ALL</option><option value="INFO">INFO</option><option value="WARNING">WARNING</option><option value="ERROR">ERROR</option><option value="DEBUG">DEBUG</option></select>
-              <input id="log-search" placeholder="Search logs" />
+        <section id="section-systems" class="section active">
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <h3 class="card-title">Systems</h3>
+                <div class="card-subtitle">Choose a system, then open the dashboard with that SUT pinned across navigation.</div>
+              </div>
             </div>
-            <div class="logs" id="logs"></div>
+            <div id="systems-list" class="system-grid"></div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <section id="view-compare" class="view">
-        <div class="grid">
-          <div class="card wide">
-            <h3>Multi-SUT Comparison</h3>
-            <div class="controls">
-              <select id="compare-a"></select>
-              <select id="compare-b"></select>
-              <button id="compare-run">Compare</button>
+        <section id="section-overview" class="section">
+          <div class="grid">
+            <div class="card span-12">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">Right Now</h3>
+                  <div class="card-subtitle">A fast read on health, traffic, and current CPU pressure.</div>
+                </div>
+              </div>
+              <div id="overview-kpis" class="kpi-grid"></div>
             </div>
-          </div>
-          <div class="card half">
-            <h3>Comparison KPI Bars</h3>
-            <div id="chart-compare-bars" class="chart"></div>
-          </div>
-          <div class="card half">
-            <h3>Comparison Summary</h3>
-            <table>
-              <thead><tr><th>Metric</th><th id="cmp-a-h">A</th><th id="cmp-b-h">B</th><th>Delta (A-B)</th></tr></thead>
-              <tbody id="compare-body"></tbody>
-            </table>
-          </div>
-        </div>
-      </section>
 
-      <section id="view-settings" class="view">
-        <div class="grid">
-          <div class="card third"><h3>Collection Interval</h3><div id="set-interval">1 sec</div></div>
-          <div class="card third"><h3>Output Directory</h3><div id="set-output">N/A</div></div>
-          <div class="card third"><h3>Dependencies</h3><div id="set-deps">N/A</div></div>
-          <div class="card wide">
-            <h3>Threshold Configuration</h3>
-            <div class="controls">
-              <label>IRQ spike multiplier <input id="th-irq-spike" type="number" min="1" step="0.1" value="2.0" /></label>
-              <label>Network error threshold (/s) <input id="th-net-err" type="number" min="0" step="0.1" value="0" /></label>
-              <label>Network drop threshold (/s) <input id="th-net-drop" type="number" min="0" step="1" value="100" /></label>
-              <label>CPU imbalance deviation (%) <input id="th-imbalance" type="number" min="1" step="1" value="30" /></label>
+            <div class="card span-6">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">IRQ Activity</h3>
+                  <div class="card-subtitle">When did IRQ activity rise within the selected window?</div>
+                </div>
+              </div>
+              <div id="chart-overview-irq" class="chart"></div>
             </div>
-            <div class="tiny">Used by anomaly timeline and imbalance indicators.</div>
+
+            <div class="card span-6">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">Network Activity</h3>
+                  <div class="card-subtitle">Global RX and TX movement for the selected SUT.</div>
+                </div>
+              </div>
+              <div id="chart-overview-network" class="chart"></div>
+            </div>
+
+            <div class="card span-7">
+              <div id="overview-topology"></div>
+            </div>
+
+            <div class="card span-5">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">Attention / Findings</h3>
+                  <div class="card-subtitle">Deterministic findings based on current data only.</div>
+                </div>
+              </div>
+              <div id="overview-findings" class="finding-list"></div>
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+
+        <section id="section-irq" class="section">
+          <div class="grid">
+            <div class="card span-12 compact">
+              <div class="filter-row">
+                <input id="irq-search" class="text-input" placeholder="Search IRQ, source, NIC, device" />
+                <select id="irq-sort" class="select">
+                  <option value="rate">Sort by IRQ/s</option>
+                  <option value="name">Sort by name</option>
+                  <option value="irq">Sort by IRQ id</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="card span-5">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">Top IRQ Sources</h3>
+                  <div class="card-subtitle">Which interrupt sources are consuming attention now?</div>
+                </div>
+              </div>
+              <div id="irq-ranking" class="rank-list"></div>
+            </div>
+
+            <div class="card span-7">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">IRQ to CPU Heatmap</h3>
+                  <div class="card-subtitle">Find the relationship between hot IRQ sources and CPUs.</div>
+                </div>
+              </div>
+              <div id="chart-irq-heatmap" class="chart tall"></div>
+            </div>
+
+            <div class="card span-12">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">IRQ Ranking</h3>
+                  <div class="card-subtitle">Detailed IRQ rows for drill-down and evidence capture.</div>
+                </div>
+                <div id="chart-irq-top" class="chart" style="height:220px; width:360px;"></div>
+              </div>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>IRQ</th>
+                      <th>Source</th>
+                      <th>IRQ/s</th>
+                      <th>Top CPU</th>
+                      <th>Top CPU IRQ/s</th>
+                      <th>NIC</th>
+                      <th>Direction</th>
+                      <th>NUMA</th>
+                      <th>Affinity</th>
+                    </tr>
+                  </thead>
+                  <tbody id="irq-table"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="section-network" class="section">
+          <div class="grid">
+            <div class="card span-12 compact">
+              <div class="filter-row">
+                <label for="network-interface-selector"><strong>Interface:</strong></label>
+                <select id="network-interface-selector" class="select"></select>
+              </div>
+            </div>
+
+            <div class="card span-4">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">Interfaces</h3>
+                  <div class="card-subtitle">Scannable current ranking before deep inspection.</div>
+                </div>
+              </div>
+              <div id="network-overview-list" class="rank-list"></div>
+            </div>
+
+            <div class="card span-8">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">Current Traffic</h3>
+                  <div class="card-subtitle" id="network-current-title">All Interfaces</div>
+                </div>
+              </div>
+              <div id="network-current-cards" class="kpi-grid"></div>
+            </div>
+
+            <div class="card span-8">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">RX / TX Trend</h3>
+                  <div class="card-subtitle">Historical traffic for the selected interface, or global traffic when all interfaces are selected.</div>
+                </div>
+              </div>
+              <div id="network-trend-empty" class="hidden"></div>
+              <div id="chart-network-trend" class="chart"></div>
+            </div>
+
+            <div class="card span-4">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">Related IRQs</h3>
+                  <div class="card-subtitle">Only IRQs reliably mapped to the selected interface.</div>
+                </div>
+              </div>
+              <div id="network-related-irqs" class="stack-list"></div>
+            </div>
+
+            <div class="card span-12">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">Packet Statistics and Metadata</h3>
+                  <div class="card-subtitle">Errors, drops, and interface details for the selected NIC.</div>
+                </div>
+              </div>
+              <div id="network-meta" class="session-grid"></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="section-cpu" class="section">
+          <div class="grid">
+            <div class="card span-12 compact">
+              <div class="button-row">
+                <span class="muted">View:</span>
+                <button class="metric-toggle active" data-cpu-metric="irq">IRQ</button>
+                <button class="metric-toggle" data-cpu-metric="softirq">SoftIRQ</button>
+                <button class="metric-toggle disabled" data-cpu-metric="load" title="CPU load is unavailable in current telemetry">CPU Load</button>
+              </div>
+            </div>
+
+            <div class="card span-8">
+              <div id="cpu-topology"></div>
+            </div>
+
+            <div class="card span-4">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">CPU Detail</h3>
+                  <div class="card-subtitle">Click a CPU cell to inspect it.</div>
+                </div>
+              </div>
+              <div id="cpu-detail"></div>
+            </div>
+
+            <div class="card span-5">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">Hottest CPUs</h3>
+                  <div class="card-subtitle">Ranked by current IRQ ownership.</div>
+                </div>
+              </div>
+              <div id="cpu-hot-list" class="rank-list"></div>
+            </div>
+
+            <div class="card span-7">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">NUMA Summary</h3>
+                  <div class="card-subtitle">Which NUMA node is absorbing the visible IRQ load?</div>
+                </div>
+              </div>
+              <div id="cpu-numa-bars"></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="section-diagnostics" class="section">
+          <div class="grid diag-grid">
+            <div class="card">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">Capture Evidence</h3>
+                  <div class="card-subtitle">Selected SUT: <strong id="diag-selected-sut">No SUT selected</strong></div>
+                </div>
+              </div>
+
+              <div class="filter-row" style="margin-bottom:16px;">
+                <label for="diag-duration"><strong>Capture duration:</strong></label>
+                <select id="diag-duration" class="select">
+                  <option value="30">30 seconds</option>
+                  <option value="60" selected>60 seconds</option>
+                  <option value="300">5 minutes</option>
+                  <option value="900">15 minutes</option>
+                </select>
+              </div>
+
+              <div id="diag-checkboxes" class="checkbox-grid"></div>
+
+              <div class="button-row" style="margin-top:18px;">
+                <button id="diag-start" class="action-button primary">Start Capture</button>
+                <button id="diag-stop" class="action-button warn">Stop Capture</button>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">Capture Progress</h3>
+                  <div class="card-subtitle">Distinguishes live monitoring from a user-created diagnostic session.</div>
+                </div>
+              </div>
+              <div id="diag-progress"></div>
+              <div id="diag-complete" style="margin-top:16px;"></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="section-sessions" class="section">
+          <div class="grid">
+            <div class="card span-4">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">Diagnostic Sessions</h3>
+                  <div class="card-subtitle">Each session is a user-created diagnostic capture period for the selected SUT.</div>
+                </div>
+              </div>
+              <div id="sessions-list" class="session-list"></div>
+            </div>
+
+            <div class="card span-8">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">Session Detail</h3>
+                  <div class="card-subtitle">Summary, captured data, files, and download actions.</div>
+                </div>
+              </div>
+              <div id="session-detail"></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="section-settings" class="section">
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <h3 class="card-title">Settings</h3>
+                <div class="card-subtitle">Backend health and dependency context kept separate from primary monitoring.</div>
+              </div>
+            </div>
+            <div id="settings-content"></div>
+          </div>
+        </section>
+      </div>
     </main>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
-
-  <script>
-    const views = ["overview", "systems", "irq", "softirq", "cpu", "network", "interfaces", "diagnostics", "sessions", "logs", "compare", "settings"];
-    const state = {
-      host: "",
-      systems: [],
-      snapshot: null,
-      network: null,
-      interfaces: [],
-      sessions: [],
-      summary: [],
-      ws: null,
-      logs: [],
-      lastTs: 0,
-      activeSession: "",
-      staleMs: 5000,
-      paused: false,
-      windowSeconds: 60,
-      customFromTs: null,
-      customToTs: null,
-      topN: 20,
-      selectedCpu: "ALL",
-      selectedIrq: "ALL",
-      selectedIface: "ALL",
-      vizByHost: {},
-      topologyByHost: {},
-      thresholds: {
-        irqSpike: 2.0,
-        netErr: 0.0,
-        netDrop: 100.0,
-        imbalance: 30.0,
-      },
-      charts: {},
-      zoomState: {},
-    };
-
-    const el = {
-      nav: document.getElementById("nav"),
-      backend: document.getElementById("backend"),
-      host: document.getElementById("host"),
-      interval: document.getElementById("interval"),
-      refresh: document.getElementById("refresh"),
-      wsStatus: document.getElementById("ws-status"),
-      lastUpdated: document.getElementById("last-updated"),
-      staleInd: document.getElementById("stale-ind"),
-      logs: document.getElementById("logs"),
-      timeRange: document.getElementById("time-range"),
-      rangeFrom: document.getElementById("range-from"),
-      rangeTo: document.getElementById("range-to"),
-      applyRange: document.getElementById("apply-range"),
-      topN: document.getElementById("topn"),
-      liveToggle: document.getElementById("live-toggle"),
-      resetZoom: document.getElementById("reset-zoom"),
-      netHeatMetric: document.getElementById("net-heat-metric"),
-    };
-
-    function nowS() { return Date.now() / 1000; }
-    function fmtNum(n) { return Number(n || 0).toFixed(1); }
-    function fmtTs(ts) { return ts ? new Date(ts * 1000).toLocaleString() : "N/A"; }
-    function bytes(v) {
-      const n = Number(v || 0);
-      if (n >= 1e9) return (n / 1e9).toFixed(2) + " GB/s";
-      if (n >= 1e6) return (n / 1e6).toFixed(2) + " MB/s";
-      if (n >= 1e3) return (n / 1e3).toFixed(2) + " KB/s";
-      return n.toFixed(0) + " B/s";
-    }
-    function api(path) { return el.backend.value.replace(/\/$/, "") + path; }
-    function asPct(v) { return Number(v || 0).toFixed(1) + "%"; }
-    function log(level, component, message) {
-      const row = { ts: Date.now(), level, component, message };
-      state.logs.push(row);
-      if (state.logs.length > 800) state.logs.shift();
-      renderLogs();
-    }
-
-    function buildNav() {
-      el.nav.innerHTML = "";
-      for (const view of views) {
-        const b = document.createElement("button");
-        b.textContent = view === "irq" ? "IRQ Monitor" : (view.charAt(0).toUpperCase() + view.slice(1));
-        b.className = view === "overview" ? "active" : "";
-        b.onclick = () => showView(view);
-        b.dataset.view = view;
-        el.nav.appendChild(b);
-      }
-    }
-
-    function showView(name) {
-      for (const v of views) {
-        const pane = document.getElementById("view-" + v);
-        pane.classList.toggle("active", v === name);
-      }
-      [...el.nav.querySelectorAll("button")].forEach(btn => btn.classList.toggle("active", btn.dataset.view === name));
-      resizeCharts();
-    }
-
-    async function fetchJson(path) {
-      const res = await fetch(api(path));
-      if (!res.ok) throw new Error(path + " -> " + res.status);
-      return await res.json();
-    }
-
-    function ensureChart(key, id) {
-      if (!window.echarts) return null;
-      if (!state.charts[key]) {
-        const node = document.getElementById(id);
-        if (!node) return null;
-        state.charts[key] = echarts.init(node);
-      }
-      return state.charts[key];
-    }
-
-    function resizeCharts() {
-      for (const c of Object.values(state.charts)) c.resize();
-    }
-
-    function chartTheme() {
-      return {
-        textStyle: { color: "#dce5f2" },
-        backgroundColor: "transparent",
-        grid: { left: 60, right: 28, top: 40, bottom: 55 },
-      };
-    }
-
-    function toSeriesXY(rows, valueKey) {
-      return (rows || []).map(x => [x.timestamp * 1000, Number(x[valueKey] || 0)]);
-    }
-
-    function parseDateTimeLocalToTs(value) {
-      if (!value) return null;
-      const t = Date.parse(value);
-      if (Number.isNaN(t)) return null;
-      return t / 1000;
-    }
-
-    function visualizationRangeQuery() {
-      if (el.timeRange.value === "custom" && state.customFromTs && state.customToTs) {
-        return "from_ts=" + encodeURIComponent(String(state.customFromTs)) + "&to_ts=" + encodeURIComponent(String(state.customToTs));
-      }
-      return "window_seconds=" + encodeURIComponent(String(state.windowSeconds));
-    }
-
-    function restoreZoom(chartKey, chart) {
-      const z = state.zoomState[chartKey];
-      if (!z || !chart) return;
-      chart.dispatchAction({
-        type: "dataZoom",
-        dataZoomIndex: 0,
-        start: z.start,
-        end: z.end,
-        startValue: z.startValue,
-        endValue: z.endValue,
-      });
-    }
-
-    function bindZoomPersistence(chartKey, chart) {
-      if (!chart) return;
-      chart.off("datazoom");
-      chart.on("datazoom", () => {
-        const opts = chart.getOption();
-        const dz = opts?.dataZoom?.[0];
-        if (!dz) return;
-        state.zoomState[chartKey] = {
-          start: dz.start,
-          end: dz.end,
-          startValue: dz.startValue,
-          endValue: dz.endValue,
-        };
-      });
-    }
-
-    async function loadHealth() {
-      const h = await fetchJson("/api/health");
-      document.getElementById("sys-host").textContent = h.hostname || "N/A";
-      document.getElementById("sys-os").textContent = h.os_distribution || "N/A";
-      document.getElementById("sys-kernel").textContent = h.kernel || "N/A";
-      document.getElementById("sys-root").textContent = h.running_as_root ? "YES" : "NO";
-      document.getElementById("set-interval").textContent = (h.interval_seconds || 1) + " sec";
-      document.getElementById("set-output").textContent = "Configured on backend";
-      const deps = (h.dependencies || []).map(d => d.name + ": " + (d.available ? "Available" : "Missing")).join("; ");
-      document.getElementById("set-deps").textContent = deps || "N/A";
-      document.getElementById("kpi-cstatus").textContent = h.collector_status || "N/A";
-      state.staleMs = Math.max(3000, Number(h.interval_seconds || 1) * 3000);
-    }
-
-    async function loadHosts() {
-      const data = await fetchJson("/api/systems");
-      const systems = data.systems || [];
-      state.systems = systems;
-      const hosts = systems.map(x => x.id);
-      const prev = state.host;
-      el.host.innerHTML = "";
-      const all = document.createElement("option");
-      all.value = "ALL SYSTEMS";
-      all.textContent = "ALL SYSTEMS";
-      el.host.appendChild(all);
-      if (!hosts.length) {
-        const o = document.createElement("option");
-        o.value = "";
-        o.textContent = "Waiting for telemetry";
-        el.host.appendChild(o);
-        state.host = "";
-        return;
-      }
-      for (const h of hosts) {
-        const o = document.createElement("option");
-        o.value = h;
-        const row = systems.find(x => x.id === h);
-        const status = row ? row.status : "UNKNOWN";
-        o.textContent = h + " (" + status + ")";
-        el.host.appendChild(o);
-      }
-      state.host = hosts.includes(prev) ? prev : (hosts[0] || "ALL SYSTEMS");
-      el.host.value = state.host;
-
-      const compareA = document.getElementById("compare-a");
-      const compareB = document.getElementById("compare-b");
-      compareA.innerHTML = "";
-      compareB.innerHTML = "";
-      for (const h of hosts) {
-        const oa = document.createElement("option");
-        oa.value = h;
-        oa.textContent = h;
-        const ob = document.createElement("option");
-        ob.value = h;
-        ob.textContent = h;
-        compareA.appendChild(oa);
-        compareB.appendChild(ob);
-      }
-      if (hosts.length > 1) compareB.value = hosts[1];
-    }
-
-    async function loadMainData() {
-      if (state.host) {
-        const selected = state.systems.find(x => x.id === state.host);
-        if (selected) {
-          document.getElementById("sys-host").textContent = selected.hostname + " (" + selected.id + ")";
-          document.getElementById("sys-os").textContent = selected.os_distribution || "N/A";
-          document.getElementById("sys-kernel").textContent = selected.kernel || "N/A";
-          document.getElementById("sys-root").textContent = selected.mode === "local" ? "LOCAL" : "REMOTE AGENT";
-        }
-      }
-      if (!state.host || state.host === "ALL SYSTEMS") {
-        const summary = await fetchJson("/api/summary/current");
-        state.summary = summary.rows || [];
-        state.snapshot = { irq: { rows: [] }, softirq: { sample: { rates: {}, per_cpu_rates: {} } } };
-        state.network = { global: {}, interfaces: [] };
-        state.interfaces = [];
-        state.lastTs = nowS();
-        renderAll();
-        return;
-      }
-      const [irq, softirq, network, interfaces, summary] = await Promise.all([
-        fetchJson("/api/irq/current?sut_id=" + encodeURIComponent(state.host) + "&limit=2000"),
-        fetchJson("/api/softirq/current?sut_id=" + encodeURIComponent(state.host)),
-        fetchJson("/api/network/current?sut_id=" + encodeURIComponent(state.host)),
-        fetchJson("/api/interfaces?sut_id=" + encodeURIComponent(state.host)),
-        fetchJson("/api/summary/current"),
-      ]);
-      state.snapshot = { irq, softirq };
-      state.network = network;
-      state.interfaces = interfaces.interfaces || [];
-      state.summary = summary.rows || [];
-      state.lastTs = nowS();
-    }
-
-    async function loadVisualizationData() {
-      if (!state.host || state.host === "ALL SYSTEMS") return;
-      const path = "/api/systems/" + encodeURIComponent(state.host) + "/visualization?" + visualizationRangeQuery() + "&top_n=" + state.topN;
-      const payload = await fetchJson(path);
-      state.vizByHost[state.host] = payload;
-    }
-
-    async function loadTopologyData() {
-      if (!state.host || state.host === "ALL SYSTEMS") return;
-      const payload = await fetchJson("/api/systems/" + encodeURIComponent(state.host) + "/visualization/topology");
-      state.topologyByHost[state.host] = payload;
-    }
-
-    function renderAll() {
-      renderSystems();
-      renderOverview();
-      renderIrq();
-      renderSoftirq();
-      renderCpu();
-      renderNetwork();
-      renderInterfaces();
-      renderSessions();
-      renderVisualizations();
-      updateFreshness();
-    }
-
-    function renderSystems() {
-      const root = document.getElementById("systems-cards");
-      root.innerHTML = "";
-      for (const s of state.systems) {
-        const statusClass = s.status === "ONLINE" ? "green" : (s.status === "STALE" ? "yellow" : (s.status === "OFFLINE" ? "red" : "gray"));
-        const card = document.createElement("div");
-        card.className = "iface-card";
-        card.innerHTML =
-          "<div class='name'>" + s.name + " <span class='" + statusClass + "'>● " + s.status + "</span></div>" +
-          "<div class='mono'>" + s.id + " @ " + s.address + "</div>" +
-          "<div>Host: " + s.hostname + "</div>" +
-          "<div>OS: " + s.os_distribution + " " + (s.os_version || "") + "</div>" +
-          "<div>Kernel: " + s.kernel + "</div>" +
-          "<div>CPU: " + (s.cpu_count || 0) + "</div>" +
-          "<div>Interfaces: " + (s.interfaces || []).length + "</div>" +
-          "<div>Mode: " + (s.mode || "remote") + "</div>" +
-          "<div>Last seen: " + (s.last_seen ? new Date(s.last_seen * 1000).toLocaleTimeString() : "N/A") + "</div>" +
-          "<div style='margin-top:6px'><button onclick=\"window.irqlensSelectSystem('" + s.id + "')\">Open Dashboard</button></div>";
-        root.appendChild(card);
-      }
-      if (!state.systems.length) root.textContent = "No systems registered yet.";
-    }
-
-    function renderOverview() {
-      const irqRows = (state.snapshot?.irq?.rows || []);
-      const soft = state.snapshot?.softirq?.sample?.rates || {};
-      const net = state.network?.global || {};
-      const irqps = irqRows.reduce((a, x) => a + Number(x.total_rate || 0), 0);
-      const softps = Object.values(soft).reduce((a, x) => a + Number(x || 0), 0);
-
-      const cpuRates = {};
-      for (const row of irqRows) for (const [cpu, rate] of Object.entries(row.cpu_rates || {})) cpuRates[cpu] = (cpuRates[cpu] || 0) + Number(rate || 0);
-      const cpuIrq = Object.values(cpuRates).reduce((a, x) => a + x, 0);
-      const drops = Number(net.rx_drop_ps || 0) + Number(net.tx_drop_ps || 0);
-      const errors = Number(net.rx_err_ps || 0) + Number(net.tx_err_ps || 0);
-
-      document.getElementById("kpi-irqps").textContent = fmtNum(irqps);
-      document.getElementById("kpi-softps").textContent = fmtNum(softps);
-      document.getElementById("kpi-cpuirq").textContent = fmtNum(cpuIrq);
-      document.getElementById("kpi-ifaces").textContent = String(net.interfaces || 0);
-      document.getElementById("kpi-rx").textContent = bytes(net.rx_bps || 0);
-      document.getElementById("kpi-tx").textContent = bytes(net.tx_bps || 0);
-      document.getElementById("kpi-activeirqs").textContent = String(irqRows.length);
-      document.getElementById("kpi-activecpus").textContent = String(Object.keys(cpuRates).length);
-      document.getElementById("kpi-errors").textContent = fmtNum(errors);
-      document.getElementById("kpi-drops").textContent = fmtNum(drops);
-
-      const viz = state.vizByHost[state.host] || null;
-      const bal = viz?.cpu_heatmap?.balance?.score ?? 0;
-      document.getElementById("kpi-balance").textContent = fmtNum(bal) + "/100";
-
-      const body = document.getElementById("fleet-body");
-      body.innerHTML = "";
-      for (const row of state.summary) {
-        const tr = document.createElement("tr");
-        tr.innerHTML = "<td class='mono'>" + row.sut_ip + "</td><td>" + bytes(row.rx_bps) + "</td><td>" + bytes(row.tx_bps) + "</td><td>" + fmtNum(row.softirq_total) + "</td><td>" + (row.top_irq || "N/A") + "</td><td>" + fmtNum(row.top_irq_rate) + "</td>";
-        body.appendChild(tr);
-      }
-      if (!state.summary.length) {
-        const tr = document.createElement("tr");
-        tr.innerHTML = "<td colspan='6'>No hosts yet</td>";
-        body.appendChild(tr);
-      }
-    }
-
-    function filteredIrqRows() {
-      const rows = [...(state.snapshot?.irq?.rows || [])];
-      const q = (document.getElementById("irq-search").value || "").toLowerCase();
-      const selectedCpu = state.selectedCpu;
-      const selectedIrq = state.selectedIrq;
-      const selectedIface = state.selectedIface;
-
-      return rows.filter(r => {
-        if (q && ![r.irq, r.irq_name, r.device, r.nic].join(" ").toLowerCase().includes(q)) return false;
-        if (selectedIrq !== "ALL" && String(r.irq) !== String(selectedIrq)) return false;
-        if (selectedCpu !== "ALL" && Number((r.cpu_rates || {})[selectedCpu] || 0) <= 0) return false;
-        if (selectedIface !== "ALL" && String(r.nic || "") !== String(selectedIface)) return false;
-        return true;
-      });
-    }
-
-    function renderIrq() {
-      const rows = filteredIrqRows();
-      const sortBy = document.getElementById("irq-sort").value;
-      if (sortBy === "name") rows.sort((a, b) => String(a.irq_name).localeCompare(String(b.irq_name)));
-      else if (sortBy === "irq") rows.sort((a, b) => String(a.irq).localeCompare(String(b.irq)));
-      else rows.sort((a, b) => Number(b.total_rate || 0) - Number(a.total_rate || 0));
-
-      const body = document.getElementById("irq-body");
-      body.innerHTML = "";
-      for (const row of rows.slice(0, 500)) {
-        const cpuEntries = Object.entries(row.cpu_rates || {}).sort((a, b) => Number(b[1]) - Number(a[1]));
-        const top = cpuEntries[0] || ["N/A", 0];
-        const cpuDist = cpuEntries.slice(0, 6).map(x => x[0] + ":" + fmtNum(x[1])).join(" ");
-        const tr = document.createElement("tr");
-        tr.innerHTML =
-          "<td class='mono'>" + row.irq + "</td>" +
-          "<td>" + (row.irq_name || "N/A") + "</td>" +
-          "<td>" + (row.total_count || 0) + "</td>" +
-          "<td>" + fmtNum(row.total_rate) + "</td>" +
-          "<td class='mono'>" + (cpuDist || "N/A") + "</td>" +
-          "<td class='mono'>" + top[0] + "</td>" +
-          "<td>" + fmtNum(top[1]) + "</td>" +
-          "<td>" + (row.device || "N/A") + "</td>" +
-          "<td>" + (row.interrupt_type || "N/A") + "</td>" +
-          "<td class='mono'>" + (row.affinity_list || "N/A") + "</td>" +
-          "<td>" + (row.numa_node || "N/A") + "</td>";
-        body.appendChild(tr);
-      }
-      if (!rows.length) {
-        const tr = document.createElement("tr");
-        tr.innerHTML = "<td colspan='11'>No IRQ rows</td>";
-        body.appendChild(tr);
-      }
-
-      const topBody = document.getElementById("irq-top-body");
-      topBody.innerHTML = "";
-      for (const row of rows.slice(0, 20)) {
-        const tr = document.createElement("tr");
-        tr.innerHTML = "<td>" + row.irq_name + "</td><td>" + fmtNum(row.total_rate) + "</td>";
-        topBody.appendChild(tr);
-      }
-
-      const corrBody = document.getElementById("corr-body");
-      corrBody.innerHTML = "";
-      const correlations = estimateCorrelation(rows, state.network?.interfaces || []);
-      for (const item of correlations) {
-        const tr = document.createElement("tr");
-        tr.innerHTML =
-          "<td class='mono'>" + item.interface + "</td>" +
-          "<td>" + item.rx_irqs + "</td>" +
-          "<td>" + item.tx_irqs + "</td>" +
-          "<td>" + fmtNum(item.rx_irq_rate) + "</td>" +
-          "<td>" + fmtNum(item.tx_irq_rate) + "</td>" +
-          "<td>" + fmtNum(item.rx_pps) + "</td>" +
-          "<td>" + fmtNum(item.tx_pps) + "</td>" +
-          "<td>" + (item.correlation_available ? "<span class='green'>Available</span>" : "<span class='gray'>Unavailable</span>") + "</td>";
-        corrBody.appendChild(tr);
-      }
-    }
-
-    function estimateCorrelation(irqRows, netRows) {
-      const map = {};
-      for (const n of netRows) {
-        map[n.interface] = {
-          interface: n.interface,
-          rx_irqs: 0,
-          tx_irqs: 0,
-          rx_irq_rate: 0,
-          tx_irq_rate: 0,
-          rx_pps: Number(n.rx_pps || 0),
-          tx_pps: Number(n.tx_pps || 0),
-          correlation_available: false,
-        };
-      }
-      for (const r of irqRows) {
-        const name = (r.nic || "").trim();
-        if (!name || !map[name]) continue;
-        if (r.direction === "RX") {
-          map[name].rx_irqs += 1;
-          map[name].rx_irq_rate += Number(r.total_rate || 0);
-        } else if (r.direction === "TX") {
-          map[name].tx_irqs += 1;
-          map[name].tx_irq_rate += Number(r.total_rate || 0);
-        } else {
-          map[name].rx_irq_rate += Number(r.total_rate || 0) / 2;
-          map[name].tx_irq_rate += Number(r.total_rate || 0) / 2;
-        }
-        map[name].correlation_available = true;
-      }
-      return Object.values(map).sort((a, b) => (b.rx_irq_rate + b.tx_irq_rate) - (a.rx_irq_rate + a.tx_irq_rate));
-    }
-
-    function renderSoftirq() {
-      const rates = state.snapshot?.softirq?.sample?.rates || {};
-      const rows = Object.entries(rates).sort((a, b) => Number(b[1]) - Number(a[1]));
-      const body = document.getElementById("softirq-body");
-      body.innerHTML = "";
-      for (const [name, rate] of rows) {
-        const tr = document.createElement("tr");
-        tr.innerHTML = "<td class='mono'>" + name + "</td><td>" + fmtNum(rate) + "</td>";
-        body.appendChild(tr);
-      }
-    }
-
-    function renderCpu() {
-      const rows = filteredIrqRows();
-      const softCpu = state.snapshot?.softirq?.sample?.per_cpu_rates || {};
-      const cpu = {};
-      for (const row of rows) for (const [k, v] of Object.entries(row.cpu_rates || {})) cpu[k] = (cpu[k] || 0) + Number(v || 0);
-      const cpus = Array.from(new Set([...Object.keys(cpu), ...Object.keys(softCpu)])).sort((a, b) => Number(a) - Number(b));
-      const total = cpus.reduce((acc, k) => acc + Number(cpu[k] || 0), 0) || 1;
-
-      const body = document.getElementById("cpu-body");
-      body.innerHTML = "";
-      for (const id of cpus) {
-        const irq = Number(cpu[id] || 0);
-        const sirq = Number(softCpu[id] || 0);
-        const load = (irq / total) * 100;
-        const warn = load > state.thresholds.imbalance ? "<span class='yellow'> !</span>" : "";
-        const tr = document.createElement("tr");
-        tr.innerHTML = "<td class='mono'>CPU " + id + warn + "</td><td>" + fmtNum(irq) + "</td><td>" + fmtNum(sirq) + "</td><td>" + fmtNum(load) + "%</td>";
-        body.appendChild(tr);
-      }
-    }
-
-    function renderNetwork() {
-      const net = state.network || { global: {}, interfaces: [] };
-      const g = net.global || {};
-      document.getElementById("net-ifaces").textContent = String(g.interfaces || 0);
-      document.getElementById("net-up").textContent = String(g.interfaces_up || 0);
-      document.getElementById("net-down").textContent = String(g.interfaces_down || 0);
-      document.getElementById("net-rxpps").textContent = fmtNum(g.rx_pps);
-      document.getElementById("net-txpps").textContent = fmtNum(g.tx_pps);
-      document.getElementById("net-rxbps").textContent = bytes(g.rx_bps);
-      document.getElementById("net-txbps").textContent = bytes(g.tx_bps);
-      document.getElementById("net-err").textContent = fmtNum((g.rx_err_ps || 0) + (g.tx_err_ps || 0));
-
-      const filter = document.getElementById("iface-filter");
-      const prev = state.selectedIface !== "ALL" ? state.selectedIface : (filter.value || "ALL INTERFACES");
-      const names = (net.interfaces || []).map(x => x.interface).sort();
-      filter.innerHTML = "";
-      const all = document.createElement("option");
-      all.value = "ALL INTERFACES";
-      all.textContent = "ALL INTERFACES";
-      filter.appendChild(all);
-      for (const name of names) {
-        const o = document.createElement("option");
-        o.value = name;
-        o.textContent = name;
-        filter.appendChild(o);
-      }
-      filter.value = names.includes(prev) || prev === "ALL INTERFACES" ? prev : "ALL INTERFACES";
-
-      const body = document.getElementById("net-table");
-      body.innerHTML = "";
-      for (const row of (net.interfaces || [])) {
-        if (filter.value !== "ALL INTERFACES" && row.interface !== filter.value) continue;
-        const highlight = (Number(row.rx_err_ps || 0) + Number(row.tx_err_ps || 0)) > 0 || (Number(row.rx_drop_ps || 0) + Number(row.tx_drop_ps || 0)) > state.thresholds.netDrop;
-        const tr = document.createElement("tr");
-        tr.innerHTML = "<td class='mono'>" + row.interface + "</td><td>" + bytes(row.rx_bps) + "</td><td>" + bytes(row.tx_bps) + "</td><td>" + fmtNum(row.rx_pps) + "</td><td>" + fmtNum(row.tx_pps) + "</td><td" + (highlight ? " class='red'" : "") + ">" + fmtNum(row.rx_err_ps) + "</td><td" + (highlight ? " class='red'" : "") + ">" + fmtNum(row.tx_err_ps) + "</td><td" + (highlight ? " class='yellow'" : "") + ">" + fmtNum(row.rx_drop_ps) + "</td><td" + (highlight ? " class='yellow'" : "") + ">" + fmtNum(row.tx_drop_ps) + "</td>";
-        body.appendChild(tr);
-      }
-    }
-
-    function renderInterfaces() {
-      const root = document.getElementById("iface-cards");
-      root.innerHTML = "";
-      for (const iface of state.interfaces) {
-        const div = document.createElement("div");
-        div.className = "iface-card";
-        const stateClass = iface.state === "up" ? "green" : "gray";
-        div.innerHTML =
-          "<div class='name mono'>" + iface.name + "</div>" +
-          "<div>State: <span class='" + stateClass + "'>" + (iface.state || "N/A") + "</span></div>" +
-          "<div>MTU: " + (iface.mtu ?? "N/A") + "</div>" +
-          "<div>MAC: <span class='mono'>" + (iface.mac || "N/A") + "</span></div>" +
-          "<div>Speed: " + (iface.speed_mbps ?? "N/A") + " Mbps</div>" +
-          "<div>Duplex: " + (iface.duplex || "N/A") + "</div>" +
-          "<div>Driver: " + (iface.driver || "N/A") + "</div>" +
-          "<div>IPv4: " + ((iface.ipv4 || []).join(", ") || "N/A") + "</div>" +
-          "<div>IPv6: " + ((iface.ipv6 || []).join(", ") || "N/A") + "</div>";
-        root.appendChild(div);
-      }
-      if (!state.interfaces.length) root.textContent = "No interface metadata available.";
-    }
-
-    async function renderSessions() {
-      const data = await fetchJson("/api/sessions");
-      state.sessions = (data.sessions || []).filter(s => !state.host || state.host === "ALL SYSTEMS" || !s.sut_id || s.sut_id === state.host);
-      const body = document.getElementById("sessions-body");
-      body.innerHTML = "";
-      for (const s of state.sessions) {
-        const tr = document.createElement("tr");
-        tr.innerHTML =
-          "<td class='mono'>" + s.session_id + "</td>" +
-          "<td>" + s.hostname + (s.sut_id ? (" (" + s.sut_id + ")") : "") + "</td>" +
-          "<td>" + fmtTs(s.start_time) + "</td>" +
-          "<td>" + fmtTs(s.end_time) + "</td>" +
-          "<td>" + s.status + "</td>" +
-          "<td><button onclick=\"window.irqlensShowFiles('" + s.session_id + "')\">Files</button></td>" +
-          "<td><a href='" + api("/api/sessions/" + encodeURIComponent(s.session_id) + "/download") + "'>Download</a></td>";
-        body.appendChild(tr);
-      }
-    }
-
-    async function showSessionFiles(sessionId) {
-      const data = await fetchJson("/api/sessions/" + encodeURIComponent(sessionId) + "/files");
-      const files = data.files || [];
-      const html = files.map(f => "<div><a href='" + api("/api/files?path=" + encodeURIComponent(f.path)) + "'>" + f.name + "</a> (" + f.format + ", " + f.size_bytes + " bytes)</div>").join("");
-      document.getElementById("diag-files").innerHTML = html || "No files";
-    }
-
-    function renderLogs() {
-      const level = document.getElementById("log-level").value;
-      const query = (document.getElementById("log-search").value || "").toLowerCase();
-      const rows = state.logs.filter(x => (level === "ALL" || x.level === level) && (!query || (x.component + " " + x.message).toLowerCase().includes(query)));
-      el.logs.textContent = rows.map(x => new Date(x.ts).toISOString() + " " + x.level + " " + x.component + " " + x.message).join("\n");
-      el.logs.scrollTop = el.logs.scrollHeight;
-    }
-
-    function updateFreshness() {
-      if (!state.lastTs) {
-        el.lastUpdated.textContent = "never";
-        return;
-      }
-      const ageMs = Date.now() - (state.lastTs * 1000);
-      el.lastUpdated.textContent = Math.round(ageMs / 1000) + " seconds ago";
-      if (ageMs > state.staleMs) {
-        el.staleInd.textContent = "STALE DATA";
-        el.staleInd.className = "status-badge status-err";
-      } else {
-        el.staleInd.textContent = "Fresh";
-        el.staleInd.className = "status-badge status-ok";
-      }
-    }
-
-    function renderVisualizations() {
-      if (!state.host || state.host === "ALL SYSTEMS") return;
-      const payload = state.vizByHost[state.host];
-      if (!payload) return;
-
-      renderOverviewTrend(payload);
-      renderTopIrqBar(payload);
-      renderIrqHeatmap(payload);
-      renderIrqDistribution(payload);
-      renderCpuHeatmap(payload);
-      renderCpuGrid(payload);
-      renderSoftirqDist(payload);
-      renderSoftirqTrend(payload);
-      renderNetworkTrend(payload);
-      renderNetworkHeatmap(payload);
-      renderNetworkRanking(payload);
-      renderNetworkErrorTrend(payload);
-      renderCorrelation(payload);
-      renderNuma(payload);
-      renderTopology();
-      renderHealth(payload);
-      renderTimeline(payload);
-    }
-
-    function renderOverviewTrend(payload) {
-      const chart = ensureChart("overviewTrend", "chart-overview-trend");
-      if (!chart) return;
-      const irq = toSeriesXY(payload.series.irq || [], "irq_rate");
-      const soft = (payload.series.softirq_total || []).map(x => [x.timestamp * 1000, Number(x.value || 0)]);
-      const rx = toSeriesXY(payload.series.network || [], "rx_bps");
-      const tx = toSeriesXY(payload.series.network || [], "tx_bps");
-      chart.setOption({
-        ...chartTheme(),
-        tooltip: { trigger: "axis" },
-        legend: { textStyle: { color: "#dce5f2" } },
-        xAxis: { type: "time", axisLabel: { color: "#9db0cb" } },
-        yAxis: [
-          { type: "value", name: "IRQ/s", axisLabel: { color: "#9db0cb" } },
-          { type: "value", name: "B/s", axisLabel: { color: "#9db0cb" } },
-        ],
-        series: [
-          { name: "IRQ/s", type: "line", smooth: true, showSymbol: false, data: irq, yAxisIndex: 0 },
-          { name: "SoftIRQ/s", type: "line", smooth: true, showSymbol: false, data: soft, yAxisIndex: 0 },
-          { name: "RX B/s", type: "line", smooth: true, showSymbol: false, data: rx, yAxisIndex: 1 },
-          { name: "TX B/s", type: "line", smooth: true, showSymbol: false, data: tx, yAxisIndex: 1 },
-        ],
-        dataZoom: [{ type: "inside", xAxisIndex: 0 }, { type: "slider", xAxisIndex: 0 }],
-      });
-      bindZoomPersistence("overviewTrend", chart);
-      restoreZoom("overviewTrend", chart);
-    }
-
-    function renderTopIrqBar(payload) {
-      const chart = ensureChart("topIrq", "chart-top-irq");
-      if (!chart) return;
-      const rows = payload.top_irq_sources || [];
-      chart.setOption({
-        ...chartTheme(),
-        tooltip: {
-          trigger: "item",
-          formatter: p => "IRQ " + rows[p.dataIndex].irq + "<br/>" + rows[p.dataIndex].name + "<br/>Rate: " + fmtNum(p.value) + "/s",
-        },
-        xAxis: { type: "value", axisLabel: { color: "#9db0cb" } },
-        yAxis: { type: "category", data: rows.map(x => x.name), axisLabel: { color: "#9db0cb" } },
-        series: [{ type: "bar", data: rows.map(x => Number(x.rate || 0)), itemStyle: { color: "#4da4ff" } }],
-      });
-    }
-
-    function renderIrqHeatmap(payload) {
-      const chart = ensureChart("irqHeat", "chart-irq-heatmap");
-      if (!chart) return;
-      const cpus = payload.irq_heatmap?.cpus || [];
-      const irqs = (payload.irq_heatmap?.irqs || []).map(x => x.irq + " " + x.name);
-      const values = (payload.irq_heatmap?.values || []).map(v => [v[1], v[0], v[2], v]);
-      chart.setOption({
-        ...chartTheme(),
-        tooltip: {
-          formatter: p => {
-            const raw = p.data[3];
-            return "IRQ: " + raw[4] + "<br/>CPU: " + cpus[p.data[0]] + "<br/>IRQ/s: " + fmtNum(raw[2]) + "<br/>Total: " + raw[3] + "<br/>Source: " + raw[5] + "<br/>Device: " + raw[6];
-          },
-        },
-        xAxis: { type: "category", data: cpus, axisLabel: { color: "#9db0cb", interval: cpus.length > 64 ? Math.ceil(cpus.length / 24) : 0 } },
-        yAxis: { type: "category", data: irqs, axisLabel: { color: "#9db0cb" } },
-        dataZoom: [{ type: "inside", xAxisIndex: 0 }, { type: "slider", xAxisIndex: 0 }],
-        visualMap: { min: 0, max: Math.max(1, ...values.map(x => x[2])), orient: "horizontal", left: "center", bottom: 0, inRange: { color: ["#1e2d45", "#2676c4", "#35b470", "#f0bd4e", "#d45050"] } },
-        series: [{ type: "heatmap", data: values, progressive: 0 }],
-      });
-      bindZoomPersistence("irqHeat", chart);
-      restoreZoom("irqHeat", chart);
-      chart.off("click");
-      chart.on("click", p => {
-        const raw = p.data[3];
-        state.selectedCpu = String(cpus[p.data[0]]);
-        state.selectedIrq = String(raw[4]);
-        renderIrq();
-        renderCpu();
-      });
-    }
-
-    function renderIrqDistribution(payload) {
-      const chart = ensureChart("irqDist", "chart-irq-dist");
-      if (!chart) return;
-      const rows = payload.irq_distribution || [];
-      chart.setOption({
-        ...chartTheme(),
-        tooltip: { trigger: "item", formatter: p => p.name + ": " + fmtNum(p.value) + "/s (" + asPct(rows[p.dataIndex].percent) + ")" },
-        xAxis: { type: "value", axisLabel: { color: "#9db0cb" } },
-        yAxis: { type: "category", data: rows.map(x => x.source_class), axisLabel: { color: "#9db0cb" } },
-        series: [{ type: "bar", data: rows.map(x => Number(x.rate || 0)), itemStyle: { color: "#7bc2ff" } }],
-      });
-    }
-
-    function renderCpuHeatmap(payload) {
-      const chart = ensureChart("cpuHeat", "chart-cpu-heatmap");
-      if (!chart) return;
-      const rows = payload.cpu_heatmap?.values || [];
-      const cpus = rows.map(x => String(x.cpu));
-      const data = [];
-      for (let i = 0; i < rows.length; i++) {
-        data.push([i, 0, Number(rows[i].irq_rate || 0), rows[i]]);
-        data.push([i, 1, Number(rows[i].softirq_rate || 0), rows[i]]);
-      }
-      chart.setOption({
-        ...chartTheme(),
-        tooltip: {
-          formatter: p => {
-            const row = p.data[3];
-            const metric = p.data[1] === 0 ? "IRQ/s" : "SoftIRQ/s";
-            return "CPU " + row.cpu + "<br/>" + metric + ": " + fmtNum(p.data[2]) + "<br/>Total: " + fmtNum(row.total_rate);
-          },
-        },
-        xAxis: { type: "category", data: cpus, axisLabel: { color: "#9db0cb", interval: cpus.length > 64 ? Math.ceil(cpus.length / 24) : 0 } },
-        yAxis: { type: "category", data: ["IRQ/s", "SoftIRQ/s"], axisLabel: { color: "#9db0cb" } },
-        dataZoom: [{ type: "inside", xAxisIndex: 0 }, { type: "slider", xAxisIndex: 0 }],
-        visualMap: { min: 0, max: Math.max(1, ...data.map(x => x[2])), orient: "horizontal", left: "center", bottom: 0, inRange: { color: ["#1e2d45", "#2676c4", "#35b470", "#f0bd4e", "#d45050"] } },
-        series: [{ type: "heatmap", data }],
-      });
-      bindZoomPersistence("cpuHeat", chart);
-      restoreZoom("cpuHeat", chart);
-      chart.off("click");
-      chart.on("click", p => {
-        state.selectedCpu = String(rows[p.data[0]].cpu);
-        renderIrq();
-        renderCpu();
-      });
-    }
-
-    function renderCpuGrid(payload) {
-      const chart = ensureChart("cpuGrid", "chart-cpu-grid");
-      if (!chart) return;
-      const rows = payload.cpu_heatmap?.values || [];
-      const cols = Math.min(32, Math.max(8, Math.ceil(Math.sqrt(rows.length || 1))));
-      const values = rows.map((r, idx) => [idx % cols, Math.floor(idx / cols), Number(r.total_rate || 0), r]);
-      chart.setOption({
-        ...chartTheme(),
-        tooltip: { formatter: p => "CPU " + p.data[3].cpu + "<br/>IRQ/s " + fmtNum(p.data[3].irq_rate) + "<br/>SoftIRQ/s " + fmtNum(p.data[3].softirq_rate) },
-        xAxis: { type: "category", data: Array.from({ length: cols }, (_, i) => "C" + i), axisLabel: { color: "#9db0cb" } },
-        yAxis: { type: "category", data: Array.from({ length: Math.ceil(rows.length / cols) }, (_, i) => "R" + i), axisLabel: { color: "#9db0cb" } },
-        visualMap: { min: 0, max: Math.max(1, ...values.map(x => x[2])), orient: "horizontal", left: "center", bottom: 0, inRange: { color: ["#1e2d45", "#2676c4", "#35b470", "#f0bd4e", "#d45050"] } },
-        series: [{ type: "heatmap", data: values }],
-      });
-      bindZoomPersistence("cpuGrid", chart);
-      restoreZoom("cpuGrid", chart);
-    }
-
-    function renderSoftirqDist(payload) {
-      const chart = ensureChart("softDist", "chart-softirq-dist");
-      if (!chart) return;
-      const rates = state.snapshot?.softirq?.sample?.rates || {};
-      const rows = Object.entries(rates).sort((a, b) => Number(b[1]) - Number(a[1]));
-      chart.setOption({
-        ...chartTheme(),
-        tooltip: { trigger: "axis" },
-        xAxis: { type: "value", axisLabel: { color: "#9db0cb" } },
-        yAxis: { type: "category", data: rows.map(x => x[0]), axisLabel: { color: "#9db0cb" } },
-        series: [{ type: "bar", data: rows.map(x => Number(x[1])), itemStyle: { color: "#58c3ff" } }],
-      });
-    }
-
-    function renderSoftirqTrend(payload) {
-      const chart = ensureChart("softTrend", "chart-softirq-trend");
-      if (!chart) return;
-      const cls = payload.series.softirq_classes || {};
-      const keys = Object.keys(cls).slice(0, 8);
-      const series = keys.map(key => ({ name: key, type: "line", showSymbol: false, data: (cls[key] || []).map(x => [x[0] * 1000, x[1]]) }));
-      chart.setOption({
-        ...chartTheme(),
-        tooltip: { trigger: "axis" },
-        legend: { data: keys, textStyle: { color: "#dce5f2" } },
-        xAxis: { type: "time", axisLabel: { color: "#9db0cb" } },
-        yAxis: { type: "value", axisLabel: { color: "#9db0cb" } },
-        series,
-        dataZoom: [{ type: "inside", xAxisIndex: 0 }, { type: "slider", xAxisIndex: 0 }],
-      });
-      bindZoomPersistence("softTrend", chart);
-      restoreZoom("softTrend", chart);
-    }
-
-    function renderNetworkTrend(payload) {
-      const chart = ensureChart("netTrend", "chart-network-trend");
-      if (!chart) return;
-      const rx = toSeriesXY(payload.series.network || [], "rx_bps");
-      const tx = toSeriesXY(payload.series.network || [], "tx_bps");
-      chart.setOption({
-        ...chartTheme(),
-        tooltip: { trigger: "axis" },
-        legend: { data: ["RX", "TX"], textStyle: { color: "#dce5f2" } },
-        xAxis: { type: "time", axisLabel: { color: "#9db0cb" } },
-        yAxis: { type: "value", axisLabel: { color: "#9db0cb" } },
-        series: [
-          { name: "RX", type: "line", data: rx, showSymbol: false, smooth: true },
-          { name: "TX", type: "line", data: tx, showSymbol: false, smooth: true },
-        ],
-        dataZoom: [{ type: "inside", xAxisIndex: 0 }, { type: "slider", xAxisIndex: 0 }],
-      });
-      bindZoomPersistence("netTrend", chart);
-      restoreZoom("netTrend", chart);
-    }
-
-    function renderNetworkHeatmap(payload) {
-      const chart = ensureChart("netHeat", "chart-net-heatmap");
-      if (!chart) return;
-      const metric = el.netHeatMetric.value;
-      const rows = payload.network_interfaces?.rows || [];
-      const values = rows.map((r, i) => [0, i, Number(r[metric] || 0), r]);
-      chart.setOption({
-        ...chartTheme(),
-        tooltip: { formatter: p => p.data[3].interface + "<br/>" + metric + ": " + fmtNum(p.data[2]) },
-        xAxis: { type: "category", data: [metric], axisLabel: { color: "#9db0cb" } },
-        yAxis: { type: "category", data: rows.map(r => r.interface), axisLabel: { color: "#9db0cb" } },
-        visualMap: { min: 0, max: Math.max(1, ...values.map(x => x[2])), orient: "horizontal", left: "center", bottom: 0, inRange: { color: ["#1e2d45", "#2676c4", "#35b470", "#f0bd4e", "#d45050"] } },
-        series: [{ type: "heatmap", data: values }],
-      });
-      chart.off("click");
-      chart.on("click", p => {
-        state.selectedIface = p.data[3].interface;
-        document.getElementById("iface-filter").value = state.selectedIface;
-        renderNetwork();
-        renderIrq();
-      });
-    }
-
-    function renderNetworkRanking(payload) {
-      const chart = ensureChart("netRank", "chart-network-rank");
-      if (!chart) return;
-      const rows = (payload.network_interfaces?.ranking_rx || []).slice(0, 20);
-      chart.setOption({
-        ...chartTheme(),
-        tooltip: { trigger: "item", formatter: p => rows[p.dataIndex].interface + "<br/>RX: " + bytes(p.value) + "<br/>TX: " + bytes(rows[p.dataIndex].tx_bps) },
-        xAxis: { type: "value", axisLabel: { color: "#9db0cb" } },
-        yAxis: { type: "category", data: rows.map(x => x.interface), axisLabel: { color: "#9db0cb" } },
-        series: [{ type: "bar", data: rows.map(x => Number(x.rx_bps || 0)), itemStyle: { color: "#74b8ff" } }],
-      });
-    }
-
-    function renderNetworkErrorTrend(payload) {
-      const chart = ensureChart("netErrTrend", "chart-network-errors");
-      if (!chart) return;
-      const err = (payload.series.network || []).map(r => [r.timestamp * 1000, Number(r.rx_err_ps || 0) + Number(r.tx_err_ps || 0)]);
-      const drop = (payload.series.network || []).map(r => [r.timestamp * 1000, Number(r.rx_drop_ps || 0) + Number(r.tx_drop_ps || 0)]);
-      chart.setOption({
-        ...chartTheme(),
-        tooltip: { trigger: "axis" },
-        legend: { data: ["Errors/s", "Drops/s"], textStyle: { color: "#dce5f2" } },
-        xAxis: { type: "time", axisLabel: { color: "#9db0cb" } },
-        yAxis: { type: "value", axisLabel: { color: "#9db0cb" } },
-        series: [
-          { name: "Errors/s", type: "line", data: err, showSymbol: false, itemStyle: { color: "#d45050" } },
-          { name: "Drops/s", type: "line", data: drop, showSymbol: false, itemStyle: { color: "#d5a53e" } },
-        ],
-        dataZoom: [{ type: "inside", xAxisIndex: 0 }, { type: "slider", xAxisIndex: 0 }],
-      });
-      bindZoomPersistence("netErrTrend", chart);
-      restoreZoom("netErrTrend", chart);
-    }
-
-    function renderCorrelation(payload) {
-      const chart = ensureChart("corr", "chart-correlation");
-      if (!chart) return;
-      const top = (payload.top_irq_sources || []).slice(0, 20);
-      const ifaceNodes = {};
-      const irqNodes = {};
-      const cpuNodes = {};
-      const links = [];
-
-      for (const row of filteredIrqRows().slice(0, 120)) {
-        if (!row.nic) continue;
-        ifaceNodes[row.nic] = true;
-        const irqKey = "IRQ " + row.irq;
-        irqNodes[irqKey] = true;
-        links.push({ source: row.nic, target: irqKey, value: Number(row.total_rate || 0) });
-        const cpuEntries = Object.entries(row.cpu_rates || {}).sort((a, b) => Number(b[1]) - Number(a[1])).slice(0, 2);
-        for (const [cpu, rate] of cpuEntries) {
-          const cpuKey = "CPU " + cpu;
-          cpuNodes[cpuKey] = true;
-          links.push({ source: irqKey, target: cpuKey, value: Number(rate || 0) });
-        }
-      }
-
-      const nodes = [
-        ...Object.keys(ifaceNodes).map(x => ({ name: x })),
-        ...Object.keys(irqNodes).map(x => ({ name: x })),
-        ...Object.keys(cpuNodes).map(x => ({ name: x })),
-      ];
-
-      if (!nodes.length) {
-        chart.setOption({ title: { text: "Correlation unavailable", textStyle: { color: "#8fa0ba", fontSize: 14 } }, series: [] });
-        return;
-      }
-
-      chart.setOption({
-        tooltip: { trigger: "item" },
-        series: [{
-          type: "sankey",
-          data: nodes,
-          links,
-          lineStyle: { color: "gradient", curveness: 0.5 },
-          emphasis: { focus: "adjacency" },
-          nodeGap: 12,
-        }],
-      });
-    }
-
-    function renderNuma(payload) {
-      const chart = ensureChart("numa", "chart-numa");
-      if (!chart) return;
-      const bucket = {};
-      for (const row of filteredIrqRows()) {
-        const key = row.numa_node || "N/A";
-        bucket[key] = (bucket[key] || 0) + Number(row.total_rate || 0);
-      }
-      const labels = Object.keys(bucket);
-      chart.setOption({
-        ...chartTheme(),
-        tooltip: { trigger: "item" },
-        xAxis: { type: "category", data: labels, axisLabel: { color: "#9db0cb" } },
-        yAxis: { type: "value", axisLabel: { color: "#9db0cb" } },
-        series: [{ type: "bar", data: labels.map(k => bucket[k]), itemStyle: { color: "#4da4ff" } }],
-      });
-    }
-
-    function renderTopology() {
-      const root = document.getElementById("cpu-topology");
-      const topo = state.topologyByHost[state.host];
-      if (!topo) {
-        root.textContent = "Topology loading...";
-        return;
-      }
-      if (!topo.available) {
-        root.textContent = "Topology unavailable: " + (topo.reason || "unknown");
-        return;
-      }
-      const cpuLoad = {};
-      for (const row of filteredIrqRows()) {
-        for (const [cpu, rate] of Object.entries(row.cpu_rates || {})) {
-          cpuLoad[cpu] = (cpuLoad[cpu] || 0) + Number(rate || 0);
-        }
-      }
-
-      const tree = {};
-      for (const row of topo.rows || []) {
-        const socket = "Socket " + (row.socket_id ?? "N/A");
-        const numa = "NUMA " + (row.numa_node ?? "N/A");
-        const core = "Core " + (row.core_id ?? "N/A");
-        tree[socket] = tree[socket] || {};
-        tree[socket][numa] = tree[socket][numa] || {};
-        tree[socket][numa][core] = tree[socket][numa][core] || [];
-        const onlineTxt = row.online === null || row.online === undefined ? "unknown" : (row.online ? "online" : "offline");
-        const sib = row.thread_siblings_list || "N/A";
-        tree[socket][numa][core].push("CPU " + row.cpu_id + " (" + onlineTxt + ", siblings " + sib + ", " + fmtNum(cpuLoad[String(row.cpu_id)] || 0) + "/s)");
-      }
-
-      const lines = [];
-      for (const [socket, numas] of Object.entries(tree)) {
-        lines.push(socket);
-        for (const [numa, cores] of Object.entries(numas)) {
-          lines.push("  |- " + numa);
-          for (const [core, cpus] of Object.entries(cores)) {
-            lines.push("  |  |- " + core);
-            for (const cpu of cpus) lines.push("  |  |  |- " + cpu);
-          }
-        }
-      }
-      root.textContent = lines.join("\n");
-    }
-
-    function renderHealth(payload) {
-      const root = document.getElementById("health-grid");
-      const balance = payload.cpu_heatmap?.balance || { score: 0, status: "Unavailable" };
-      const irqCurrent = Number(payload.stats?.irq?.current || 0);
-      const softCurrent = Number(payload.stats?.softirq?.current || 0);
-      const netCurrent = Number(payload.stats?.network_rx?.current || 0) + Number(payload.stats?.network_tx?.current || 0);
-
-      const normalize = v => Math.min(100, v > 0 ? Math.log10(v + 1) * 22 : 0);
-      const items = [
-        { label: "IRQ Load", pct: normalize(irqCurrent), value: fmtNum(irqCurrent) + "/s" },
-        { label: "SoftIRQ Load", pct: normalize(softCurrent), value: fmtNum(softCurrent) + "/s" },
-        { label: "Network Load", pct: normalize(netCurrent), value: bytes(netCurrent) },
-        { label: "IRQ Balance", pct: Number(balance.score || 0), value: fmtNum(balance.score || 0) + " / 100 (" + (balance.status || "N/A") + ")" },
-      ];
-      root.innerHTML = items.map(i => "<div class='meter'><div>" + i.label + " <span class='tiny'>" + i.value + "</span></div><div class='bar'><div class='fill' style='width:" + i.pct.toFixed(1) + "%'></div></div></div>").join("");
-    }
-
-    function renderTimeline(payload) {
-      const root = document.getElementById("activity-timeline");
-      const events = [];
-      for (const evt of payload.anomalies || []) {
-        if (evt.metric === "network_errors" && Number(evt.current || 0) <= state.thresholds.netErr) continue;
-        if (evt.metric === "network_drops" && Number(evt.current || 0) <= state.thresholds.netDrop) continue;
-        if (evt.type === "spike" && Number(evt.ratio || 0) < state.thresholds.irqSpike) continue;
-        events.push(evt);
-      }
-      const balance = payload.cpu_heatmap?.balance || {};
-      if (balance.coefficient_variation && Number(balance.coefficient_variation) * 100 > state.thresholds.imbalance) {
-        events.unshift({
-          type: "imbalance",
-          metric: "cpu_irq_imbalance",
-          timestamp: payload.timestamp,
-          current: Number(balance.coefficient_variation) * 100,
-        });
-      }
-      root.innerHTML = events.slice(0, 40).map(e => {
-        const t = new Date(Number(e.timestamp || 0) * 1000).toLocaleTimeString();
-        const ratio = e.ratio ? (" ratio " + Number(e.ratio).toFixed(2) + "x") : "";
-        return "<div class='evt'><span class='tiny'>" + t + "</span><br/>" + (e.metric || e.type) + ": " + fmtNum(e.current || 0) + ratio + "</div>";
-      }).join("") || "No anomalies in selected window.";
-    }
-
-    async function runCompare() {
-      const a = document.getElementById("compare-a").value;
-      const b = document.getElementById("compare-b").value;
-      if (!a || !b) return;
-      const data = await fetchJson("/api/visualization/compare?a=" + encodeURIComponent(a) + "&b=" + encodeURIComponent(b) + "&window_seconds=" + state.windowSeconds);
-      document.getElementById("cmp-a-h").textContent = a;
-      document.getElementById("cmp-b-h").textContent = b;
-      const rows = [
-        ["IRQ/sec", data.systems[a].irq_per_sec, data.systems[b].irq_per_sec, data.deltas.irq_per_sec],
-        ["SoftIRQ/sec", data.systems[a].softirq_per_sec, data.systems[b].softirq_per_sec, data.deltas.softirq_per_sec],
-        ["Network RX", data.systems[a].network_rx_bps, data.systems[b].network_rx_bps, data.deltas.network_rx_bps],
-        ["Network TX", data.systems[a].network_tx_bps, data.systems[b].network_tx_bps, data.deltas.network_tx_bps],
-        ["Errors", data.systems[a].network_errors, data.systems[b].network_errors, data.deltas.network_errors],
-        ["Drops", data.systems[a].network_drops, data.systems[b].network_drops, data.deltas.network_drops],
-        ["IRQ Balance", data.systems[a].irq_balance, data.systems[b].irq_balance, data.deltas.irq_balance],
-      ];
-      document.getElementById("compare-body").innerHTML = rows.map(r => "<tr><td>" + r[0] + "</td><td>" + fmtNum(r[1]) + "</td><td>" + fmtNum(r[2]) + "</td><td>" + fmtNum(r[3]) + "</td></tr>").join("");
-
-      const chart = ensureChart("compareBars", "chart-compare-bars");
-      if (!chart) return;
-      chart.setOption({
-        ...chartTheme(),
-        tooltip: { trigger: "axis" },
-        legend: { data: [a, b], textStyle: { color: "#dce5f2" } },
-        xAxis: { type: "value", axisLabel: { color: "#9db0cb" } },
-        yAxis: { type: "category", data: rows.map(r => r[0]), axisLabel: { color: "#9db0cb" } },
-        series: [
-          { name: a, type: "bar", data: rows.map(r => Number(r[1])) },
-          { name: b, type: "bar", data: rows.map(r => Number(r[2])) },
-        ],
-      });
-    }
-
-    async function refresh() {
-      try {
-        await loadHealth();
-        await loadHosts();
-        await loadMainData();
-        await loadVisualizationData();
-        await loadTopologyData();
-        renderAll();
-      } catch (err) {
-        log("ERROR", "ui", String(err));
-      }
-    }
-
-    function wsConnect() {
-      const wsUrl = el.backend.value.replace(/^http/, "ws").replace(/\/$/, "") + "/ws";
-      try {
-        state.ws = new WebSocket(wsUrl);
-      } catch (err) {
-        log("ERROR", "ws", "connect failed " + err);
-        return;
-      }
-      el.wsStatus.textContent = "Connecting...";
-      el.wsStatus.className = "status-badge status-warn";
-
-      state.ws.onopen = () => {
-        el.wsStatus.textContent = "Connected";
-        el.wsStatus.className = "status-badge status-ok";
-        log("INFO", "ws", "connected");
-      };
-      state.ws.onmessage = async (evt) => {
-        try {
-          const payload = JSON.parse(evt.data);
-          if (!state.paused) {
-            const sut = payload.sut_id || payload.host || "";
-            if (!state.host || state.host === "ALL SYSTEMS" || !sut || sut === state.host || state.host === "local") {
-              await loadMainData();
-              await loadVisualizationData();
-              renderAll();
-            }
-          }
-          log("INFO", "ws", payload.type || "event");
-        } catch (err) {
-          log("ERROR", "ws", "message parse failed");
-        }
-      };
-      state.ws.onclose = () => {
-        el.wsStatus.textContent = "Reconnecting...";
-        el.wsStatus.className = "status-badge status-warn";
-        log("WARNING", "ws", "disconnected, retrying");
-        setTimeout(wsConnect, 1500);
-      };
-      state.ws.onerror = () => {
-        el.wsStatus.textContent = "Disconnected";
-        el.wsStatus.className = "status-badge status-err";
-      };
-    }
-
-    async function startDiagnostics() {
-      const categories = [...document.querySelectorAll(".diag-cat:checked")].map(x => x.value);
-      const data = await fetch(api("/api/sessions/start"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ categories, sut_id: state.host && state.host !== "ALL SYSTEMS" ? state.host : "local" }),
-      }).then(r => r.json());
-      state.activeSession = data.session?.session_id || "";
-      document.getElementById("diag-status").textContent = state.activeSession ? ("Running: " + state.activeSession) : "No active session";
-      const files = data.files || [];
-      document.getElementById("diag-files").innerHTML = files.map(f => "<div><a href='" + api("/api/files?path=" + encodeURIComponent(f.path)) + "'>" + f.name + "</a></div>").join("") || "No files";
-      await renderSessions();
-      log("INFO", "diag", "started session " + state.activeSession);
-    }
-
-    async function stopDiagnostics() {
-      if (!state.activeSession) return;
-      await fetch(api("/api/sessions/" + encodeURIComponent(state.activeSession) + "/stop"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reason: "manual" }),
-      });
-      document.getElementById("diag-status").textContent = "Stopped: " + state.activeSession;
-      state.activeSession = "";
-      await renderSessions();
-      log("INFO", "diag", "session stopped");
-    }
-
-    async function boot() {
-      buildNav();
-      el.backend.value = window.location.origin || "http://localhost:8080";
-      el.interval.innerHTML = "";
-      for (const i of [0.1, 0.25, 0.5, 1, 2, 5, 10]) {
-        const o = document.createElement("option");
-        o.value = i;
-        o.textContent = i + " sec";
-        if (i === 1) o.selected = true;
-        el.interval.appendChild(o);
-      }
-
-      el.refresh.onclick = refresh;
-      el.host.onchange = async () => {
-        state.host = el.host.value;
-        state.selectedCpu = "ALL";
-        state.selectedIrq = "ALL";
-        state.selectedIface = "ALL";
-        await loadMainData();
-        await loadVisualizationData();
-        await loadTopologyData();
-        renderAll();
-      };
-      el.timeRange.onchange = async () => {
-        const isCustom = el.timeRange.value === "custom";
-        el.rangeFrom.classList.toggle("hidden", !isCustom);
-        el.rangeTo.classList.toggle("hidden", !isCustom);
-        el.applyRange.classList.toggle("hidden", !isCustom);
-        if (!isCustom) {
-          state.customFromTs = null;
-          state.customToTs = null;
-          state.windowSeconds = Number(el.timeRange.value || 60);
-        }
-        await loadVisualizationData();
-        renderVisualizations();
-      };
-      el.applyRange.onclick = async () => {
-        const fromTs = parseDateTimeLocalToTs(el.rangeFrom.value);
-        const toTs = parseDateTimeLocalToTs(el.rangeTo.value);
-        if (!fromTs || !toTs) {
-          log("WARNING", "ui", "custom range requires valid from/to values");
-          return;
-        }
-        state.customFromTs = Math.min(fromTs, toTs);
-        state.customToTs = Math.max(fromTs, toTs);
-        await loadVisualizationData();
-        renderVisualizations();
-      };
-      el.topN.onchange = async () => {
-        state.topN = Number(el.topN.value || 20);
-        await loadVisualizationData();
-        renderVisualizations();
-      };
-      el.liveToggle.onclick = async () => {
-        state.paused = !state.paused;
-        el.liveToggle.textContent = state.paused ? "PAUSED" : "LIVE";
-        if (!state.paused) {
-          await refresh();
-        }
-      };
-      el.netHeatMetric.onchange = renderVisualizations;
-      el.resetZoom.onclick = () => {
-        state.zoomState = {};
-        for (const chart of Object.values(state.charts)) {
-          try {
-            chart.dispatchAction({ type: "dataZoom", dataZoomIndex: 0, start: 0, end: 100 });
-          } catch (_) {
-            // Ignore charts without dataZoom.
-          }
-        }
-        renderVisualizations();
-      };
-      document.getElementById("irq-search").oninput = renderIrq;
-      document.getElementById("irq-sort").onchange = renderIrq;
-      document.getElementById("iface-filter").onchange = () => {
-        const v = document.getElementById("iface-filter").value;
-        state.selectedIface = v === "ALL INTERFACES" ? "ALL" : v;
-        renderNetwork();
-        renderIrq();
-      };
-      document.getElementById("log-level").onchange = renderLogs;
-      document.getElementById("log-search").oninput = renderLogs;
-      document.getElementById("diag-start").onclick = startDiagnostics;
-      document.getElementById("diag-stop").onclick = stopDiagnostics;
-      document.getElementById("compare-run").onclick = runCompare;
-
-      document.getElementById("th-irq-spike").onchange = () => { state.thresholds.irqSpike = Number(document.getElementById("th-irq-spike").value || 2.0); renderVisualizations(); };
-      document.getElementById("th-net-err").onchange = () => { state.thresholds.netErr = Number(document.getElementById("th-net-err").value || 0.0); renderVisualizations(); };
-      document.getElementById("th-net-drop").onchange = () => { state.thresholds.netDrop = Number(document.getElementById("th-net-drop").value || 100.0); renderVisualizations(); };
-      document.getElementById("th-imbalance").onchange = () => { state.thresholds.imbalance = Number(document.getElementById("th-imbalance").value || 30.0); renderVisualizations(); };
-
-      window.addEventListener("resize", resizeCharts);
-      window.irqlensShowFiles = showSessionFiles;
-      window.irqlensSelectSystem = async function(sutId) {
-        state.host = sutId;
-        el.host.value = sutId;
-        await loadMainData();
-        await loadVisualizationData();
-        await loadTopologyData();
-        renderAll();
-      };
-
-      await refresh();
-      wsConnect();
-
-      setInterval(updateFreshness, 1000);
-      setInterval(async () => {
-        if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
-          await refresh();
-        }
-      }, 5000);
-    }
-
-    boot();
-  </script>
+  <script src="/frontend/app.js"></script>
 </body>
 </html>
