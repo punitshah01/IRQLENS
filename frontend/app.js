@@ -1730,6 +1730,8 @@ async function refreshAll() {
       await loadSessions();
       if (state.selectedSessionId) await loadSessionDetail(state.selectedSessionId);
     }
+  } catch (_) {
+    // Non-fatal: render with whatever state loaded successfully.
   } finally {
     state.loading.global = false;
   }
@@ -1833,10 +1835,16 @@ async function boot() {
   renderTimeControls();
   bindGlobalActions();
   updateNavActive();
-  await refreshAll();
-  if (state.view === "network" && state.selectedIface !== "ALL") {
-    await loadInterfaceHistory();
-  }
+  // Show page skeleton immediately — data fills in after async loads.
+  showSection(state.view);
+  updateTimeControlsVisibility();
+  renderContextBar();
+  try {
+    await refreshAll();
+    if (state.view === "network" && state.selectedIface !== "ALL") {
+      await loadInterfaceHistory();
+    }
+  } catch (_) {}
   render();
   wireWebSocket();
   // 1-second tick: only for diagnostic progress timer and context bar staleness indicator.
