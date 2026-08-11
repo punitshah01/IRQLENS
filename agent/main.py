@@ -130,6 +130,14 @@ def _collect_cpu_topology(cpu_model: str) -> List[dict]:
         if online_raw in ("0", "1"):
             online = online_raw == "1"
 
+        # Read current CPU frequency (kHz) — optional, may not exist on all platforms.
+        freq_khz = None
+        for freq_path in (cpu_dir / "cpufreq" / "scaling_cur_freq", cpu_dir / "cpufreq" / "cpuinfo_cur_freq"):
+            raw = _read_text(freq_path)
+            if raw.isdigit():
+                freq_khz = int(raw)
+                break
+
         rows.append(
             {
                 "cpu_id": cpu_id,
@@ -140,6 +148,7 @@ def _collect_cpu_topology(cpu_model: str) -> List[dict]:
                 "thread_siblings_list": thread_siblings,
                 "core_siblings_list": core_siblings,
                 "cpu_model": cpu_model,
+                "freq_khz": freq_khz,
             }
         )
 

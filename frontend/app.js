@@ -78,6 +78,9 @@ if (!["irq", "softirq", "util"].includes(state.cpuMetric)) {
   storage.set("irqlens:cpuMetric", state.cpuMetric);
 }
 
+let _dataRefreshTimer = null;   // debounce for WS-triggered data refresh
+let _lastTopoSig = "";          // signature to detect topology structure changes
+
 const el = {};
 
 function qs(id) {
@@ -87,8 +90,8 @@ function qs(id) {
 function initializeElements() {
   [
     "primary-nav", "sut-title", "sut-status-dot", "sut-status-label", "sut-selector",
-    "sut-meta", "page-title", "page-subtitle", "breadcrumb", "ws-pill", "last-updated",
-    "refresh-button", "live-button", "custom-range", "custom-from", "custom-to", "custom-apply",
+    "sut-meta", "page-title", "page-subtitle", "breadcrumb", "ws-pill",
+    "custom-range", "custom-from", "custom-to", "custom-apply",
     "time-controls", "section-overview", "section-irq", "section-network",
     "section-cpu", "section-diagnostics", "section-sessions", "cpu-metric-selector", "cpu-legend",
   ].forEach(id => { el[id] = qs(id); });
@@ -176,21 +179,86 @@ function viewTitle(view) {
   }
 }
 
-function renderNavigation() {
+// Build nav HTML once and use event delegation — never rebuild on telemetry.
+function buildNavigation() {
   el["primary-nav"].innerHTML = PRIMARY_VIEWS.map(view => {
-    const active = state.view === view ? "nav-button active" : "nav-button";
     const label = view.charAt(0).toUpperCase() + view.slice(1);
-    return `<button class="${active}" data-view="${view}">${label}</button>`;
+    return `<button class="nav-button" data-view="${view}">${label}</button>`;
   }).join("");
-  [...document.querySelectorAll("[data-view]")].forEach(node => {
-    node.onclick = async () => {
-      state.view = node.dataset.view;
-      storage.set("irqlens:view", state.view);
-      if (state.view === "sessions") await loadSessions();
-      if (state.view === "network" && state.selectedIface !== "ALL") await loadInterfaceHistory();
-      render();
-    };
+  el["primary-nav"].addEventListener("click", event => {
+    const btn = event.target.closest("[data-view]");
+    if (btn) navigateTo(btn.dataset.view);
   });
+}
+
+function updateNavActive() {
+  el["primary-nav"].querySelectorAll("[data-view]").forEach(node => {
+    node.classList.toggle("active", node.dataset.view === state.view);
+  });
+}
+
+function hideTooltip() {
+  const t = qs("cpu-hover-tooltip");
+  if (t) t.classList.add("hidden");
+}
+
+// Synchronous nav: visual switch is instant; data loads fire in background.
+function navigateTo(view) {
+  if (!PRIMARY_VIEWS.includes(view) || view === state.view) return;
+  state.view = view;
+  storage.set("irqlens:view", view);
+  hideTooltip();
+  updateNavActive();
+  showSection(view);
+  renderContextBar();
+  updateTimeControlsVisibility();
+  renderActiveSection();
+  resizeCharts();
+  loadForView(view).catch(() => {});
+}
+
+function updateTimeControlsVisibility() {
+  const show = ["overview", "irq", "network"].includes(state.view);
+  if (el["time-controls"]) el["time-controls"].style.display = show ? "" : "none";
+  if (el["custom-range"]) el["custom-range"].classList.toggle("active", show && state.timeRange === "custom");
+}
+
+async function loadForView(view) {
+  if (view === "sessions") {
+    await loadSessions();
+    if (state.selectedSessionId) await loadSessionDetail(state.selectedSessionId);
+    if (state.view === view) { renderSessions(); renderContextBar(); }
+    return;
+  }
+  if (view === "network" && state.selectedIface !== "ALL") {
+    await loadInterfaceHistory();
+    if (state.view === view) renderNetwork();
+  }
+}
+
+function renderActiveSection() {
+  switch (state.view) {
+    case "overview":    renderOverview(); break;
+    case "irq":         renderIrq(); break;
+    case "network":     renderNetwork(); break;
+    case "cpu":         renderCpu(); break;
+    case "diagnostics": renderDiagnostics(); bindDiagnosticsActions(); break;
+    case "sessions":    renderSessions(); break;
+  }
+}
+
+// Debounce WS-triggered data refreshes — one batch per 800 ms maximum.
+function scheduleDataRefresh() {
+  if (_dataRefreshTimer) return;
+  _dataRefreshTimer = setTimeout(async () => {
+    _dataRefreshTimer = null;
+    if (state.host) {
+      try {
+        await loadSelectedData();
+        render();
+      } catch (_) {}
+    }
+  }, 800);
 }
 
 function renderTimeControls() {
@@ -241,9 +309,10 @@ function persistSelections() {
 
 function renderContextBar() {
   const system = currentSystem();
-  const title = system ? (system.name || system.id) : "No SUT selected";
+  // Prefer real hostname from SUT over the registration name.
+  const displayName = system ? (system.hostname || system.name || system.id) : "No SUT selected";
   const status = system ? system.status : "NONE";
-  el["sut-title"].textContent = system ? `SUT: ${title}` : "Select a SUT";
+  el["sut-title"].textContent = system ? `SUT: ${displayName}` : "Select a SUT";
   el["sut-status-dot"].className = `dot ${statusTone(status)}`;
   el["sut-status-label"].textContent = system ? status : "No selection";
   const meta = [];
@@ -251,19 +320,17 @@ function renderContextBar() {
     meta.push(system.id);
     meta.push(system.os_distribution || "Unknown OS");
     meta.push(system.kernel || "Unknown kernel");
-    meta.push(`Last update ${fmtAgo(system.last_seen)}`);
+    if (state.lastDataAt) meta.push(`Updated ${fmtAgo(state.lastDataAt)}`);
   } else {
     meta.push("Waiting for telemetry from a local or remote SUT");
   }
-  el["sut-meta"].textContent = meta.join(" • ");
+  el["sut-meta"].textContent = meta.join(" \u2022 ");
   const [titleText, subtitleText] = viewTitle(state.view);
   el["page-title"].textContent = titleText;
   el["page-subtitle"].textContent = subtitleText;
   el["breadcrumb"].textContent = buildBreadcrumb();
   el["ws-pill"].className = `tag ${wsTone()}`;
-  el["ws-pill"].textContent = `WebSocket: ${state.wsStatus}`;
-  el["last-updated"].textContent = state.lastDataAt ? fmtAgo(state.lastDataAt) : "never";
-  el["live-button"].textContent = state.paused ? "Resume Live" : "Pause Live";
+  el["ws-pill"].textContent = state.wsStatus === "connected" ? "\u25cf Connected" : (state.wsStatus === "connecting" ? "\u25cb Connecting..." : "\u25cb Disconnected");
   renderSutSelector();
 }
 
@@ -398,9 +465,11 @@ function networkHistoryRows() {
 }
 
 function showSection(view) {
+  // Always hide the floating tooltip when leaving the CPU/overview context.
+  if (view !== "cpu" && view !== "overview") hideTooltip();
   ["overview", "irq", "network", "cpu", "diagnostics", "sessions"].forEach(name => {
     const node = qs(`section-${name}`);
-    node.classList.toggle("active", name === view);
+    if (node) node.classList.toggle("active", name === view);
   });
 }
 
@@ -462,12 +531,7 @@ function renderOverview() {
     </div>
   `).join("");
   [...qs("overview-findings").querySelectorAll("[data-target-view]")].forEach(node => {
-    node.onclick = async () => {
-      state.view = node.dataset.targetView;
-      storage.set("irqlens:view", state.view);
-      if (state.view === "network" && state.selectedIface !== "ALL") await loadInterfaceHistory();
-      render();
-    };
+    node.onclick = () => navigateTo(node.dataset.targetView);
   });
 }
 
@@ -482,7 +546,8 @@ function renderSutSelector() {
   }
   selector.disabled = false;
   selector.innerHTML = state.systems.map(system => {
-    const label = `${system.name || system.id} (${system.status})`;
+    // Show real hostname first — avoids showing "Local Host" or sut-id strings.
+    const label = `${system.hostname || system.name || system.id} (${system.status})`;
     return `<option value="${escapeHtml(system.id)}">${escapeHtml(label)}</option>`;
   }).join("");
   if (!state.host || !state.systems.some(item => item.id === state.host)) {
@@ -775,6 +840,13 @@ function renderTopologyMap(containerId, options) {
   const rows = [...(topo.rows || [])].sort((a, b) => Number(a.cpu_id) - Number(b.cpu_id));
   const cpuMap = buildCpuValueMap(rows);
   const metricKey = state.cpuMetric;
+  // Signature = topology IDs + selected metric.  When only values change, update in-place.
+  const topoSig = rows.map(r => r.cpu_id).join(",") + "_" + metricKey;
+  if (!compact && topoSig === _lastTopoSig && root.querySelector(".cpu-matrix-grid")) {
+    updateCpuMatrixValues(root, cpuMap, metricKey);
+    return;
+  }
+  _lastTopoSig = topoSig;
   const metricUnit = metricKey === "util" ? "%" : "/sec";
   const metricLabel = metricKey === "util" ? "CPU Utilization" : (metricKey === "softirq" ? "SoftIRQ Rate" : "IRQ Rate");
   const values = rows.map(row => Number(cpuMetricValue(cpuMap[String(row.cpu_id)], metricKey) || 0));
@@ -909,6 +981,11 @@ function computeMatrixLayout(cpuCount, containerWidth) {
   return { rows: Math.ceil(count / bestCols), cols: bestCols };
 }
 
+function fmtFreq(khz) {
+  if (!khz) return "unavailable";
+  return `${(khz / 1000000).toFixed(2)} GHz`;
+}
+
 function buildCpuValueMap(rows) {
   const irqSoft = aggregateCpuActivity();
   const cpuUtil = state.viz?.cpu_utilization || {};
@@ -920,6 +997,7 @@ function buildCpuValueMap(rows) {
       irq: Number(base.irq || 0),
       softirq: Number(base.softirq || 0),
       util: Number(cpuUtil[cpu] || 0),
+      freq_khz: row.freq_khz || null,
     };
   });
   return map;
@@ -993,7 +1071,8 @@ function groupPeakValue(rows, cpuMap, metricKey) {
 }
 
 function cpuTooltipHtml(cpuId, row, cpuMap) {
-  const entry = cpuMap[String(cpuId)] || { irq: 0, softirq: 0, util: 0 };
+  const entry = cpuMap[String(cpuId)] || { irq: 0, softirq: 0, util: 0, freq_khz: null };
+  const freqStr = fmtFreq(entry.freq_khz || row?.freq_khz);
   const netMap = groupNetworkIrqsForCpu(cpuId);
   const networkHtml = netMap.length
     ? netMap.map(item => `<div class="key-value"><span>${escapeHtml(item.iface)} ${escapeHtml(item.direction)} IRQ</span><strong>${fmtCount(item.rate)}/s</strong></div>`).join("")
@@ -1002,20 +1081,41 @@ function cpuTooltipHtml(cpuId, row, cpuMap) {
     <div class="item-title">CPU ${escapeHtml(String(cpuId))}</div>
     <div class="detail-list">
       <div class="key-value"><span>CPU Utilization</span><strong>${fmtMetricValue(entry.util, "util")}</strong></div>
+      <div class="key-value"><span>Frequency</span><strong>${freqStr}</strong></div>
       <div class="key-value"><span>IRQ Rate</span><strong>${fmtMetricValue(entry.irq, "irq")}</strong></div>
       <div class="key-value"><span>SoftIRQ Rate</span><strong>${fmtMetricValue(entry.softirq, "softirq")}</strong></div>
       <div class="key-value"><span>NUMA Node</span><strong>${row?.numa_node ?? "Unavailable"}</strong></div>
       <div class="key-value"><span>Socket</span><strong>${row?.socket_id ?? "Unavailable"}</strong></div>
       <div class="key-value"><span>Core</span><strong>${row?.core_id ?? "Unavailable"}</strong></div>
       <div class="key-value"><span>Thread</span><strong>${threadIndex(row)}</strong></div>
-      <div class="key-value"><span>CBB</span><strong>information unavailable</strong></div>
     </div>
     <div class="item-title" style="margin-top:10px;">Network / IRQ</div>
     <div class="detail-list">${networkHtml}</div>
   `;
 }
 
-function bindCpuCellInteractions(root, cpuMap, metricKey, interactive) {
+// In-place update of cell values/levels when topology structure is unchanged.
+function updateCpuMatrixValues(root, cpuMap, metricKey) {
+  const allVals = Object.values(cpuMap).map(e => Number(cpuMetricValue(e, metricKey) || 0));
+  const max = Math.max(1, ...allVals);
+  root.querySelectorAll("[data-cpu]").forEach(cell => {
+    const cpuId = cell.dataset.cpu;
+    const entry = cpuMap[cpuId] || { irq: 0, softirq: 0, util: 0 };
+    const val = Number(cpuMetricValue(entry, metricKey) || 0);
+    const level = String(intensityLevel(val, max));
+    const metricEl = cell.querySelector(".cpu-metric");
+    if (metricEl && metricEl.textContent !== fmtMetricValue(val, metricKey)) {
+      metricEl.textContent = fmtMetricValue(val, metricKey);
+    }
+    if (cell.dataset.level !== level) cell.dataset.level = level;
+    cell.title = `CPU ${cpuId} \u2022 ${fmtMetricValue(val, metricKey)}`;
+  });
+  if (el["cpu-legend"]) {
+    const metricLabel = metricKey === "util" ? "CPU Utilization" : (metricKey === "softirq" ? "SoftIRQ Rate" : "IRQ Rate");
+    const metricUnit = metricKey === "util" ? "%" : "/sec";
+    el["cpu-legend"].innerHTML = `<span>Low</span><div class="legend-bar"></div><span>High (${fmtMetricValue(max, metricKey)})</span><span class="muted">${escapeHtml(metricLabel)}</span>`;
+  }
+}
   const tooltip = qs("cpu-hover-tooltip");
   const topoRows = state.topology?.rows || [];
   [...root.querySelectorAll("[data-cpu]")].forEach(node => {
@@ -1424,18 +1524,14 @@ function renderSettings() {
   `;
 }
 
+// render() only updates the currently visible section — never rebuilds hidden pages.
 function render() {
-  renderNavigation();
+  updateNavActive();
   renderTimeControls();
+  updateTimeControlsVisibility();
   renderContextBar();
   showSection(state.view);
-  renderOverview();
-  renderIrq();
-  renderNetwork();
-  renderCpu();
-  renderDiagnostics();
-  bindDiagnosticsActions();
-  renderSessions();
+  renderActiveSection();
   resizeCharts();
 }
 
@@ -1640,14 +1736,6 @@ async function refreshAll() {
 }
 
 function bindGlobalActions() {
-  el["refresh-button"].onclick = async () => {
-    await refreshAll();
-    render();
-  };
-  el["live-button"].onclick = () => {
-    state.paused = !state.paused;
-    renderContextBar();
-  };
   el["custom-apply"].onclick = async () => {
     state.customFrom = el["custom-from"].value || "";
     state.customTo = el["custom-to"].value || "";
@@ -1718,38 +1806,40 @@ function wireWebSocket() {
     state.wsStatus = "offline";
     renderContextBar();
   };
-  state.ws.onmessage = async event => {
-    if (state.paused) return;
+  // Throttle: telemetry messages are debounced; special lifecycle events are handled immediately.
+  state.ws.onmessage = event => {
     let payload = null;
-    try {
-      payload = JSON.parse(event.data);
-    } catch (_) {
+    try { payload = JSON.parse(event.data); } catch (_) { return; }
+    if (payload.type === "system_registered") {
+      loadSystems().then(() => render()).catch(() => {});
+      return;
+    }
+    if (payload.type === "session_started" || payload.type === "session_stopped") {
+      loadSessions().then(() => {
+        if (state.selectedSessionId) loadSessionDetail(state.selectedSessionId);
+        if (state.view === "sessions") renderSessions();
+      }).catch(() => {});
       return;
     }
     const sutId = payload.sut_id || payload.host || "";
-    if (!sutId || sutId === state.host || payload.type === "system_registered" || payload.type === "session_started" || payload.type === "session_stopped") {
-      await loadSystems();
-      if (state.host) await loadSelectedData();
-      if (state.view === "sessions" || payload.type === "session_started" || payload.type === "session_stopped") {
-        await loadSessions();
-        if (state.selectedSessionId) await loadSessionDetail(state.selectedSessionId);
-      }
-      render();
-    }
+    if (sutId && sutId !== state.host) return; // not our SUT
+    scheduleDataRefresh();
   };
 }
 
 async function boot() {
   initializeElements();
-  renderNavigation();
+  buildNavigation();
   renderTimeControls();
   bindGlobalActions();
+  updateNavActive();
   await refreshAll();
   if (state.view === "network" && state.selectedIface !== "ALL") {
     await loadInterfaceHistory();
   }
   render();
   wireWebSocket();
+  // 1-second tick: only for diagnostic progress timer and context bar staleness indicator.
   setInterval(() => {
     renderContextBar();
     if (state.diag.running) {
@@ -1757,10 +1847,10 @@ async function boot() {
       bindDiagnosticsActions();
     }
   }, 1000);
+  // Fallback poll when WS is disconnected (avoids stuck display).
   setInterval(async () => {
-    if (!state.paused && (!state.ws || state.ws.readyState !== WebSocket.OPEN)) {
-      await refreshAll();
-      render();
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+      try { await loadSelectedData(); render(); } catch (_) {}
     }
   }, 5000);
   window.addEventListener("resize", resizeCharts);

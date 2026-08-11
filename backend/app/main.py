@@ -111,7 +111,7 @@ def _register_local_system_snapshot() -> None:
         interfaces = [i.name for i in snapshot.interfaces]
         local = SystemRecord(
             id="local",
-            name="Local Host",
+            name=sys.hostname or "local",
             hostname=sys.hostname,
             address="127.0.0.1",
             port=settings.bind_port,
@@ -135,7 +135,7 @@ def _register_local_system_snapshot() -> None:
     else:
         local = SystemRecord(
             id="local",
-            name="Local Host",
+            name="local",
             hostname="local",
             address="127.0.0.1",
             port=settings.bind_port,

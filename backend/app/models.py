@@ -241,6 +241,7 @@ class CPUTopologyEntry(BaseModel):
     thread_siblings_list: str = ""
     core_siblings_list: str = ""
     cpu_model: str = ""
+    freq_khz: Optional[int] = None
 
 
 class SystemCreateRequest(BaseModel):
