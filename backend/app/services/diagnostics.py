@@ -4,8 +4,10 @@ import os
 import re
 import shutil
 import time
+from html import escape
 from pathlib import Path
 from typing import List, Optional, Tuple
+from urllib.parse import quote
 
 from ..collectors import DiagnosticCommandCollector, NetworkCollector, SystemCollector
 from ..config import Settings
@@ -48,6 +50,13 @@ class DiagnosticSessionService:
 
     def _session_dir(self, session_id: str) -> Path:
         return self.settings.output_dir / self._safe_session_id(session_id)
+
+    def _ensure_within_output(self, target: Path) -> Path:
+        resolved = target.resolve()
+        base = self.settings.output_dir.resolve()
+        if resolved != base and base not in resolved.parents:
+            raise ValueError(f"path escapes output_dir: {resolved}")
+        return resolved
 
     def start(self, session_name: str, categories: List[str], system_hostname: str, os_distribution: str, kernel: str, sut_id: str = "") -> CollectionSession:
         ok, safe_name = self.validate_session_name(session_name)
@@ -168,17 +177,6 @@ class DiagnosticSessionService:
                         iface = cmd[1]
                     result = self.command_collector.run(category=category, command=cmd, interface=iface)
                     command_rows.append(result.model_dump())
-                    safe_name = "_".join(token.replace("/", "_") for token in cmd)
-                    raw_path = command_dir / f"{safe_name}.txt"
-                    raw_path.parent.mkdir(parents=True, exist_ok=True)
-                    raw_path.write_text(
-                        f"command: {' '.join(cmd)}\n"
-                        f"timestamp: {result.timestamp}\n"
-                        f"exit_code: {result.exit_code}\n\n"
-                        f"stdout:\n{result.stdout}\n\n"
-                        f"stderr:\n{result.stderr}\n",
-                        encoding="utf-8",
-                    )
             files.extend(self._emit_category_files(command_dir, "commands", {"commands": command_rows}, command_rows))
         elif command_categories:
             command_dir = outdir / "commands"
@@ -209,14 +207,6 @@ class DiagnosticSessionService:
         csv_path = category_dir / f"{category}.csv"
         self.exporter.write_csv(csv_path, rows)
         out.append(self._to_export_file(csv_path, category, "csv"))
-
-        xml_path = category_dir / f"{category}.xml"
-        self.exporter.write_xml(xml_path, "irqlens", category, rows)
-        out.append(self._to_export_file(xml_path, category, "xml"))
-
-        txt_path = category_dir / f"{category}.txt"
-        self.exporter.write_txt(txt_path, f"IRQLENS {category} diagnostics", [str(row) for row in rows])
-        out.append(self._to_export_file(txt_path, category, "txt"))
 
         return out
 
@@ -284,3 +274,127 @@ class DiagnosticSessionService:
             ],
         )
         return archive_path
+
+        def delete_session(self, session_id: str) -> bool:
+                session = self.store.get_session(session_id)
+                if not session:
+                        return False
+
+                session_dir = self._ensure_within_output(Path(session.output_dir))
+                if session_dir.exists() and session_dir.is_dir():
+                        shutil.rmtree(session_dir, ignore_errors=True)
+
+                # Remove known generated artifacts under output root.
+                for candidate in [self.settings.output_dir / f"{session_id}.zip", self.settings.output_dir / f"{session_id}.html"]:
+                        try:
+                                resolved = self._ensure_within_output(candidate)
+                                if resolved.exists() and resolved.is_file():
+                                        resolved.unlink()
+                        except Exception:
+                                continue
+
+                return self.store.delete_session(session_id)
+
+        def generate_html_report(self, session_id: str) -> Optional[Path]:
+                session = self.store.get_session(session_id)
+                if not session:
+                        return None
+                files = self.store.session_files(session_id)
+
+                duration = 0
+                if session.end_time:
+                        duration = max(0, int(session.end_time - session.start_time))
+
+                grouped: dict[str, list[ExportFile]] = {}
+                for item in files:
+                        grouped.setdefault(item.category or "other", []).append(item)
+
+                sections: List[str] = []
+                for category, entries in sorted(grouped.items(), key=lambda kv: kv[0]):
+                        rows = []
+                        for item in sorted(entries, key=lambda x: x.name):
+                                rows.append(
+                                    f"<tr><td>{escape(item.name)}</td><td>{escape(item.format)}</td><td>{int(item.size_bytes)}</td><td><a href=\"/api/files?path={quote(item.path, safe='')}\">open</a></td></tr>"
+                                )
+                        sections.append(
+                                """
+                                <section class=\"card\">
+                                    <h3>{category}</h3>
+                                    <table>
+                                        <thead><tr><th>File</th><th>Format</th><th>Size (bytes)</th><th>Link</th></tr></thead>
+                                        <tbody>{rows}</tbody>
+                                    </table>
+                                </section>
+                                """.format(category=escape(category), rows="".join(rows))
+                        )
+
+                html = f"""<!doctype html>
+<html lang=\"en\">
+<head>
+    <meta charset=\"utf-8\" />
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+    <title>IRQLENS Session Report - {escape(session.session_id)}</title>
+    <style>
+        :root {{
+            --bg: #f4f7fb;
+            --panel: #ffffff;
+            --ink: #0f1b2d;
+            --muted: #5e6b80;
+            --line: #d8e0ee;
+            --brand: #1557c0;
+            --good: #1b8f47;
+        }}
+        body {{ margin: 0; font-family: Segoe UI, Arial, sans-serif; background: var(--bg); color: var(--ink); }}
+        .wrap {{ max-width: 1100px; margin: 20px auto; padding: 0 16px; }}
+        .hero {{ background: linear-gradient(120deg, #edf3ff, #ffffff); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }}
+        h1 {{ margin: 0 0 6px; font-size: 22px; }}
+        .meta {{ color: var(--muted); font-size: 13px; }}
+        .grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(200px,1fr)); gap: 10px; margin-top: 14px; }}
+        .kpi {{ background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }}
+        .kpi .label {{ color: var(--muted); font-size: 12px; }}
+        .kpi .value {{ font-size: 16px; font-weight: 600; margin-top: 4px; }}
+        .card {{ background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-top: 12px; }}
+        table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+        th, td {{ border-bottom: 1px solid var(--line); padding: 8px; text-align: left; }}
+        th {{ color: var(--muted); font-weight: 600; }}
+        a {{ color: var(--brand); text-decoration: none; }}
+        .ok {{ color: var(--good); font-weight: 600; }}
+    </style>
+</head>
+<body>
+    <div class=\"wrap\">
+        <div class=\"hero\">
+            <h1>IRQLENS Session Report</h1>
+            <div class=\"meta\">Session {escape(session.session_id)} • Host {escape(session.hostname)} • SUT {escape(session.sut_id or 'local')}</div>
+            <div class=\"grid\">
+                <div class=\"kpi\"><div class=\"label\">Status</div><div class=\"value ok\">{escape(session.status)}</div></div>
+                <div class=\"kpi\"><div class=\"label\">Start</div><div class=\"value\">{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(session.start_time))}</div></div>
+                <div class=\"kpi\"><div class=\"label\">End</div><div class=\"value\">{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(session.end_time)) if session.end_time else 'N/A'}</div></div>
+                <div class=\"kpi\"><div class=\"label\">Duration</div><div class=\"value\">{duration}s</div></div>
+                <div class=\"kpi\"><div class=\"label\">Captured Categories</div><div class=\"value\">{', '.join(escape(x) for x in session.categories) or 'none'}</div></div>
+                <div class=\"kpi\"><div class=\"label\">Output Directory</div><div class=\"value\">{escape(session.output_dir)}</div></div>
+            </div>
+        </div>
+        {''.join(sections)}
+    </div>
+</body>
+</html>
+"""
+
+                report_path = self.settings.output_dir / f"{session_id}.html"
+                report_path.parent.mkdir(parents=True, exist_ok=True)
+                report_path.write_text(html, encoding="utf-8")
+                self.store.add_session_files(
+                        session_id,
+                        [
+                                ExportFile(
+                                        name=report_path.name,
+                                        category="report",
+                                        format="html",
+                                        path=str(report_path),
+                                        size_bytes=report_path.stat().st_size,
+                                )
+                        ],
+                )
+                self.store.update_session_report(session_id, report_status="ready", report_path=str(report_path), report_error="")
+                return report_path

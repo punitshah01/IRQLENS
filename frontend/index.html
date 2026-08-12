@@ -42,6 +42,15 @@
             <div class="subline"><span id="breadcrumb" class="breadcrumb">Overview</span></div>
           </div>
 
+          <div class="time-row">
+            <div id="time-controls" class="time-row"></div>
+            <div id="custom-range" class="custom-range">
+              <input id="custom-from" class="text-input" type="datetime-local" />
+              <input id="custom-to" class="text-input" type="datetime-local" />
+              <button id="custom-apply" class="action-button ghost">Apply</button>
+            </div>
+          </div>
+
           <div class="topology-heading">
             <div>
               <h2 class="card-title" id="page-title">Overview</h2>
@@ -255,6 +264,17 @@
                 </div>
               </div>
               <div id="cpu-detail"></div>
+            </div>
+
+            <div class="card span-12">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">CPU Utilization History</h3>
+                  <div class="card-subtitle">Historical average and peak CPU utilization in the selected time range.</div>
+                </div>
+              </div>
+              <div id="cpu-history-empty" class="hidden"></div>
+              <div id="chart-cpu-history" class="chart"></div>
             </div>
 
           </div>

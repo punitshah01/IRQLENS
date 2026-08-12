@@ -140,12 +140,15 @@ class CollectionSession(BaseModel):
     output_dir: str
     categories: List[str] = Field(default_factory=list)
     error: str = ""
+    report_path: str = ""
+    report_status: Literal["none", "pending", "ready", "failed"] = "none"
+    report_error: str = ""
 
 
 class ExportFile(BaseModel):
     name: str
     category: str
-    format: Literal["json", "csv", "xml", "txt", "zip"]
+    format: Literal["json", "csv", "txt", "zip", "html"]
     path: str
     size_bytes: int
 

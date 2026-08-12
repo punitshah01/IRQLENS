@@ -163,6 +163,9 @@ class SqliteStore:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_start ON sessions(start_time DESC)")
             self._ensure_column(conn, "sessions", "sut_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "sessions", "report_path", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "sessions", "report_status", "TEXT NOT NULL DEFAULT 'none'")
+            self._ensure_column(conn, "sessions", "report_error", "TEXT NOT NULL DEFAULT ''")
 
             conn.execute(
                 """
@@ -179,6 +182,17 @@ class SqliteStore:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_session_files_session ON session_files(session_id)")
+            conn.execute(
+                """
+                DELETE FROM session_files
+                WHERE id NOT IN (
+                    SELECT MIN(id)
+                    FROM session_files
+                    GROUP BY session_id, path
+                )
+                """
+            )
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_session_files_unique ON session_files(session_id, path)")
 
             conn.execute(
                 """
@@ -419,6 +433,40 @@ class SqliteStore:
                 out[str(key)] = float(value)
             except Exception:
                 continue
+        return out
+
+    def cpu_utilization_series(self, sut_id: str, since_ts: float, to_ts: Optional[float] = None) -> List[Dict[str, Any]]:
+        end_ts = float(time.time() if to_ts is None else to_ts)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT timestamp, payload_json
+                FROM cpu_utilization_samples
+                WHERE sut_id = ? AND timestamp >= ? AND timestamp <= ?
+                ORDER BY timestamp ASC
+                """,
+                (sut_id, float(since_ts), end_ts),
+            ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            payload = json.loads(row["payload_json"] or "{}")
+            cpu_values: Dict[str, float] = {}
+            vals: List[float] = []
+            for key, value in payload.items():
+                try:
+                    numeric = float(value)
+                except Exception:
+                    continue
+                cpu_values[str(key)] = numeric
+                vals.append(numeric)
+            out.append(
+                {
+                    "timestamp": float(row["timestamp"]),
+                    "avg": float(sum(vals) / len(vals)) if vals else 0.0,
+                    "max": float(max(vals)) if vals else 0.0,
+                    "cpus": cpu_values,
+                }
+            )
         return out
 
     def latest_cpu_topology(self, sut_id: str) -> List[CPUTopologyEntry]:
@@ -788,8 +836,8 @@ class SqliteStore:
                     """
                     INSERT INTO sessions(
                         session_id, sut_id, status, start_time, end_time, hostname, os_distribution,
-                        kernel, collector_version, output_dir, categories_json, error
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        kernel, collector_version, output_dir, categories_json, error, report_path, report_status, report_error
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         session.session_id,
@@ -804,6 +852,9 @@ class SqliteStore:
                         session.output_dir,
                         json.dumps(session.categories, separators=(",", ":")),
                         session.error,
+                        session.report_path,
+                        session.report_status,
+                        session.report_error,
                     ),
                 )
 
@@ -819,6 +870,18 @@ class SqliteStore:
                     (status, end_time, error, session_id),
                 )
 
+    def update_session_report(self, session_id: str, report_status: str, report_path: str = "", report_error: str = "") -> None:
+        with self._lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """
+                    UPDATE sessions
+                    SET report_status = ?, report_path = ?, report_error = ?
+                    WHERE session_id = ?
+                    """,
+                    (report_status, report_path, report_error, session_id),
+                )
+
     def add_session_files(self, session_id: str, files: List[ExportFile]) -> None:
         if not files:
             return
@@ -829,6 +892,12 @@ class SqliteStore:
                         """
                         INSERT INTO session_files(session_id, name, category, format, path, size_bytes, created_at)
                         VALUES(?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(session_id, path) DO UPDATE SET
+                            name=excluded.name,
+                            category=excluded.category,
+                            format=excluded.format,
+                            size_bytes=excluded.size_bytes,
+                            created_at=excluded.created_at
                         """,
                         (
                             session_id,
@@ -860,6 +929,9 @@ class SqliteStore:
                     output_dir=row["output_dir"],
                     categories=json.loads(row["categories_json"] or "[]"),
                     error=row["error"] or "",
+                    report_path=row["report_path"] or "",
+                    report_status=row["report_status"] or "none",
+                    report_error=row["report_error"] or "",
                 )
             )
         return out
@@ -882,12 +954,15 @@ class SqliteStore:
             output_dir=row["output_dir"],
             categories=json.loads(row["categories_json"] or "[]"),
             error=row["error"] or "",
+            report_path=row["report_path"] or "",
+            report_status=row["report_status"] or "none",
+            report_error=row["report_error"] or "",
         )
 
     def session_files(self, session_id: str) -> List[ExportFile]:
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT name, category, format, path, size_bytes FROM session_files WHERE session_id = ? ORDER BY id",
+                "SELECT name, category, format, path, size_bytes FROM session_files WHERE session_id = ? ORDER BY category, name",
                 (session_id,),
             ).fetchall()
         return [
@@ -900,6 +975,13 @@ class SqliteStore:
             )
             for row in rows
         ]
+
+    def delete_session(self, session_id: str) -> bool:
+        with self._lock:
+            with self._conn() as conn:
+                deleted = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,)).rowcount
+                conn.execute("DELETE FROM session_files WHERE session_id = ?", (session_id,))
+        return deleted > 0
 
     def summary_current(self) -> List[Dict[str, Any]]:
         hosts = self.hosts()

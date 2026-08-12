@@ -769,6 +769,24 @@ function renderCpu() {
   }
   renderTopologyMap("cpu-topology", { compact: false, interactive: true });
   renderCpuDetail();
+  renderCpuHistory();
+}
+
+function renderCpuHistory() {
+  const rows = filterRowsToRange(state.viz?.series?.cpu_utilization || []).slice().sort((a, b) => Number(a.timestamp || 0) - Number(b.timestamp || 0));
+  const empty = qs("cpu-history-empty");
+  if (!rows.length) {
+    clearChart("cpuHistory");
+    if (empty) {
+      empty.classList.remove("hidden");
+      empty.innerHTML = emptyState("No CPU history available", "IRQLENS needs more CPU utilization samples for this time range.");
+    }
+    return;
+  }
+  if (empty) empty.classList.add("hidden");
+  const avg = rows.map(item => [Number(item.timestamp || 0) * 1000, Number(item.avg || 0)]);
+  const peak = rows.map(item => [Number(item.timestamp || 0) * 1000, Number(item.max || 0)]);
+  renderDualTrendChart("cpuHistory", "chart-cpu-history", avg, peak, "Average Util %", "Peak Util %");
 }
 
 function renderTopologyMap(containerId, options) {
@@ -1374,12 +1392,18 @@ function bindDiagnosticsActions() {
 async function loadSessions() {
   state.loading.sessions = true;
   const data = await fetchJson("/api/sessions");
-  state.sessions = (data.sessions || []).filter(session => {
+  const filtered = (data.sessions || []).filter(session => {
     if (!state.host) return false;
     if (session.sut_id === state.host) return true;
     // Backward compatibility: legacy captures without sut_id are considered local-only.
     if (!session.sut_id && state.host === "local") return true;
     return false;
+  });
+  const seen = new Set();
+  state.sessions = filtered.filter(session => {
+    if (!session?.session_id || seen.has(session.session_id)) return false;
+    seen.add(session.session_id);
+    return true;
   });
   state.loading.sessions = false;
 }
@@ -1443,6 +1467,9 @@ function renderSessions() {
   const grouped = groupFilesByCategory(state.sessionFiles);
   const detail = state.sessionDetail;
   const duration = detail.end_time ? Math.max(0, Math.round(detail.end_time - detail.start_time)) : 0;
+  const reportReady = detail.report_status === "ready" && detail.report_path;
+  const reportPending = detail.report_status === "pending";
+  const reportFailed = detail.report_status === "failed";
   detailRoot.innerHTML = `
     <div class="detail-panel">
       <div class="card-head">
@@ -1450,7 +1477,13 @@ function renderSessions() {
           <h3 class="card-title">Session ${escapeHtml(detail.session_id)}</h3>
           <div class="card-subtitle">A user-created capture for ${escapeHtml(detail.hostname)}${detail.sut_id ? ` (${escapeHtml(detail.sut_id)})` : ""}.</div>
         </div>
-        <a class="action-button primary" href="${api("/api/sessions/" + encodeURIComponent(detail.session_id) + "/download")}">Download ZIP</a>
+        <div class="button-row">
+          <a class="action-button primary" href="${api("/api/sessions/" + encodeURIComponent(detail.session_id) + "/download")}">Download ZIP</a>
+          <button class="action-button ghost" id="session-generate-report" ${reportPending ? "disabled" : ""}>${reportPending ? "Generating..." : "Generate Report"}</button>
+          ${reportReady ? `<a class="action-button ghost" target="_blank" href="${api("/api/files?path=" + encodeURIComponent(detail.report_path))}">View Report</a>` : ""}
+          ${reportReady ? `<a class="action-button ghost" href="${api("/api/files?path=" + encodeURIComponent(detail.report_path))}" download>Download Report</a>` : ""}
+          <button class="action-button danger" id="session-delete">Delete Session</button>
+        </div>
       </div>
       <div class="summary-grid">
         <div class="detail-panel"><div class="small">Status</div><div class="item-title">${escapeHtml(detail.status)}</div></div>
@@ -1458,6 +1491,10 @@ function renderSessions() {
         <div class="detail-panel"><div class="small">End</div><div class="item-title">${fmtTs(detail.end_time)}</div></div>
         <div class="detail-panel"><div class="small">Duration</div><div class="item-title">${duration}s</div></div>
         <div class="detail-panel"><div class="small">SUT Path</div><div class="item-title mono">${escapeHtml(detail.output_dir || "N/A")}</div></div>
+      </div>
+      <div class="detail-panel" style="margin-top:12px;">
+        <div class="key-value"><span>Report Status</span><strong>${escapeHtml(detail.report_status || "none")}</strong></div>
+        ${reportFailed ? `<div class="item-text" style="margin-top:8px;color:#b23a3a;">${escapeHtml(detail.report_error || "Report generation failed.")}</div>` : ""}
       </div>
       <div class="detail-panel" style="margin-top:16px;">
         <div class="item-title">Captured Data</div>
@@ -1478,15 +1515,64 @@ function renderSessions() {
       </div>
     </div>
   `;
+
+  const generateBtn = qs("session-generate-report");
+  if (generateBtn) {
+    generateBtn.onclick = async () => {
+      await startSessionReport(detail.session_id);
+    };
+  }
+  const deleteBtn = qs("session-delete");
+  if (deleteBtn) {
+    deleteBtn.onclick = async () => {
+      await deleteSession(detail.session_id);
+    };
+  }
 }
 
 function groupFilesByCategory(files) {
-  return (files || []).reduce((acc, file) => {
+  const seenPaths = new Set();
+  const unique = (files || []).filter(file => {
+    const key = String(file.path || "");
+    if (!key || seenPaths.has(key)) return false;
+    seenPaths.add(key);
+    return true;
+  });
+  return unique.reduce((acc, file) => {
     const key = file.category || "other";
     acc[key] = acc[key] || [];
     acc[key].push(file);
     return acc;
   }, {});
+}
+
+async function startSessionReport(sessionId) {
+  const response = await fetch(api("/api/sessions/" + encodeURIComponent(sessionId) + "/report"), { method: "POST" });
+  if (!response.ok) {
+    await loadSessionDetail(sessionId);
+    renderSessions();
+    return;
+  }
+  await loadSessionDetail(sessionId);
+  renderSessions();
+}
+
+async function deleteSession(sessionId) {
+  const confirmed = window.confirm(`Delete capture ${sessionId}? This removes DB records and generated files.`);
+  if (!confirmed) return;
+  const response = await fetch(api("/api/sessions/" + encodeURIComponent(sessionId)), { method: "DELETE" });
+  if (!response.ok) return;
+  if (state.selectedSessionId === sessionId) {
+    state.selectedSessionId = "";
+    state.sessionDetail = null;
+    state.sessionFiles = [];
+  }
+  if (state.diag.completedSessionId === sessionId) {
+    state.diag.completedSessionId = "";
+  }
+  await loadSessions();
+  renderSessions();
+  renderDiagnostics();
 }
 
 function renderSettings() {
@@ -1519,14 +1605,32 @@ function render() {
   renderNavigation();
   renderContextBar();
   showSection(state.view);
-  renderOverview();
-  renderIrq();
-  renderNetwork();
-  renderCpu();
-  renderDiagnostics();
-  bindDiagnosticsActions();
-  renderSessions();
+  renderActiveView();
   resizeCharts();
+}
+
+function renderActiveView() {
+  if (state.view === "overview") {
+    renderOverview();
+    return;
+  }
+  if (state.view === "irq") {
+    renderIrq();
+    return;
+  }
+  if (state.view === "network") {
+    renderNetwork();
+    return;
+  }
+  if (state.view === "cpu") {
+    renderCpu();
+    return;
+  }
+  if (state.view === "diagnostics") {
+    renderDiagnostics();
+    bindDiagnosticsActions();
+    renderSessions();
+  }
 }
 
 function applyLiveCpuUtilization(payload) {
@@ -1903,7 +2007,14 @@ function wireWebSocket() {
       return;
     }
 
-    if (!sutId || payload.type === "system_registered" || payload.type === "session_started" || payload.type === "session_stopped") {
+    if (
+      !sutId
+      || payload.type === "system_registered"
+      || payload.type === "session_started"
+      || payload.type === "session_stopped"
+      || payload.type === "session_deleted"
+      || payload.type === "session_report_ready"
+    ) {
       scheduleTelemetryRefresh(150);
     }
   };

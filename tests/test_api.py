@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
@@ -16,10 +18,11 @@ def test_health_endpoint():
 
 def test_sessions_lifecycle():
     with TestClient(app) as client:
+        session_name = f"api_test_capture_{int(time.time() * 1000)}"
         start = client.post(
             "/api/sessions/start",
             json={
-                "session_name": "api_test_capture",
+                "session_name": session_name,
                 "duration_seconds": 30,
                 "categories": ["system", "network"],
             },

@@ -54,6 +54,7 @@ SAMPLER = TelemetrySampler(settings=settings, store=STORE, ws_manager=WS)
 DIAGNOSTICS = DiagnosticSessionService(settings=settings, store=STORE)
 HEALTH = HealthService(settings=settings)
 SESSION_AUTO_STOP_TASKS: Dict[str, asyncio.Task] = {}
+SESSION_REPORT_TASKS: Dict[str, asyncio.Task] = {}
 ALLOWED_CAPTURE_DURATIONS = {30, 60, 120, 300, 600, 900, 1800}
 
 
@@ -293,6 +294,7 @@ def _visualization_payload(
     irq_series = STORE.irq_rate_series(sut_id, from_ts, to_ts=to_ts)
     network_series = STORE.network_rate_series(sut_id, from_ts, to_ts=to_ts)
     softirq_series = STORE.softirq_series(sut_id, from_ts, to_ts=to_ts)
+    cpu_util_series = STORE.cpu_utilization_series(sut_id, from_ts, to_ts=to_ts)
 
     latest_ts = STORE.latest_irq_timestamp_at(sut_id, to_ts=to_ts)
     latest_irq_rows = STORE.irq_at_timestamp(sut_id, latest_ts, limit=max(50, top_n * 6)) if latest_ts is not None else []
@@ -399,6 +401,7 @@ def _visualization_payload(
         "series": {
             "irq": irq_series,
             "network": network_series,
+            "cpu_utilization": cpu_util_series,
             "softirq_total": [
                 {"timestamp": row["timestamp"], "value": float(sum(row["rates"].values()))}
                 for row in softirq_series
@@ -862,6 +865,78 @@ def session_detail(session_id: str) -> dict:
     if not row:
         raise HTTPException(status_code=404, detail="session not found")
     return row.model_dump()
+
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str) -> dict:
+    auto_task = SESSION_AUTO_STOP_TASKS.pop(session_id, None)
+    if auto_task:
+        auto_task.cancel()
+    report_task = SESSION_REPORT_TASKS.pop(session_id, None)
+    if report_task:
+        report_task.cancel()
+    deleted = DIAGNOSTICS.delete_session(session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="session not found")
+    await WS.broadcast({"type": "session_deleted", "session_id": session_id, "timestamp": time.time()})
+    return {"ok": True, "session_id": session_id}
+
+
+@app.post("/api/sessions/{session_id}/report")
+async def generate_session_report(session_id: str) -> dict:
+    session = STORE.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    if session.status == "running":
+        raise HTTPException(status_code=409, detail="cannot generate report for a running session")
+
+    existing_task = SESSION_REPORT_TASKS.get(session_id)
+    if existing_task and not existing_task.done():
+        return {"session_id": session_id, "status": "pending"}
+
+    STORE.update_session_report(session_id, report_status="pending", report_path="", report_error="")
+
+    async def _run_report() -> None:
+        try:
+            report_path = await asyncio.to_thread(DIAGNOSTICS.generate_html_report, session_id)
+            if not report_path:
+                STORE.update_session_report(session_id, report_status="failed", report_path="", report_error="session not found")
+                return
+            await WS.broadcast(
+                {
+                    "type": "session_report_ready",
+                    "session_id": session_id,
+                    "timestamp": time.time(),
+                    "report_path": str(report_path),
+                }
+            )
+        except Exception as exc:
+            STORE.update_session_report(session_id, report_status="failed", report_path="", report_error=str(exc))
+        finally:
+            SESSION_REPORT_TASKS.pop(session_id, None)
+
+    task = asyncio.create_task(_run_report(), name=f"irqlens-session-report-{session_id}")
+    SESSION_REPORT_TASKS[session_id] = task
+    return {"session_id": session_id, "status": "pending"}
+
+
+@app.get("/api/sessions/{session_id}/report")
+def session_report_status(session_id: str) -> dict:
+    session = STORE.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    report_path = session.report_path or ""
+    has_report = bool(report_path and Path(report_path).exists())
+    status = session.report_status
+    if status == "ready" and not has_report:
+        status = "none"
+    return {
+        "session_id": session_id,
+        "status": status,
+        "report_path": report_path if has_report else "",
+        "report_url": f"/api/files?path={report_path}" if has_report else "",
+        "error": session.report_error or "",
+    }
 
 
 @app.post("/api/sessions/start")
