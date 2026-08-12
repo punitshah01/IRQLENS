@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -208,3 +209,46 @@ def test_visualization_endpoints():
         cmp = client.get("/api/visualization/compare?a=viz-sut&b=viz-sut")
         assert cmp.status_code == 200
         assert "deltas" in cmp.json()
+
+
+def test_session_report_generation():
+    with TestClient(app) as client:
+        session_name = f"final_report_test_{int(time.time() * 1000)}"
+        start = client.post(
+            "/api/sessions/start",
+            json={
+                "session_name": session_name,
+                "duration_seconds": 30,
+                "categories": ["irq", "softirq", "network", "system", "interfaces"],
+            },
+        )
+        assert start.status_code == 200
+        sid = start.json()["session"]["session_id"]
+
+        stop = client.post(f"/api/sessions/{sid}/stop", json={"reason": "manual"})
+        assert stop.status_code == 200
+
+        report = client.post(f"/api/sessions/{sid}/report")
+        assert report.status_code == 200
+
+        status_payload = {"status": "pending"}
+        for _ in range(40):
+            status_resp = client.get(f"/api/sessions/{sid}/report")
+            assert status_resp.status_code == 200
+            status_payload = status_resp.json()
+            if status_payload.get("status") in {"ready", "failed"}:
+                break
+            time.sleep(0.1)
+
+        assert status_payload.get("status") == "ready"
+        report_path = Path(status_payload.get("report_path", ""))
+        assert report_path.name == "report.html"
+        assert report_path.exists()
+
+        detail = client.get(f"/api/sessions/{sid}")
+        assert detail.status_code == 200
+        output_dir = Path(detail.json()["output_dir"])
+        assert report_path.parent == output_dir
+
+        html_text = report_path.read_text(encoding="utf-8")
+        assert "IRQLENS Session Report" in html_text

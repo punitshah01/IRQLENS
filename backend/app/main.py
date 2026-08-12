@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 import asyncio
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -911,7 +912,14 @@ async def generate_session_report(session_id: str) -> dict:
                 }
             )
         except Exception as exc:
-            STORE.update_session_report(session_id, report_status="failed", report_path="", report_error=str(exc))
+            logger.exception("session report generation failed for %s", session_id)
+            _ = exc
+            STORE.update_session_report(
+                session_id,
+                report_status="failed",
+                report_path="",
+                report_error="Report generation failed. Check the session report logs.",
+            )
         finally:
             SESSION_REPORT_TASKS.pop(session_id, None)
 
@@ -934,7 +942,7 @@ def session_report_status(session_id: str) -> dict:
         "session_id": session_id,
         "status": status,
         "report_path": report_path if has_report else "",
-        "report_url": f"/api/files?path={report_path}" if has_report else "",
+        "report_url": f"/api/files?path={quote(report_path, safe='')}" if has_report else "",
         "error": session.report_error or "",
     }
 

@@ -45,6 +45,7 @@ const state = {
   topology: null,
   interfaceHistory: null,
   sessions: [],
+  expandedSessionId: "",
   sessionDetail: null,
   sessionFiles: [],
   selectedSessionId: "",
@@ -152,6 +153,16 @@ function fmtBytesRate(value) {
 function fmtTs(ts) {
   if (!ts) return "N/A";
   return new Date(ts * 1000).toLocaleString();
+}
+
+function fmtDuration(secondsRaw) {
+  const seconds = Math.max(0, Number(secondsRaw || 0));
+  if (seconds < 60) return `${Math.round(seconds)} sec`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const remMin = minutes % 60;
+  return remMin ? `${hours} hr ${remMin} min` : `${hours} hr`;
 }
 
 function fmtAgo(ts) {
@@ -1404,7 +1415,15 @@ async function loadSessions() {
     if (!session?.session_id || seen.has(session.session_id)) return false;
     seen.add(session.session_id);
     return true;
-  });
+  }).sort((a, b) => Number(b.start_time || 0) - Number(a.start_time || 0));
+  if (state.expandedSessionId && !state.sessions.some(x => x.session_id === state.expandedSessionId)) {
+    state.expandedSessionId = "";
+  }
+  if (state.selectedSessionId && !state.sessions.some(x => x.session_id === state.selectedSessionId)) {
+    state.selectedSessionId = "";
+    state.sessionDetail = null;
+    state.sessionFiles = [];
+  }
   state.loading.sessions = false;
 }
 
@@ -1432,27 +1451,89 @@ function renderSessions() {
     detailRoot.innerHTML = emptyState("No captures yet.", "Start a capture while a workload is running to collect SUT evidence.");
     return;
   }
-  listRoot.innerHTML = state.sessions.map(session => {
-    const selected = session.session_id === state.selectedSessionId;
-    const duration = session.end_time ? Math.max(0, Math.round(session.end_time - session.start_time)) : 0;
-    return `
-      <button class="session-item" data-session="${escapeHtml(session.session_id)}">
-        <div class="item-title">${escapeHtml(session.session_id)}</div>
-        <div class="item-text">${new Date(session.start_time * 1000).toLocaleString()}</div>
-        <div class="item-text">${escapeHtml(session.hostname)}${session.sut_id ? ` • ${escapeHtml(session.sut_id)}` : ""}</div>
-        <div class="summary-grid" style="margin-top:10px;">
-          <span class="tag ${selected ? "info" : ""}">${escapeHtml(session.status)}</span>
-          <span class="tag">Duration ${duration}s</span>
-          <span class="tag">${(session.categories || []).length} data types</span>
-        </div>
-      </button>
-    `;
-  }).join("");
-  [...listRoot.querySelectorAll("[data-session]")].forEach(node => {
-    node.onclick = async () => {
-      await loadSessionDetail(node.dataset.session);
+  const recent = state.sessions.slice(0, 3);
+  listRoot.innerHTML = `
+    <div class="recent-captures-list">
+      ${recent.map(session => {
+        const expanded = session.session_id === state.expandedSessionId;
+        const duration = session.end_time ? Math.max(0, Math.round(session.end_time - session.start_time)) : 0;
+        const statusToneClass = session.status === "completed" ? "good" : (session.status === "running" ? "warn" : "info");
+        const reportReady = session.report_status === "ready" && session.report_path;
+        const reportPending = session.report_status === "pending";
+        const reportFailed = session.report_status === "failed";
+        return `
+          <div class="recent-session ${expanded ? "expanded" : ""}">
+            <div class="recent-session-head" data-toggle-session="${escapeHtml(session.session_id)}" role="button" tabindex="0" aria-expanded="${expanded ? "true" : "false"}">
+              <div class="recent-session-main">
+                <span class="status-dot ${statusToneClass}"></span>
+                <span class="recent-session-name">${escapeHtml(session.session_id)}</span>
+              </div>
+              <div class="recent-session-meta">
+                <span class="tag ${statusToneClass}">${escapeHtml(session.status)}</span>
+                <span class="muted">${fmtDuration(duration)}</span>
+                <span class="muted">${fmtTs(session.start_time)}</span>
+                <span class="recent-chevron">${expanded ? "v" : ">"}</span>
+              </div>
+            </div>
+            ${expanded ? `
+              <div class="recent-session-body">
+                <div class="muted">${fmtTs(session.start_time)}${session.end_time ? ` • ${fmtDuration(duration)}` : ""}</div>
+                <div class="compact-kv"><span>SUT:</span><strong>${escapeHtml(session.hostname)}${session.sut_id ? ` (${escapeHtml(session.sut_id)})` : ""}</strong></div>
+                <div class="compact-kv"><span>Location:</span><strong class="mono">${escapeHtml(session.output_dir || "N/A")}</strong></div>
+                <div class="compact-kv"><span>Captured:</span><strong>${(session.categories || []).map(c => escapeHtml(c)).join("  ") || "none"}</strong></div>
+                ${reportFailed ? `<div class="muted" style="color:#b23a3a;">${escapeHtml(session.report_error || "Report generation failed. Check the session report logs.")}</div>` : ""}
+                <div class="button-row compact-actions">
+                  <button class="action-button ghost" data-view-session="${escapeHtml(session.session_id)}">View</button>
+                  <button class="action-button primary" data-generate-report="${escapeHtml(session.session_id)}" ${reportPending ? "disabled" : ""}>${reportPending ? "Generating..." : "Generate Report"}</button>
+                  ${reportReady ? `<a class="action-button ghost" target="_blank" href="${api("/api/files?path=" + encodeURIComponent(session.report_path))}">View Report</a>` : ""}
+                  ${reportReady ? `<a class="action-button ghost" href="${api("/api/files?path=" + encodeURIComponent(session.report_path))}" download>Download Report</a>` : ""}
+                  <button class="action-button danger" data-delete-session="${escapeHtml(session.session_id)}">Delete</button>
+                </div>
+              </div>
+            ` : ""}
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+
+  [...listRoot.querySelectorAll("[data-toggle-session]")].forEach(node => {
+    const toggle = async () => {
+      const id = node.dataset.toggleSession;
+      state.expandedSessionId = state.expandedSessionId === id ? "" : id;
+      renderSessions();
+    };
+    node.onclick = toggle;
+    node.onkeydown = event => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        toggle();
+      }
+    };
+  });
+
+  [...listRoot.querySelectorAll("[data-view-session]")].forEach(node => {
+    node.onclick = async event => {
+      event.stopPropagation();
+      state.selectedSessionId = node.dataset.viewSession;
+      await loadSessionDetail(state.selectedSessionId);
       renderSessions();
       renderContextBar();
+      detailRoot.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+  });
+
+  [...listRoot.querySelectorAll("[data-generate-report]")].forEach(node => {
+    node.onclick = async event => {
+      event.stopPropagation();
+      await startSessionReport(node.dataset.generateReport);
+    };
+  });
+
+  [...listRoot.querySelectorAll("[data-delete-session]")].forEach(node => {
+    node.onclick = async event => {
+      event.stopPropagation();
+      await deleteSession(node.dataset.deleteSession);
     };
   });
 
@@ -1475,13 +1556,13 @@ function renderSessions() {
       <div class="card-head">
         <div>
           <h3 class="card-title">Session ${escapeHtml(detail.session_id)}</h3>
-          <div class="card-subtitle">A user-created capture for ${escapeHtml(detail.hostname)}${detail.sut_id ? ` (${escapeHtml(detail.sut_id)})` : ""}.</div>
+          <div class="card-subtitle">${escapeHtml(detail.hostname)}${detail.sut_id ? ` (${escapeHtml(detail.sut_id)})` : ""} • ${escapeHtml(detail.status)}</div>
         </div>
-        <div class="button-row">
-          <a class="action-button primary" href="${api("/api/sessions/" + encodeURIComponent(detail.session_id) + "/download")}">Download ZIP</a>
-          <button class="action-button ghost" id="session-generate-report" ${reportPending ? "disabled" : ""}>${reportPending ? "Generating..." : "Generate Report"}</button>
+        <div class="button-row session-action-bar">
+          <button class="action-button primary" id="session-generate-report" ${reportPending ? "disabled" : ""}>${reportPending ? "Generating..." : "Generate Report"}</button>
           ${reportReady ? `<a class="action-button ghost" target="_blank" href="${api("/api/files?path=" + encodeURIComponent(detail.report_path))}">View Report</a>` : ""}
           ${reportReady ? `<a class="action-button ghost" href="${api("/api/files?path=" + encodeURIComponent(detail.report_path))}" download>Download Report</a>` : ""}
+          <a class="action-button ghost" href="${api("/api/sessions/" + encodeURIComponent(detail.session_id) + "/download")}">Download ZIP</a>
           <button class="action-button danger" id="session-delete">Delete Session</button>
         </div>
       </div>
@@ -1494,7 +1575,7 @@ function renderSessions() {
       </div>
       <div class="detail-panel" style="margin-top:12px;">
         <div class="key-value"><span>Report Status</span><strong>${escapeHtml(detail.report_status || "none")}</strong></div>
-        ${reportFailed ? `<div class="item-text" style="margin-top:8px;color:#b23a3a;">${escapeHtml(detail.report_error || "Report generation failed.")}</div>` : ""}
+        ${reportFailed ? `<div class="item-text" style="margin-top:8px;color:#b23a3a;">${escapeHtml(detail.report_error || "Report generation failed. Check the session report logs.")}</div>` : ""}
       </div>
       <div class="detail-panel" style="margin-top:16px;">
         <div class="item-title">Captured Data</div>
@@ -1502,14 +1583,14 @@ function renderSessions() {
       </div>
       <div class="detail-panel" style="margin-top:16px;">
         <div class="item-title">Session Files</div>
-        <div class="file-list" style="margin-top:14px;">
+        <div class="file-list compact-file-list" style="margin-top:10px;">
           ${Object.keys(grouped).length ? Object.entries(grouped).map(([category, files]) => `
-            <div class="file-group">
-              <div class="item-title">${escapeHtml(category)}</div>
-              <div class="stack-list">
-                ${files.map(file => `<div class="key-value"><span>${escapeHtml(file.name)}</span><a href="${api("/api/files?path=" + encodeURIComponent(file.path))}">Download file</a></div>`).join("")}
+            <details class="file-group" open>
+              <summary><span class="item-title">${escapeHtml(category)}</span><span class="muted">${files.length} file(s)</span></summary>
+              <div class="stack-list" style="margin-top:8px;">
+                ${files.map(file => `<div class="key-value"><span>${escapeHtml(file.name)}</span><a href="${api("/api/files?path=" + encodeURIComponent(file.path))}">Download</a></div>`).join("")}
               </div>
-            </div>
+            </details>
           `).join("") : `<div class="muted">No files were recorded for this session.</div>`}
         </div>
       </div>
@@ -1549,12 +1630,53 @@ function groupFilesByCategory(files) {
 async function startSessionReport(sessionId) {
   const response = await fetch(api("/api/sessions/" + encodeURIComponent(sessionId) + "/report"), { method: "POST" });
   if (!response.ok) {
+    updateSessionReportState(sessionId, { report_status: "failed", report_error: "Report generation failed. Check the session report logs." });
     await loadSessionDetail(sessionId);
     renderSessions();
     return;
   }
+  updateSessionReportState(sessionId, { report_status: "pending", report_error: "", report_path: "" });
+  renderSessions();
+  await pollSessionReportStatus(sessionId, 25);
   await loadSessionDetail(sessionId);
   renderSessions();
+}
+
+function updateSessionReportState(sessionId, patch) {
+  state.sessions = (state.sessions || []).map(session => {
+    if (session.session_id !== sessionId) return session;
+    return { ...session, ...patch };
+  });
+  if (state.sessionDetail && state.sessionDetail.session_id === sessionId) {
+    state.sessionDetail = { ...state.sessionDetail, ...patch };
+  }
+}
+
+async function pollSessionReportStatus(sessionId, attempts = 20) {
+  for (let index = 0; index < attempts; index += 1) {
+    try {
+      const status = await fetchJson("/api/sessions/" + encodeURIComponent(sessionId) + "/report");
+      if (status.status === "ready") {
+        updateSessionReportState(sessionId, {
+          report_status: "ready",
+          report_path: status.report_path || "",
+          report_error: "",
+        });
+        return;
+      }
+      if (status.status === "failed") {
+        updateSessionReportState(sessionId, {
+          report_status: "failed",
+          report_error: status.error || "Report generation failed. Check the session report logs.",
+          report_path: "",
+        });
+        return;
+      }
+    } catch (_) {
+      // Keep polling within bounded attempts.
+    }
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
 }
 
 async function deleteSession(sessionId) {

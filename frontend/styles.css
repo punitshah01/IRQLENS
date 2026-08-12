@@ -433,6 +433,130 @@ button {
   padding: 16px;
 }
 
+.diag-grid .card {
+  padding: 14px;
+}
+
+.recent-captures-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.recent-session {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-2);
+}
+
+.recent-session-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.recent-session-head:hover {
+  background: rgba(35, 104, 209, 0.04);
+}
+
+.recent-session-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--muted);
+}
+
+.status-dot.good { background: var(--green); }
+.status-dot.warn { background: var(--yellow); }
+.status-dot.info { background: var(--blue); }
+
+.recent-session-name {
+  font-weight: 700;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-session-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.recent-chevron {
+  font-weight: 700;
+  color: var(--muted);
+  min-width: 12px;
+  text-align: center;
+}
+
+.recent-session-body {
+  padding: 0 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px dashed var(--line);
+}
+
+.compact-kv {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 13px;
+}
+
+.compact-kv span {
+  color: var(--muted);
+  min-width: 66px;
+}
+
+.compact-actions .action-button {
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+.session-action-bar {
+  row-gap: 8px;
+}
+
+.session-action-bar .action-button {
+  min-height: 34px;
+  padding: 0 11px;
+  border-radius: 10px;
+}
+
+.compact-file-list .file-group {
+  padding: 10px 12px;
+  border-radius: 12px;
+}
+
+.compact-file-list .file-group summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  list-style: none;
+}
+
+.compact-file-list .file-group summary::-webkit-details-marker {
+  display: none;
+}
+
 .finding.warn { border-color: #eed59f; background: var(--yellow-soft); }
 .finding.good { border-color: #bfe4cd; background: var(--green-soft); }
 .finding.bad { border-color: #efc0c0; background: var(--red-soft); }

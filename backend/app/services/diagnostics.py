@@ -5,8 +5,9 @@ import re
 import shutil
 import time
 from html import escape
+import json
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 from ..collectors import DiagnosticCommandCollector, NetworkCollector, SystemCollector
@@ -275,126 +276,243 @@ class DiagnosticSessionService:
         )
         return archive_path
 
-        def delete_session(self, session_id: str) -> bool:
-                session = self.store.get_session(session_id)
-                if not session:
-                        return False
+    def delete_session(self, session_id: str) -> bool:
+        session = self.store.get_session(session_id)
+        if not session:
+            return False
 
-                session_dir = self._ensure_within_output(Path(session.output_dir))
-                if session_dir.exists() and session_dir.is_dir():
-                        shutil.rmtree(session_dir, ignore_errors=True)
+        session_dir = self._ensure_within_output(Path(session.output_dir))
+        if session_dir.exists() and session_dir.is_dir():
+            shutil.rmtree(session_dir, ignore_errors=True)
 
-                # Remove known generated artifacts under output root.
-                for candidate in [self.settings.output_dir / f"{session_id}.zip", self.settings.output_dir / f"{session_id}.html"]:
-                        try:
-                                resolved = self._ensure_within_output(candidate)
-                                if resolved.exists() and resolved.is_file():
-                                        resolved.unlink()
-                        except Exception:
-                                continue
+        # Remove legacy artifacts that may exist at output root.
+        for candidate in [self.settings.output_dir / f"{session_id}.zip", self.settings.output_dir / f"{session_id}.html"]:
+            try:
+                resolved = self._ensure_within_output(candidate)
+                if resolved.exists() and resolved.is_file():
+                    resolved.unlink()
+            except Exception:
+                continue
 
-                return self.store.delete_session(session_id)
+        return self.store.delete_session(session_id)
 
-        def generate_html_report(self, session_id: str) -> Optional[Path]:
-                session = self.store.get_session(session_id)
-                if not session:
-                        return None
-                files = self.store.session_files(session_id)
+    def _read_json(self, path: Path, default: Any) -> Any:
+        if not path.exists() or not path.is_file():
+            return default
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return default
 
-                duration = 0
-                if session.end_time:
-                        duration = max(0, int(session.end_time - session.start_time))
+    def _render_no_data(self, title: str) -> str:
+        return f"<section class=\"card\"><h3>{escape(title)}</h3><div class=\"empty\">No data captured for this category.</div></section>"
 
-                grouped: dict[str, list[ExportFile]] = {}
-                for item in files:
-                        grouped.setdefault(item.category or "other", []).append(item)
+    def generate_html_report(self, session_id: str) -> Optional[Path]:
+        session = self.store.get_session(session_id)
+        if not session:
+            return None
 
-                sections: List[str] = []
-                for category, entries in sorted(grouped.items(), key=lambda kv: kv[0]):
-                        rows = []
-                        for item in sorted(entries, key=lambda x: x.name):
-                                rows.append(
-                                    f"<tr><td>{escape(item.name)}</td><td>{escape(item.format)}</td><td>{int(item.size_bytes)}</td><td><a href=\"/api/files?path={quote(item.path, safe='')}\">open</a></td></tr>"
-                                )
-                        sections.append(
-                                """
-                                <section class=\"card\">
-                                    <h3>{category}</h3>
-                                    <table>
-                                        <thead><tr><th>File</th><th>Format</th><th>Size (bytes)</th><th>Link</th></tr></thead>
-                                        <tbody>{rows}</tbody>
-                                    </table>
-                                </section>
-                                """.format(category=escape(category), rows="".join(rows))
-                        )
+        session_dir = Path(session.output_dir)
+        if not session_dir.exists() or not session_dir.is_dir():
+            return None
 
-                html = f"""<!doctype html>
+        files = self.store.session_files(session_id)
+        grouped: Dict[str, List[ExportFile]] = {}
+        for item in files:
+            grouped.setdefault(item.category or "other", []).append(item)
+
+        duration = 0
+        if session.end_time:
+            duration = max(0, int(session.end_time - session.start_time))
+
+        system_payload = self._read_json(session_dir / "system" / "system.json", {})
+        irq_payload = self._read_json(session_dir / "irq" / "irqtop.json", {})
+        soft_payload = self._read_json(session_dir / "softirq" / "softirq.json", {})
+        network_payload = self._read_json(session_dir / "network" / "network.json", {})
+        interfaces_payload = self._read_json(session_dir / "interfaces" / "interfaces.json", {})
+
+        cpu_util = system_payload.get("cpu_utilization", {}) if isinstance(system_payload, dict) else {}
+        cpu_util_values = []
+        if isinstance(cpu_util, dict):
+            for value in cpu_util.values():
+                try:
+                    cpu_util_values.append(float(value))
+                except Exception:
+                    continue
+        cpu_util_avg = round(sum(cpu_util_values) / len(cpu_util_values), 2) if cpu_util_values else None
+        cpu_util_max = round(max(cpu_util_values), 2) if cpu_util_values else None
+
+        irq_rows = irq_payload.get("rows", []) if isinstance(irq_payload, dict) else []
+        top_irq_rows = sorted(irq_rows, key=lambda row: float(row.get("total_rate", 0.0)), reverse=True)[:10]
+
+        network_global = network_payload.get("global", {}) if isinstance(network_payload, dict) else {}
+        interface_rows = network_payload.get("interfaces", []) if isinstance(network_payload, dict) else []
+        if not interface_rows and isinstance(interfaces_payload, dict):
+            interface_rows = interfaces_payload.get("interfaces", []) or []
+
+        soft_rates = {}
+        if isinstance(soft_payload, dict) and isinstance(soft_payload.get("sample"), dict):
+            soft_rates = soft_payload["sample"].get("rates", {}) or {}
+        soft_total = 0.0
+        for value in soft_rates.values() if isinstance(soft_rates, dict) else []:
+            try:
+                soft_total += float(value)
+            except Exception:
+                continue
+
+        sections: List[str] = []
+
+        if irq_rows:
+            irq_table = "".join(
+                f"<tr><td>{escape(str(row.get('irq', 'N/A')))}</td><td>{escape(str(row.get('irq_name', 'N/A')))}</td><td>{float(row.get('total_rate', 0.0)):.2f}</td><td>{escape(str(row.get('nic', 'N/A')))}</td></tr>"
+                for row in top_irq_rows
+            )
+            sections.append(
+                f"""
+                <section class=\"card\">
+                  <h3>IRQ Activity</h3>
+                  <div class=\"summary\">Top IRQ sources and per-source activity at capture time.</div>
+                  <table>
+                    <thead><tr><th>IRQ</th><th>Source</th><th>IRQ/s</th><th>Interface</th></tr></thead>
+                    <tbody>{irq_table}</tbody>
+                  </table>
+                </section>
+                """
+            )
+        else:
+            sections.append(self._render_no_data("IRQ Activity"))
+
+        if network_global or interface_rows:
+            iface_table = "".join(
+                f"<tr><td>{escape(str(row.get('interface', row.get('name', 'N/A'))))}</td><td>{float(row.get('rx_bps', 0.0)):.2f}</td><td>{float(row.get('tx_bps', 0.0)):.2f}</td><td>{float(row.get('rx_pps', 0.0)):.2f}</td><td>{float(row.get('tx_pps', 0.0)):.2f}</td><td>{float(row.get('rx_err_ps', 0.0) + row.get('tx_err_ps', 0.0)):.2f}</td><td>{float(row.get('rx_drop_ps', 0.0) + row.get('tx_drop_ps', 0.0)):.2f}</td></tr>"
+                for row in interface_rows
+            )
+            sections.append(
+                f"""
+                <section class=\"card\">
+                  <h3>Network Activity</h3>
+                  <div class=\"kpi-grid\">
+                    <div class=\"kpi\"><span>RX</span><strong>{float(network_global.get('rx_bps', 0.0)):.2f} B/s</strong></div>
+                    <div class=\"kpi\"><span>TX</span><strong>{float(network_global.get('tx_bps', 0.0)):.2f} B/s</strong></div>
+                    <div class=\"kpi\"><span>Errors</span><strong>{float(network_global.get('rx_err_ps', 0.0) + network_global.get('tx_err_ps', 0.0)):.2f}/s</strong></div>
+                    <div class=\"kpi\"><span>Drops</span><strong>{float(network_global.get('rx_drop_ps', 0.0) + network_global.get('tx_drop_ps', 0.0)):.2f}/s</strong></div>
+                  </div>
+                  <h4>Interfaces</h4>
+                  <table>
+                    <thead><tr><th>Interface</th><th>RX B/s</th><th>TX B/s</th><th>RX pps</th><th>TX pps</th><th>Errors/s</th><th>Drops/s</th></tr></thead>
+                    <tbody>{iface_table or '<tr><td colspan="7">No interface samples available.</td></tr>'}</tbody>
+                  </table>
+                </section>
+                """
+            )
+        else:
+            sections.append(self._render_no_data("Network Activity"))
+
+        if soft_rates:
+            soft_table = "".join(
+                f"<tr><td>{escape(str(name))}</td><td>{float(value):.2f}</td></tr>"
+                for name, value in sorted(soft_rates.items(), key=lambda kv: float(kv[1]), reverse=True)
+            )
+            sections.append(
+                f"""
+                <section class=\"card\">
+                  <h3>SoftIRQ Activity</h3>
+                  <div class=\"summary\">Total SoftIRQ/s: <strong>{soft_total:.2f}</strong></div>
+                  <table>
+                    <thead><tr><th>Class</th><th>Rate/s</th></tr></thead>
+                    <tbody>{soft_table}</tbody>
+                  </table>
+                </section>
+                """
+            )
+        else:
+            sections.append(self._render_no_data("SoftIRQ Activity"))
+
+        artifact_rows: List[str] = []
+        for category, entries in sorted(grouped.items(), key=lambda kv: kv[0]):
+            for item in sorted(entries, key=lambda x: x.name):
+                artifact_rows.append(
+                    f"<tr><td>{escape(category)}</td><td>{escape(item.name)}</td><td>{escape(item.format)}</td><td>{int(item.size_bytes)}</td><td><a href=\"/api/files?path={quote(item.path, safe='')}\">open</a></td></tr>"
+                )
+        sections.append(
+            f"""
+            <section class=\"card\">
+              <h3>Captured Artifacts</h3>
+              <table>
+                <thead><tr><th>Category</th><th>File</th><th>Format</th><th>Size (bytes)</th><th>Link</th></tr></thead>
+                <tbody>{''.join(artifact_rows) if artifact_rows else '<tr><td colspan="5">No files were recorded for this session.</td></tr>'}</tbody>
+              </table>
+            </section>
+            """
+        )
+
+        html = f"""<!doctype html>
 <html lang=\"en\">
 <head>
-    <meta charset=\"utf-8\" />
-    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-    <title>IRQLENS Session Report - {escape(session.session_id)}</title>
-    <style>
-        :root {{
-            --bg: #f4f7fb;
-            --panel: #ffffff;
-            --ink: #0f1b2d;
-            --muted: #5e6b80;
-            --line: #d8e0ee;
-            --brand: #1557c0;
-            --good: #1b8f47;
-        }}
-        body {{ margin: 0; font-family: Segoe UI, Arial, sans-serif; background: var(--bg); color: var(--ink); }}
-        .wrap {{ max-width: 1100px; margin: 20px auto; padding: 0 16px; }}
-        .hero {{ background: linear-gradient(120deg, #edf3ff, #ffffff); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }}
-        h1 {{ margin: 0 0 6px; font-size: 22px; }}
-        .meta {{ color: var(--muted); font-size: 13px; }}
-        .grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(200px,1fr)); gap: 10px; margin-top: 14px; }}
-        .kpi {{ background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }}
-        .kpi .label {{ color: var(--muted); font-size: 12px; }}
-        .kpi .value {{ font-size: 16px; font-weight: 600; margin-top: 4px; }}
-        .card {{ background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-top: 12px; }}
-        table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-        th, td {{ border-bottom: 1px solid var(--line); padding: 8px; text-align: left; }}
-        th {{ color: var(--muted); font-weight: 600; }}
-        a {{ color: var(--brand); text-decoration: none; }}
-        .ok {{ color: var(--good); font-weight: 600; }}
-    </style>
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <title>IRQLENS Session Report - {escape(session.session_id)}</title>
+  <style>
+    :root {{ --bg:#f4f7fb; --panel:#ffffff; --ink:#0f1b2d; --muted:#5e6b80; --line:#d8e0ee; --brand:#1557c0; --good:#1b8f47; }}
+    * {{ box-sizing:border-box; }}
+    body {{ margin:0; font-family:Segoe UI, Arial, sans-serif; background:var(--bg); color:var(--ink); }}
+    .wrap {{ max-width:1100px; margin:18px auto; padding:0 14px 20px; }}
+    .hero {{ background:linear-gradient(120deg, #edf3ff, #ffffff); border:1px solid var(--line); border-radius:12px; padding:14px; }}
+    h1 {{ margin:0 0 4px; font-size:22px; }}
+    h3 {{ margin:0 0 8px; font-size:18px; }}
+    h4 {{ margin:12px 0 8px; font-size:14px; color:var(--muted); }}
+    .meta {{ color:var(--muted); font-size:13px; }}
+    .grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:8px; margin-top:12px; }}
+    .kpi-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:8px; margin:10px 0; }}
+    .kpi {{ background:#fff; border:1px solid var(--line); border-radius:8px; padding:8px; }}
+    .kpi span {{ display:block; color:var(--muted); font-size:12px; margin-bottom:2px; }}
+    .kpi strong {{ font-size:15px; }}
+    .card {{ background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; margin-top:10px; }}
+    .summary {{ color:var(--muted); font-size:13px; margin-bottom:8px; }}
+    .empty {{ color:var(--muted); font-size:13px; border:1px dashed var(--line); border-radius:8px; padding:10px; background:#f8fbff; }}
+    table {{ width:100%; border-collapse:collapse; font-size:13px; }}
+    th, td {{ border-bottom:1px solid var(--line); padding:7px; text-align:left; }}
+    th {{ color:var(--muted); font-weight:600; }}
+    a {{ color:var(--brand); text-decoration:none; }}
+  </style>
 </head>
 <body>
-    <div class=\"wrap\">
-        <div class=\"hero\">
-            <h1>IRQLENS Session Report</h1>
-            <div class=\"meta\">Session {escape(session.session_id)} • Host {escape(session.hostname)} • SUT {escape(session.sut_id or 'local')}</div>
-            <div class=\"grid\">
-                <div class=\"kpi\"><div class=\"label\">Status</div><div class=\"value ok\">{escape(session.status)}</div></div>
-                <div class=\"kpi\"><div class=\"label\">Start</div><div class=\"value\">{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(session.start_time))}</div></div>
-                <div class=\"kpi\"><div class=\"label\">End</div><div class=\"value\">{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(session.end_time)) if session.end_time else 'N/A'}</div></div>
-                <div class=\"kpi\"><div class=\"label\">Duration</div><div class=\"value\">{duration}s</div></div>
-                <div class=\"kpi\"><div class=\"label\">Captured Categories</div><div class=\"value\">{', '.join(escape(x) for x in session.categories) or 'none'}</div></div>
-                <div class=\"kpi\"><div class=\"label\">Output Directory</div><div class=\"value\">{escape(session.output_dir)}</div></div>
-            </div>
-        </div>
-        {''.join(sections)}
+  <div class=\"wrap\">
+    <div class=\"hero\">
+      <h1>IRQLENS Session Report</h1>
+      <div class=\"meta\">Session {escape(session.session_id)} • Host {escape(session.hostname)} • SUT {escape(session.sut_id or 'local')}</div>
+      <div class=\"grid\">
+        <div class=\"kpi\"><span>Status</span><strong>{escape(session.status)}</strong></div>
+        <div class=\"kpi\"><span>Start</span><strong>{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(session.start_time))}</strong></div>
+        <div class=\"kpi\"><span>End</span><strong>{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(session.end_time)) if session.end_time else 'N/A'}</strong></div>
+        <div class=\"kpi\"><span>Duration</span><strong>{duration}s</strong></div>
+        <div class=\"kpi\"><span>OS</span><strong>{escape(session.os_distribution)}</strong></div>
+        <div class=\"kpi\"><span>Kernel</span><strong>{escape(session.kernel)}</strong></div>
+        <div class=\"kpi\"><span>CPU Count</span><strong>{int(system_payload.get('cpu_count', 0)) if isinstance(system_payload, dict) else 0}</strong></div>
+        <div class=\"kpi\"><span>CPU Util Avg</span><strong>{f'{cpu_util_avg:.2f}%' if cpu_util_avg is not None else 'N/A'}</strong></div>
+        <div class=\"kpi\"><span>CPU Util Max</span><strong>{f'{cpu_util_max:.2f}%' if cpu_util_max is not None else 'N/A'}</strong></div>
+        <div class=\"kpi\"><span>CPU Frequency</span><strong>{escape(str(system_payload.get('cpu_mhz', 'N/A'))) if isinstance(system_payload, dict) else 'N/A'}</strong></div>
+      </div>
     </div>
+    {''.join(sections)}
+  </div>
 </body>
 </html>
 """
 
-                report_path = self.settings.output_dir / f"{session_id}.html"
-                report_path.parent.mkdir(parents=True, exist_ok=True)
-                report_path.write_text(html, encoding="utf-8")
-                self.store.add_session_files(
-                        session_id,
-                        [
-                                ExportFile(
-                                        name=report_path.name,
-                                        category="report",
-                                        format="html",
-                                        path=str(report_path),
-                                        size_bytes=report_path.stat().st_size,
-                                )
-                        ],
+        report_path = session_dir / "report.html"
+        report_path.write_text(html, encoding="utf-8")
+        self.store.add_session_files(
+            session_id,
+            [
+                ExportFile(
+                    name=report_path.name,
+                    category="report",
+                    format="html",
+                    path=str(report_path),
+                    size_bytes=report_path.stat().st_size,
                 )
-                self.store.update_session_report(session_id, report_status="ready", report_path=str(report_path), report_error="")
-                return report_path
+            ],
+        )
+        self.store.update_session_report(session_id, report_status="ready", report_path=str(report_path), report_error="")
+        return report_path
