@@ -44,10 +44,16 @@ class SystemCollector:
                 pass
 
         cpu_model = "Unknown"
+        cpu_mhz_values = []
         for line in read_text_safe("/proc/cpuinfo").splitlines():
             if line.lower().startswith("model name"):
                 cpu_model = line.split(":", 1)[1].strip()
-                break
+            elif line.lower().startswith("cpu mhz"):
+                try:
+                    cpu_mhz_values.append(float(line.split(":", 1)[1].strip()))
+                except Exception:
+                    continue
+        cpu_mhz = (sum(cpu_mhz_values) / len(cpu_mhz_values)) if cpu_mhz_values else None
 
         mem_total = 0
         mem_avail = 0
@@ -77,6 +83,7 @@ class SystemCollector:
             "loadavg_15m": load15,
             "cpu_count": os.cpu_count() or 0,
             "cpu_model": cpu_model,
+            "cpu_mhz": cpu_mhz,
             "memory_total_kb": mem_total,
             "memory_available_kb": mem_avail,
             "numa_nodes": numa_nodes,

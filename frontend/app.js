@@ -46,6 +46,8 @@ const state = {
   interfaceHistory: null,
   sessions: [],
   expandedSessionId: "",
+  deletingSessions: {},
+  reportingSessions: {},
   sessionDetail: null,
   sessionFiles: [],
   selectedSessionId: "",
@@ -1459,11 +1461,12 @@ function renderSessions() {
         const duration = session.end_time ? Math.max(0, Math.round(session.end_time - session.start_time)) : 0;
         const statusToneClass = session.status === "completed" ? "good" : (session.status === "running" ? "warn" : "info");
         const reportReady = session.report_status === "ready" && session.report_path;
-        const reportPending = session.report_status === "pending";
+        const reportPending = session.report_status === "pending" || !!state.reportingSessions[session.session_id];
         const reportFailed = session.report_status === "failed";
+        const deleting = !!state.deletingSessions[session.session_id];
         return `
           <div class="recent-session ${expanded ? "expanded" : ""}">
-            <div class="recent-session-head" data-toggle-session="${escapeHtml(session.session_id)}" role="button" tabindex="0" aria-expanded="${expanded ? "true" : "false"}">
+            <div class="recent-session-head ${deleting ? "disabled" : ""}" data-toggle-session="${escapeHtml(session.session_id)}" role="button" tabindex="0" aria-expanded="${expanded ? "true" : "false"}">
               <div class="recent-session-main">
                 <span class="status-dot ${statusToneClass}"></span>
                 <span class="recent-session-name">${escapeHtml(session.session_id)}</span>
@@ -1483,11 +1486,11 @@ function renderSessions() {
                 <div class="compact-kv"><span>Captured:</span><strong>${(session.categories || []).map(c => escapeHtml(c)).join("  ") || "none"}</strong></div>
                 ${reportFailed ? `<div class="muted" style="color:#b23a3a;">${escapeHtml(session.report_error || "Report generation failed. Check the session report logs.")}</div>` : ""}
                 <div class="button-row compact-actions">
-                  <button class="action-button ghost" data-view-session="${escapeHtml(session.session_id)}">View</button>
+                  <button class="action-button ghost" data-view-session="${escapeHtml(session.session_id)}" ${deleting ? "disabled" : ""}>View</button>
                   <button class="action-button primary" data-generate-report="${escapeHtml(session.session_id)}" ${reportPending ? "disabled" : ""}>${reportPending ? "Generating..." : "Generate Report"}</button>
                   ${reportReady ? `<a class="action-button ghost" target="_blank" href="${api("/api/files?path=" + encodeURIComponent(session.report_path))}">View Report</a>` : ""}
                   ${reportReady ? `<a class="action-button ghost" href="${api("/api/files?path=" + encodeURIComponent(session.report_path))}" download>Download Report</a>` : ""}
-                  <button class="action-button danger" data-delete-session="${escapeHtml(session.session_id)}">Delete</button>
+                  <button class="action-button danger" data-delete-session="${escapeHtml(session.session_id)}" ${deleting ? "disabled" : ""}>${deleting ? "Deleting..." : "Delete"}</button>
                 </div>
               </div>
             ` : ""}
@@ -1500,8 +1503,23 @@ function renderSessions() {
   [...listRoot.querySelectorAll("[data-toggle-session]")].forEach(node => {
     const toggle = async () => {
       const id = node.dataset.toggleSession;
-      state.expandedSessionId = state.expandedSessionId === id ? "" : id;
+      if (state.deletingSessions[id]) return;
+      const closing = state.expandedSessionId === id;
+      state.expandedSessionId = closing ? "" : id;
+      if (closing) {
+        if (state.selectedSessionId === id) {
+          state.selectedSessionId = "";
+          state.sessionDetail = null;
+          state.sessionFiles = [];
+        }
+      } else {
+        state.selectedSessionId = id;
+        if (!state.sessionDetail || state.sessionDetail.session_id !== id) {
+          await loadSessionDetail(id);
+        }
+      }
       renderSessions();
+      renderContextBar();
     };
     node.onclick = toggle;
     node.onkeydown = event => {
@@ -1628,10 +1646,13 @@ function groupFilesByCategory(files) {
 }
 
 async function startSessionReport(sessionId) {
+  if (state.reportingSessions[sessionId]) return;
+  state.reportingSessions[sessionId] = true;
   const response = await fetch(api("/api/sessions/" + encodeURIComponent(sessionId) + "/report"), { method: "POST" });
   if (!response.ok) {
     updateSessionReportState(sessionId, { report_status: "failed", report_error: "Report generation failed. Check the session report logs." });
     await loadSessionDetail(sessionId);
+    delete state.reportingSessions[sessionId];
     renderSessions();
     return;
   }
@@ -1639,6 +1660,7 @@ async function startSessionReport(sessionId) {
   renderSessions();
   await pollSessionReportStatus(sessionId, 25);
   await loadSessionDetail(sessionId);
+  delete state.reportingSessions[sessionId];
   renderSessions();
 }
 
@@ -1680,10 +1702,20 @@ async function pollSessionReportStatus(sessionId, attempts = 20) {
 }
 
 async function deleteSession(sessionId) {
+  if (state.deletingSessions[sessionId]) return;
   const confirmed = window.confirm(`Delete capture ${sessionId}? This removes DB records and generated files.`);
   if (!confirmed) return;
+  state.deletingSessions[sessionId] = true;
+
+  state.sessions = (state.sessions || []).filter(item => item.session_id !== sessionId);
+  if (state.expandedSessionId === sessionId) state.expandedSessionId = "";
   const response = await fetch(api("/api/sessions/" + encodeURIComponent(sessionId)), { method: "DELETE" });
-  if (!response.ok) return;
+  if (!response.ok) {
+    delete state.deletingSessions[sessionId];
+    await loadSessions();
+    renderSessions();
+    return;
+  }
   if (state.selectedSessionId === sessionId) {
     state.selectedSessionId = "";
     state.sessionDetail = null;
@@ -1692,9 +1724,11 @@ async function deleteSession(sessionId) {
   if (state.diag.completedSessionId === sessionId) {
     state.diag.completedSessionId = "";
   }
-  await loadSessions();
+  delete state.deletingSessions[sessionId];
   renderSessions();
   renderDiagnostics();
+  await loadSessions();
+  renderSessions();
 }
 
 function renderSettings() {

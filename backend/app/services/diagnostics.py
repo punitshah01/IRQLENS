@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 import re
@@ -247,6 +247,7 @@ class DiagnosticSessionService:
             metadata_dir = Path(updated.output_dir) / "metadata"
             metadata_dir.mkdir(parents=True, exist_ok=True)
             self.exporter.write_json(metadata_dir / "metadata.json", updated.model_dump())
+            self._write_timeseries_capture(updated)
         return updated
 
     def list_files(self, session_id: str) -> List[ExportFile]:
@@ -307,6 +308,232 @@ class DiagnosticSessionService:
     def _render_no_data(self, title: str) -> str:
         return f"<section class=\"card\"><h3>{escape(title)}</h3><div class=\"empty\">No data captured for this category.</div></section>"
 
+    def _safe_float(self, value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return default
+
+    def _series_stats(self, values: List[Any]) -> Dict[str, Optional[float]]:
+        parsed: List[float] = []
+        for value in values:
+            try:
+                parsed.append(float(value))
+            except Exception:
+                continue
+        if not parsed:
+            return {"min": None, "max": None, "avg": None, "latest": None}
+        return {
+            "min": min(parsed),
+            "max": max(parsed),
+            "avg": sum(parsed) / len(parsed),
+            "latest": parsed[-1],
+        }
+
+    def _integrate_series(self, points: List[Dict[str, Any]], key: str) -> float:
+        if len(points) < 2:
+            return 0.0
+        total = 0.0
+        prev = points[0]
+        prev_ts = self._safe_float(prev.get("timestamp"))
+        prev_val = self._safe_float(prev.get(key))
+        for point in points[1:]:
+            ts = self._safe_float(point.get("timestamp"))
+            dt = max(0.0, ts - prev_ts)
+            total += prev_val * dt
+            prev_ts = ts
+            prev_val = self._safe_float(point.get(key))
+        return total
+
+    def _format_rate(self, bps: Optional[float]) -> str:
+        value = self._safe_float(bps)
+        units = ["B/s", "KiB/s", "MiB/s", "GiB/s", "TiB/s"]
+        idx = 0
+        while value >= 1024.0 and idx < len(units) - 1:
+            value /= 1024.0
+            idx += 1
+        return f"{value:.2f} {units[idx]}"
+
+    def _format_bytes(self, bytes_value: Optional[float]) -> str:
+        value = self._safe_float(bytes_value)
+        units = ["B", "KiB", "MiB", "GiB", "TiB"]
+        idx = 0
+        while value >= 1024.0 and idx < len(units) - 1:
+            value /= 1024.0
+            idx += 1
+        return f"{value:.2f} {units[idx]}"
+
+    def _svg_line_chart(self, points: List[Dict[str, Any]], y_key: str, color: str = "#1557c0") -> str:
+        if len(points) < 2:
+            return "<div class=\"empty\">Not enough data points to render chart.</div>"
+
+        chart_data: List[Tuple[float, float]] = []
+        base_ts: Optional[float] = None
+        for point in points:
+            ts = point.get("timestamp")
+            y = point.get(y_key)
+            try:
+                ts_f = float(ts)
+                y_f = float(y)
+            except Exception:
+                continue
+            if base_ts is None:
+                base_ts = ts_f
+            chart_data.append((ts_f - base_ts, y_f))
+
+        if len(chart_data) < 2:
+            return "<div class=\"empty\">Not enough valid data to render chart.</div>"
+
+        width = 880
+        height = 220
+        left = 42
+        right = 10
+        top = 10
+        bottom = 26
+        plot_w = width - left - right
+        plot_h = height - top - bottom
+
+        x_max = max(pt[0] for pt in chart_data)
+        y_min = min(pt[1] for pt in chart_data)
+        y_max = max(pt[1] for pt in chart_data)
+        if x_max <= 0.0:
+            x_max = 1.0
+        if y_max <= y_min:
+            y_max = y_min + 1.0
+
+        poly = []
+        for x_rel, y_val in chart_data:
+            x = left + (x_rel / x_max) * plot_w
+            y = top + (1.0 - ((y_val - y_min) / (y_max - y_min))) * plot_h
+            poly.append(f"{x:.1f},{y:.1f}")
+
+        grid_lines = []
+        for i in range(5):
+            frac = i / 4.0
+            y = top + frac * plot_h
+            val = y_max - frac * (y_max - y_min)
+            grid_lines.append(f"<line x1=\"{left}\" y1=\"{y:.1f}\" x2=\"{left + plot_w}\" y2=\"{y:.1f}\" stroke=\"#ecf1f8\" stroke-width=\"1\" />")
+            grid_lines.append(f"<text x=\"6\" y=\"{y + 4:.1f}\" font-size=\"10\" fill=\"#6b778c\">{val:.2f}</text>")
+
+        for i in range(5):
+            frac = i / 4.0
+            x = left + frac * plot_w
+            sec = frac * x_max
+            grid_lines.append(f"<line x1=\"{x:.1f}\" y1=\"{top}\" x2=\"{x:.1f}\" y2=\"{top + plot_h}\" stroke=\"#f4f7fb\" stroke-width=\"1\" />")
+            grid_lines.append(f"<text x=\"{x - 8:.1f}\" y=\"{height - 8}\" font-size=\"10\" fill=\"#6b778c\">{sec:.0f}s</text>")
+
+        return (
+            f"<svg class=\"chart-svg\" viewBox=\"0 0 {width} {height}\" role=\"img\" aria-label=\"time series\">"
+            f"{''.join(grid_lines)}"
+            f"<polyline fill=\"none\" stroke=\"{escape(color)}\" stroke-width=\"2.2\" points=\"{' '.join(poly)}\" />"
+            "</svg>"
+        )
+
+    def _write_timeseries_capture(self, session: CollectionSession) -> None:
+        session_dir = Path(session.output_dir)
+        session_dir.mkdir(parents=True, exist_ok=True)
+        ts_dir = session_dir / "timeseries"
+        ts_dir.mkdir(parents=True, exist_ok=True)
+
+        start_ts = float(session.start_time)
+        end_ts = float(session.end_time if session.end_time is not None else time.time())
+        sut_id = session.sut_id or "local"
+
+        cpu_util_samples = self.store.cpu_utilization_series(sut_id, start_ts, end_ts)
+        cpu_util_payload = {
+            "sut_id": sut_id,
+            "start_time": start_ts,
+            "end_time": end_ts,
+            "samples": [
+                {
+                    "timestamp": self._safe_float(item.get("timestamp")),
+                    "avg_util_percent": self._safe_float(item.get("avg")),
+                    "max_util_percent": self._safe_float(item.get("max")),
+                    "cpus": item.get("cpus", {}),
+                }
+                for item in cpu_util_samples
+            ],
+        }
+
+        system_series = self.store.system_series(sut_id, start_ts, end_ts)
+        cpu_freq_payload = {
+            "sut_id": sut_id,
+            "start_time": start_ts,
+            "end_time": end_ts,
+            "samples": [
+                {
+                    "timestamp": self._safe_float(item.get("timestamp")),
+                    "cpu_mhz": self._safe_float(item.get("cpu_mhz")),
+                }
+                for item in system_series
+                if item.get("cpu_mhz") is not None
+            ],
+        }
+
+        network_points = self.store.network_rate_series(sut_id, start_ts, end_ts)
+        network_payload = {
+            "sut_id": sut_id,
+            "start_time": start_ts,
+            "end_time": end_ts,
+            "samples": network_points,
+        }
+
+        iface_payload = {
+            "sut_id": sut_id,
+            "start_time": start_ts,
+            "end_time": end_ts,
+            "interfaces": self.store.network_interface_series(sut_id, start_ts, end_ts),
+        }
+
+        irq_payload = {
+            "sut_id": sut_id,
+            "start_time": start_ts,
+            "end_time": end_ts,
+            "samples": self.store.irq_rate_series(sut_id, start_ts, end_ts),
+        }
+        irq_top_payload = self.store.irq_source_series(sut_id, start_ts, end_ts)
+
+        soft_series = self.store.softirq_series(sut_id, start_ts, end_ts)
+        soft_payload = {
+            "sut_id": sut_id,
+            "start_time": start_ts,
+            "end_time": end_ts,
+            "samples": [
+                {
+                    "timestamp": self._safe_float(item.get("timestamp")),
+                    "rates": item.get("rates", {}),
+                    "total_rate": sum(self._safe_float(v) for v in (item.get("rates", {}) or {}).values()),
+                }
+                for item in soft_series
+            ],
+        }
+
+        file_specs = [
+            (ts_dir / "cpu" / "cpu_utilization_timeseries.json", cpu_util_payload),
+            (ts_dir / "cpu" / "cpu_frequency_timeseries.json", cpu_freq_payload),
+            (ts_dir / "network" / "network_timeseries.json", network_payload),
+            (ts_dir / "network" / "network_interfaces_timeseries.json", iface_payload),
+            (ts_dir / "irq" / "irq_timeseries.json", irq_payload),
+            (ts_dir / "irq" / "irq_top_sources.json", irq_top_payload),
+            (ts_dir / "softirq" / "softirq_timeseries.json", soft_payload),
+        ]
+
+        out_files: List[ExportFile] = []
+        for path, payload in file_specs:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self.exporter.write_json(path, payload)
+            out_files.append(
+                ExportFile(
+                    name=path.name,
+                    category="timeseries",
+                    format="json",
+                    path=str(path),
+                    size_bytes=path.stat().st_size if path.exists() else 0,
+                )
+            )
+        if out_files:
+            self.store.add_session_files(session.session_id, out_files)
+
     def generate_html_report(self, session_id: str) -> Optional[Path]:
         session = self.store.get_session(session_id)
         if not session:
@@ -326,81 +553,108 @@ class DiagnosticSessionService:
             duration = max(0, int(session.end_time - session.start_time))
 
         system_payload = self._read_json(session_dir / "system" / "system.json", {})
-        irq_payload = self._read_json(session_dir / "irq" / "irqtop.json", {})
-        soft_payload = self._read_json(session_dir / "softirq" / "softirq.json", {})
-        network_payload = self._read_json(session_dir / "network" / "network.json", {})
-        interfaces_payload = self._read_json(session_dir / "interfaces" / "interfaces.json", {})
 
-        cpu_util = system_payload.get("cpu_utilization", {}) if isinstance(system_payload, dict) else {}
-        cpu_util_values = []
-        if isinstance(cpu_util, dict):
-            for value in cpu_util.values():
-                try:
-                    cpu_util_values.append(float(value))
-                except Exception:
-                    continue
-        cpu_util_avg = round(sum(cpu_util_values) / len(cpu_util_values), 2) if cpu_util_values else None
-        cpu_util_max = round(max(cpu_util_values), 2) if cpu_util_values else None
+        cpu_util_payload = self._read_json(session_dir / "timeseries" / "cpu" / "cpu_utilization_timeseries.json", {})
+        cpu_freq_payload = self._read_json(session_dir / "timeseries" / "cpu" / "cpu_frequency_timeseries.json", {})
+        network_payload = self._read_json(session_dir / "timeseries" / "network" / "network_timeseries.json", {})
+        network_iface_payload = self._read_json(session_dir / "timeseries" / "network" / "network_interfaces_timeseries.json", {})
+        irq_payload = self._read_json(session_dir / "timeseries" / "irq" / "irq_timeseries.json", {})
+        irq_top_payload = self._read_json(session_dir / "timeseries" / "irq" / "irq_top_sources.json", {})
+        soft_payload = self._read_json(session_dir / "timeseries" / "softirq" / "softirq_timeseries.json", {})
 
-        irq_rows = irq_payload.get("rows", []) if isinstance(irq_payload, dict) else []
-        top_irq_rows = sorted(irq_rows, key=lambda row: float(row.get("total_rate", 0.0)), reverse=True)[:10]
+        cpu_util_points = cpu_util_payload.get("samples", []) if isinstance(cpu_util_payload, dict) else []
+        cpu_avg_stats = self._series_stats([self._safe_float(item.get("avg_util_percent")) for item in cpu_util_points])
+        cpu_max_stats = self._series_stats([self._safe_float(item.get("max_util_percent")) for item in cpu_util_points])
 
-        network_global = network_payload.get("global", {}) if isinstance(network_payload, dict) else {}
-        interface_rows = network_payload.get("interfaces", []) if isinstance(network_payload, dict) else []
-        if not interface_rows and isinstance(interfaces_payload, dict):
-            interface_rows = interfaces_payload.get("interfaces", []) or []
+        cpu_freq_points = cpu_freq_payload.get("samples", []) if isinstance(cpu_freq_payload, dict) else []
+        freq_stats = self._series_stats([self._safe_float(item.get("cpu_mhz")) for item in cpu_freq_points])
 
-        soft_rates = {}
-        if isinstance(soft_payload, dict) and isinstance(soft_payload.get("sample"), dict):
-            soft_rates = soft_payload["sample"].get("rates", {}) or {}
-        soft_total = 0.0
-        for value in soft_rates.values() if isinstance(soft_rates, dict) else []:
-            try:
-                soft_total += float(value)
-            except Exception:
-                continue
+        irq_points = irq_payload.get("samples", []) if isinstance(irq_payload, dict) else []
+        irq_top_sources = irq_top_payload.get("top_sources", []) if isinstance(irq_top_payload, dict) else []
+
+        network_points = network_payload.get("samples", []) if isinstance(network_payload, dict) else []
+        rx_stats = self._series_stats([self._safe_float(item.get("rx_bps")) for item in network_points])
+        tx_stats = self._series_stats([self._safe_float(item.get("tx_bps")) for item in network_points])
+        total_rx_bytes = self._integrate_series(network_points, "rx_bps")
+        total_tx_bytes = self._integrate_series(network_points, "tx_bps")
+
+        iface_map = network_iface_payload.get("interfaces", {}) if isinstance(network_iface_payload, dict) else {}
+
+        soft_points = soft_payload.get("samples", []) if isinstance(soft_payload, dict) else []
+        soft_stats = self._series_stats([self._safe_float(item.get("total_rate")) for item in soft_points])
 
         sections: List[str] = []
 
-        if irq_rows:
+        if irq_top_sources:
             irq_table = "".join(
-                f"<tr><td>{escape(str(row.get('irq', 'N/A')))}</td><td>{escape(str(row.get('irq_name', 'N/A')))}</td><td>{float(row.get('total_rate', 0.0)):.2f}</td><td>{escape(str(row.get('nic', 'N/A')))}</td></tr>"
-                for row in top_irq_rows
+                f"<tr><td>{escape(str(row.get('irq', 'N/A')))}</td><td>{escape(str(row.get('source', row.get('name', 'N/A'))))}</td><td>{self._safe_float(row.get('avg_rate')):.2f}</td><td>{escape(str(row.get('top_cpu', 'N/A')))}</td><td>{escape(str(row.get('nic', '')))}</td></tr>"
+                for row in irq_top_sources
             )
             sections.append(
                 f"""
-                <section class=\"card\">
+                <section class="card">
                   <h3>IRQ Activity</h3>
-                  <div class=\"summary\">Top IRQ sources and per-source activity at capture time.</div>
+                  <div class="summary">Top IRQ sources observed during capture and their CPU handling distribution.</div>
                   <table>
-                    <thead><tr><th>IRQ</th><th>Source</th><th>IRQ/s</th><th>Interface</th></tr></thead>
+                    <thead><tr><th>IRQ</th><th>Source</th><th>Avg IRQ/s</th><th>Top CPU</th><th>NIC</th></tr></thead>
                     <tbody>{irq_table}</tbody>
                   </table>
+                  <h4>IRQ Activity Over Time</h4>
+                  {self._svg_line_chart(irq_points, 'irq_rate', color='#1557c0') if irq_points else '<div class="empty">No IRQ time-series data was captured.</div>'}
                 </section>
                 """
             )
         else:
             sections.append(self._render_no_data("IRQ Activity"))
 
-        if network_global or interface_rows:
-            iface_table = "".join(
-                f"<tr><td>{escape(str(row.get('interface', row.get('name', 'N/A'))))}</td><td>{float(row.get('rx_bps', 0.0)):.2f}</td><td>{float(row.get('tx_bps', 0.0)):.2f}</td><td>{float(row.get('rx_pps', 0.0)):.2f}</td><td>{float(row.get('tx_pps', 0.0)):.2f}</td><td>{float(row.get('rx_err_ps', 0.0) + row.get('tx_err_ps', 0.0)):.2f}</td><td>{float(row.get('rx_drop_ps', 0.0) + row.get('tx_drop_ps', 0.0)):.2f}</td></tr>"
-                for row in interface_rows
-            )
+        if network_points or iface_map:
+            iface_rows_html: List[str] = []
+            for iface, rows in sorted(iface_map.items(), key=lambda kv: kv[0]):
+                rx_values = [self._safe_float(x.get("rx_bps")) for x in rows]
+                tx_values = [self._safe_float(x.get("tx_bps")) for x in rows]
+                iface_rows_html.append(
+                    f"<tr><td>{escape(str(iface))}</td><td>{self._format_rate(sum(rx_values)/len(rx_values) if rx_values else 0.0)}</td><td>{self._format_rate(sum(tx_values)/len(tx_values) if tx_values else 0.0)}</td><td>{self._format_rate(max(rx_values) if rx_values else 0.0)}</td><td>{self._format_rate(max(tx_values) if tx_values else 0.0)}</td><td>{self._format_rate(rx_values[-1] if rx_values else 0.0)}</td><td>{self._format_rate(tx_values[-1] if tx_values else 0.0)}</td></tr>"
+                )
+
+            top_ifaces = sorted(
+                iface_map.items(),
+                key=lambda kv: max([self._safe_float(x.get("rx_bps")) + self._safe_float(x.get("tx_bps")) for x in kv[1]] or [0.0]),
+                reverse=True,
+            )[:3]
+            iface_charts: List[str] = []
+            for iface, rows in top_ifaces:
+                iface_charts.append(
+                    f"""
+                    <div class="sub-card">
+                      <h4>Interface {escape(str(iface))}</h4>
+                      <div class="summary">RX over time</div>
+                      {self._svg_line_chart(rows, 'rx_bps', color='#0f8a55')}
+                      <div class="summary">TX over time</div>
+                      {self._svg_line_chart(rows, 'tx_bps', color='#1557c0')}
+                    </div>
+                    """
+                )
+
             sections.append(
                 f"""
-                <section class=\"card\">
+                <section class="card">
                   <h3>Network Activity</h3>
-                  <div class=\"kpi-grid\">
-                    <div class=\"kpi\"><span>RX</span><strong>{float(network_global.get('rx_bps', 0.0)):.2f} B/s</strong></div>
-                    <div class=\"kpi\"><span>TX</span><strong>{float(network_global.get('tx_bps', 0.0)):.2f} B/s</strong></div>
-                    <div class=\"kpi\"><span>Errors</span><strong>{float(network_global.get('rx_err_ps', 0.0) + network_global.get('tx_err_ps', 0.0)):.2f}/s</strong></div>
-                    <div class=\"kpi\"><span>Drops</span><strong>{float(network_global.get('rx_drop_ps', 0.0) + network_global.get('tx_drop_ps', 0.0)):.2f}/s</strong></div>
+                  <div class="kpi-grid">
+                    <div class="kpi"><span>Total RX</span><strong>{self._format_bytes(total_rx_bytes)}</strong></div>
+                    <div class="kpi"><span>Total TX</span><strong>{self._format_bytes(total_tx_bytes)}</strong></div>
+                    <div class="kpi"><span>Peak RX</span><strong>{self._format_rate(rx_stats['max'])}</strong></div>
+                    <div class="kpi"><span>Peak TX</span><strong>{self._format_rate(tx_stats['max'])}</strong></div>
+                    <div class="kpi"><span>Latest RX</span><strong>{self._format_rate(rx_stats['latest'])}</strong></div>
+                    <div class="kpi"><span>Latest TX</span><strong>{self._format_rate(tx_stats['latest'])}</strong></div>
                   </div>
-                  <h4>Interfaces</h4>
+                  <h4>Network Totals Over Time</h4>
+                  {self._svg_line_chart(network_points, 'rx_bps', color='#0f8a55') if network_points else '<div class="empty">No network RX time-series data was captured.</div>'}
+                  {self._svg_line_chart(network_points, 'tx_bps', color='#1557c0') if network_points else ''}
+                  <div class="sub-grid">{''.join(iface_charts) if iface_charts else '<div class="empty">No per-interface time-series data was captured.</div>'}</div>
+                  <h4>Interface Summary</h4>
                   <table>
-                    <thead><tr><th>Interface</th><th>RX B/s</th><th>TX B/s</th><th>RX pps</th><th>TX pps</th><th>Errors/s</th><th>Drops/s</th></tr></thead>
-                    <tbody>{iface_table or '<tr><td colspan="7">No interface samples available.</td></tr>'}</tbody>
+                    <thead><tr><th>Interface</th><th>Avg RX</th><th>Avg TX</th><th>Peak RX</th><th>Peak TX</th><th>Latest RX</th><th>Latest TX</th></tr></thead>
+                    <tbody>{''.join(iface_rows_html) if iface_rows_html else '<tr><td colspan="7">No interface samples available.</td></tr>'}</tbody>
                   </table>
                 </section>
                 """
@@ -408,31 +662,33 @@ class DiagnosticSessionService:
         else:
             sections.append(self._render_no_data("Network Activity"))
 
-        if soft_rates:
-            soft_table = "".join(
-                f"<tr><td>{escape(str(name))}</td><td>{float(value):.2f}</td></tr>"
-                for name, value in sorted(soft_rates.items(), key=lambda kv: float(kv[1]), reverse=True)
-            )
+        if soft_points:
             sections.append(
                 f"""
-                <section class=\"card\">
+                <section class="card">
                   <h3>SoftIRQ Activity</h3>
-                  <div class=\"summary\">Total SoftIRQ/s: <strong>{soft_total:.2f}</strong></div>
-                  <table>
-                    <thead><tr><th>Class</th><th>Rate/s</th></tr></thead>
-                    <tbody>{soft_table}</tbody>
-                  </table>
+                  <div class="kpi-grid">
+                    <div class="kpi"><span>Average</span><strong>{self._safe_float(soft_stats['avg']):.2f}/s</strong></div>
+                    <div class="kpi"><span>Peak</span><strong>{self._safe_float(soft_stats['max']):.2f}/s</strong></div>
+                    <div class="kpi"><span>Latest</span><strong>{self._safe_float(soft_stats['latest']):.2f}/s</strong></div>
+                  </div>
+                  {self._svg_line_chart(soft_points, 'total_rate', color='#946100')}
                 </section>
                 """
             )
         else:
-            sections.append(self._render_no_data("SoftIRQ Activity"))
+            sections.append("<section class=\"card\"><h3>SoftIRQ Activity</h3><div class=\"empty\">No SoftIRQ time-series data was captured.</div></section>")
 
         artifact_rows: List[str] = []
         for category, entries in sorted(grouped.items(), key=lambda kv: kv[0]):
             for item in sorted(entries, key=lambda x: x.name):
+                rel = Path(item.path)
+                try:
+                    rel = rel.relative_to(session_dir)
+                except Exception:
+                    rel = Path(item.name)
                 artifact_rows.append(
-                    f"<tr><td>{escape(category)}</td><td>{escape(item.name)}</td><td>{escape(item.format)}</td><td>{int(item.size_bytes)}</td><td><a href=\"/api/files?path={quote(item.path, safe='')}\">open</a></td></tr>"
+                    f"<tr><td>{escape(category)}</td><td>{escape(item.name)}</td><td>{escape(item.format)}</td><td>{int(item.size_bytes)}</td><td><a href=\"{escape(rel.as_posix())}\">open</a></td></tr>"
                 )
         sections.append(
             f"""
@@ -468,8 +724,11 @@ class DiagnosticSessionService:
     .kpi span {{ display:block; color:var(--muted); font-size:12px; margin-bottom:2px; }}
     .kpi strong {{ font-size:15px; }}
     .card {{ background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; margin-top:10px; }}
+    .sub-card {{ border:1px solid var(--line); border-radius:10px; padding:10px; background:#f9fbff; }}
+    .sub-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:8px; margin-top:8px; }}
     .summary {{ color:var(--muted); font-size:13px; margin-bottom:8px; }}
     .empty {{ color:var(--muted); font-size:13px; border:1px dashed var(--line); border-radius:8px; padding:10px; background:#f8fbff; }}
+    .chart-svg {{ width:100%; height:auto; display:block; border:1px solid #e8eef8; border-radius:8px; background:#fff; }}
     table {{ width:100%; border-collapse:collapse; font-size:13px; }}
     th, td {{ border-bottom:1px solid var(--line); padding:7px; text-align:left; }}
     th {{ color:var(--muted); font-weight:600; }}
@@ -480,7 +739,7 @@ class DiagnosticSessionService:
   <div class=\"wrap\">
     <div class=\"hero\">
       <h1>IRQLENS Session Report</h1>
-      <div class=\"meta\">Session {escape(session.session_id)} • Host {escape(session.hostname)} • SUT {escape(session.sut_id or 'local')}</div>
+            <div class="meta">Session {escape(session.session_id)} - Host {escape(session.hostname)} - SUT {escape(session.sut_id or 'local')}</div>
       <div class=\"grid\">
         <div class=\"kpi\"><span>Status</span><strong>{escape(session.status)}</strong></div>
         <div class=\"kpi\"><span>Start</span><strong>{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(session.start_time))}</strong></div>
@@ -489,11 +748,28 @@ class DiagnosticSessionService:
         <div class=\"kpi\"><span>OS</span><strong>{escape(session.os_distribution)}</strong></div>
         <div class=\"kpi\"><span>Kernel</span><strong>{escape(session.kernel)}</strong></div>
         <div class=\"kpi\"><span>CPU Count</span><strong>{int(system_payload.get('cpu_count', 0)) if isinstance(system_payload, dict) else 0}</strong></div>
-        <div class=\"kpi\"><span>CPU Util Avg</span><strong>{f'{cpu_util_avg:.2f}%' if cpu_util_avg is not None else 'N/A'}</strong></div>
-        <div class=\"kpi\"><span>CPU Util Max</span><strong>{f'{cpu_util_max:.2f}%' if cpu_util_max is not None else 'N/A'}</strong></div>
-        <div class=\"kpi\"><span>CPU Frequency</span><strong>{escape(str(system_payload.get('cpu_mhz', 'N/A'))) if isinstance(system_payload, dict) else 'N/A'}</strong></div>
+                <div class="kpi"><span>CPU Util Avg</span><strong>{f"{self._safe_float(cpu_avg_stats['avg']):.2f}%" if cpu_avg_stats['avg'] is not None else 'Not captured'}</strong></div>
+                <div class="kpi"><span>CPU Util Peak</span><strong>{f"{self._safe_float(cpu_max_stats['max']):.2f}%" if cpu_max_stats['max'] is not None else 'Not captured'}</strong></div>
+                <div class="kpi"><span>CPU Frequency Avg</span><strong>{f"{(self._safe_float(freq_stats['avg'])/1000.0):.2f} GHz" if freq_stats['avg'] is not None else 'Not captured'}</strong></div>
+                <div class="kpi"><span>Network Total RX</span><strong>{self._format_bytes(total_rx_bytes)}</strong></div>
+                <div class="kpi"><span>Network Total TX</span><strong>{self._format_bytes(total_tx_bytes)}</strong></div>
+                <div class="kpi"><span>Top IRQ</span><strong>{escape(str((irq_top_sources[0].get('source') if irq_top_sources else 'Not captured')))}</strong></div>
       </div>
     </div>
+        <section class="card">
+            <h3>CPU Performance</h3>
+            <div class="kpi-grid">
+                <div class="kpi"><span>CPU Utilization Minimum</span><strong>{f"{self._safe_float(cpu_avg_stats['min']):.2f}%" if cpu_avg_stats['min'] is not None else 'Not captured'}</strong></div>
+                <div class="kpi"><span>CPU Utilization Latest</span><strong>{f"{self._safe_float(cpu_avg_stats['latest']):.2f}%" if cpu_avg_stats['latest'] is not None else 'Not captured'}</strong></div>
+                <div class="kpi"><span>CPU Frequency Minimum</span><strong>{f"{(self._safe_float(freq_stats['min'])/1000.0):.2f} GHz" if freq_stats['min'] is not None else 'Not captured'}</strong></div>
+                <div class="kpi"><span>CPU Frequency Peak</span><strong>{f"{(self._safe_float(freq_stats['max'])/1000.0):.2f} GHz" if freq_stats['max'] is not None else 'Not captured'}</strong></div>
+                <div class="kpi"><span>CPU Frequency Latest</span><strong>{f"{(self._safe_float(freq_stats['latest'])/1000.0):.2f} GHz" if freq_stats['latest'] is not None else 'Not captured'}</strong></div>
+            </div>
+            <h4>CPU Utilization Over Capture Duration</h4>
+            {self._svg_line_chart(cpu_util_points, 'avg_util_percent', color='#1557c0') if cpu_util_points else '<div class="empty">No CPU utilization time-series data was captured.</div>'}
+            <h4>CPU Frequency Over Capture Duration</h4>
+            {self._svg_line_chart(cpu_freq_points, 'cpu_mhz', color='#0f8a55') if cpu_freq_points else '<div class="empty">CPU Frequency Not captured.</div>'}
+        </section>
     {''.join(sections)}
   </div>
 </body>

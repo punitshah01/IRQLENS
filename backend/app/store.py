@@ -469,6 +469,143 @@ class SqliteStore:
             )
         return out
 
+    def system_series(self, sut_id: str, since_ts: float, to_ts: Optional[float] = None) -> List[Dict[str, Any]]:
+        end_ts = float(time.time() if to_ts is None else to_ts)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT timestamp, payload_json
+                FROM system_samples
+                WHERE sut_ip = ? AND timestamp >= ? AND timestamp <= ?
+                ORDER BY timestamp ASC
+                """,
+                (sut_id, float(since_ts), end_ts),
+            ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            payload = json.loads(row["payload_json"] or "{}")
+            out.append(
+                {
+                    "timestamp": float(row["timestamp"]),
+                    "hostname": str(payload.get("hostname", "unknown")),
+                    "os_distribution": str(payload.get("os_distribution", "Unknown")),
+                    "kernel": str(payload.get("kernel", "Unknown")),
+                    "cpu_count": int(payload.get("cpu_count", 0) or 0),
+                    "cpu_mhz": float(payload.get("cpu_mhz")) if payload.get("cpu_mhz") is not None else None,
+                    "loadavg_1m": float(payload.get("loadavg_1m", 0.0) or 0.0),
+                    "memory_available_kb": int(payload.get("memory_available_kb", 0) or 0),
+                    "memory_total_kb": int(payload.get("memory_total_kb", 0) or 0),
+                }
+            )
+        return out
+
+    def network_interface_series(self, sut_id: str, since_ts: float, to_ts: Optional[float] = None) -> Dict[str, List[Dict[str, float]]]:
+        end_ts = float(time.time() if to_ts is None else to_ts)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT timestamp, interface,
+                       rx_bps, tx_bps,
+                       rx_pps, tx_pps,
+                       rx_err_ps, tx_err_ps,
+                       rx_drop_ps, tx_drop_ps
+                FROM network_samples
+                WHERE sut_ip = ? AND timestamp >= ? AND timestamp <= ?
+                ORDER BY timestamp ASC
+                """,
+                (sut_id, float(since_ts), end_ts),
+            ).fetchall()
+        out: Dict[str, List[Dict[str, float]]] = {}
+        for row in rows:
+            iface = str(row["interface"])
+            out.setdefault(iface, []).append(
+                {
+                    "timestamp": float(row["timestamp"]),
+                    "rx_bps": float(row["rx_bps"] or 0.0),
+                    "tx_bps": float(row["tx_bps"] or 0.0),
+                    "rx_pps": float(row["rx_pps"] or 0.0),
+                    "tx_pps": float(row["tx_pps"] or 0.0),
+                    "rx_err_ps": float(row["rx_err_ps"] or 0.0),
+                    "tx_err_ps": float(row["tx_err_ps"] or 0.0),
+                    "rx_drop_ps": float(row["rx_drop_ps"] or 0.0),
+                    "tx_drop_ps": float(row["tx_drop_ps"] or 0.0),
+                }
+            )
+        return out
+
+    def irq_source_series(self, sut_id: str, since_ts: float, to_ts: Optional[float] = None, top_n: int = 8) -> Dict[str, Any]:
+        end_ts = float(time.time() if to_ts is None else to_ts)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT timestamp, irq, irq_name, total_rate, cpu_rates_json, nic
+                FROM irq_samples
+                WHERE sut_ip = ? AND timestamp >= ? AND timestamp <= ?
+                ORDER BY timestamp ASC
+                """,
+                (sut_id, float(since_ts), end_ts),
+            ).fetchall()
+
+        source_totals: Dict[str, float] = {}
+        by_ts: Dict[float, Dict[str, float]] = {}
+        meta: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            key = str(row["irq_name"] or row["irq"])
+            rate = float(row["total_rate"] or 0.0)
+            ts = float(row["timestamp"])
+            source_totals[key] = source_totals.get(key, 0.0) + rate
+            by_ts.setdefault(ts, {})
+            by_ts[ts][key] = by_ts[ts].get(key, 0.0) + rate
+            cpu_rates = json.loads(row["cpu_rates_json"] or "{}")
+            top_cpu = "N/A"
+            top_cpu_rate = 0.0
+            for cpu, cpu_rate in cpu_rates.items():
+                try:
+                    value = float(cpu_rate)
+                except Exception:
+                    continue
+                if value > top_cpu_rate:
+                    top_cpu_rate = value
+                    top_cpu = str(cpu)
+            current = meta.get(key)
+            if current is None or rate > float(current.get("peak_rate", 0.0)):
+                meta[key] = {
+                    "irq": str(row["irq"]),
+                    "name": key,
+                    "nic": str(row["nic"] or ""),
+                    "peak_rate": rate,
+                    "top_cpu": top_cpu,
+                }
+
+        top_sources = [name for name, _ in sorted(source_totals.items(), key=lambda kv: kv[1], reverse=True)[: max(1, int(top_n))]]
+
+        points: List[Dict[str, Any]] = []
+        for ts in sorted(by_ts.keys()):
+            source_rates = {source: float(by_ts[ts].get(source, 0.0)) for source in top_sources}
+            points.append({"timestamp": ts, "source_rates": source_rates, "total_irq_rate": float(sum(by_ts[ts].values()))})
+
+        ranking = []
+        for source in top_sources:
+            source_points = [point["source_rates"][source] for point in points]
+            latest = float(source_points[-1]) if source_points else 0.0
+            peak = float(max(source_points)) if source_points else 0.0
+            ranking.append(
+                {
+                    "source": source,
+                    "irq": str(meta.get(source, {}).get("irq", "N/A")),
+                    "nic": str(meta.get(source, {}).get("nic", "")),
+                    "top_cpu": str(meta.get(source, {}).get("top_cpu", "N/A")),
+                    "avg_rate": float(source_totals.get(source, 0.0) / max(1, len(points))),
+                    "peak_rate": peak,
+                    "latest_rate": latest,
+                }
+            )
+
+        return {
+            "top_sources": ranking,
+            "points": points,
+        }
+
     def latest_cpu_topology(self, sut_id: str) -> List[CPUTopologyEntry]:
         with self._conn() as conn:
             row = conn.execute(

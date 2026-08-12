@@ -24,6 +24,7 @@ class SystemInfo(BaseModel):
     loadavg_15m: float
     cpu_count: int
     cpu_model: str
+    cpu_mhz: Optional[float] = None
     memory_total_kb: int
     memory_available_kb: int
     numa_nodes: int
