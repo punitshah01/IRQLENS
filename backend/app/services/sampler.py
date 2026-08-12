@@ -3,12 +3,62 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from ..collectors import IRQCollector, NetworkCollector, SoftIRQCollector, SystemCollector
 from ..config import Settings
 from ..models import DashboardSnapshot, InterfaceInfo, IRQSample, NetworkCorrelation, NetworkSample, SoftIRQSample, SystemInfo
 from ..store import SqliteStore
+
+
+def _read_cpu_stat_counters() -> Dict[str, tuple[int, int]]:
+    counters: Dict[str, tuple[int, int]] = {}
+    stat_path = Path("/proc/stat")
+    if not stat_path.exists():
+        return counters
+    for line in stat_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        if not line.startswith("cpu") or line.startswith("cpu "):
+            continue
+        parts = line.split()
+        cpu_label = parts[0]
+        if not cpu_label.startswith("cpu") or not cpu_label[3:].isdigit():
+            continue
+        nums: List[int] = []
+        for token in parts[1:]:
+            try:
+                nums.append(int(token))
+            except ValueError:
+                nums.append(0)
+        while len(nums) < 8:
+            nums.append(0)
+        user, nice, system, idle, iowait, irq, softirq, steal = nums[:8]
+        total = user + nice + system + idle + iowait + irq + softirq + steal
+        idle_total = idle + iowait
+        counters[cpu_label[3:]] = (total, idle_total)
+    return counters
+
+
+def _cpu_utilization_percent(
+    previous: Optional[Dict[str, tuple[int, int]]],
+    current: Dict[str, tuple[int, int]],
+) -> Dict[str, float]:
+    if not previous:
+        return {}
+    utilization: Dict[str, float] = {}
+    for cpu, (cur_total, cur_idle) in current.items():
+        prev = previous.get(cpu)
+        if not prev:
+            continue
+        prev_total, prev_idle = prev
+        total_delta = cur_total - prev_total
+        idle_delta = cur_idle - prev_idle
+        # Counter reset or first usable sample for this CPU: re-baseline.
+        if total_delta <= 0 or idle_delta < 0:
+            continue
+        busy_delta = max(0, total_delta - idle_delta)
+        utilization[cpu] = max(0.0, min(100.0, (busy_delta / total_delta) * 100.0))
+    return utilization
 
 
 class TelemetrySampler:
@@ -29,6 +79,7 @@ class TelemetrySampler:
         self._last_snapshot: Optional[DashboardSnapshot] = None
         self._status = "idle"
         self._logger = logging.getLogger("irqlens.sampler")
+        self._previous_cpu_stat: Optional[Dict[str, tuple[int, int]]] = None
 
     @property
     def status(self) -> str:
@@ -109,6 +160,10 @@ class TelemetrySampler:
             self._last_monotonic = started
 
             try:
+                current_cpu_stat = _read_cpu_stat_counters()
+                cpu_utilization = _cpu_utilization_percent(self._previous_cpu_stat, current_cpu_stat)
+                self._previous_cpu_stat = current_cpu_stat
+
                 cpu_labels, irq_parsed = self.irq_collector.parse()
                 irq_rates = self.irq_collector.rates(irq_parsed, elapsed)
                 irq_rows: List[IRQSample] = []
@@ -161,6 +216,8 @@ class TelemetrySampler:
 
                 system = SystemInfo.model_validate(self.system_collector.collect(ts))
                 self.store.add_system(self.sut_ip, system)
+                if cpu_utilization:
+                    self.store.add_cpu_utilization(self.sut_ip, cpu_utilization, timestamp=ts)
 
                 highest_irq = irq_rows[0].irq_name if irq_rows else "N/A"
                 highest_irq_rate = irq_rows[0].total_rate if irq_rows else 0.0

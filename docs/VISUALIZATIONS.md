@@ -46,6 +46,19 @@ Derived from:
 - CPU rows are arranged into a near-square grid
 - Cell intensity is `total_rate = irq_rate + softirq_rate`
 
+## CPU Utilization
+- Source: Linux `/proc/stat` cumulative per-CPU counters (`cpu0`, `cpu1`, ...).
+- Method: utilization is calculated from deltas between consecutive samples for each logical CPU.
+- Idle definition: `idle_total = idle + iowait`.
+- Formula:
+  - `total_delta = total_current - total_previous`
+  - `idle_delta = idle_current - idle_previous`
+  - `busy_delta = total_delta - idle_delta`
+  - `utilization_pct = clamp(busy_delta / total_delta * 100, 0, 100)`
+- Granularity: per logical CPU ID.
+- First sample behavior: baseline only (utilization unavailable until the second sample).
+- Unavailable/collecting values are exposed as missing and rendered as `N/A` in the UI.
+
 ## SoftIRQ Charts
 - SoftIRQ Distribution (bar): current rates by class
 - SoftIRQ Trend (multi-line): timeseries from payload `series.softirq_classes`

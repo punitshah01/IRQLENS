@@ -760,7 +760,10 @@ function renderTopologyMap(containerId, options) {
   const metricKey = state.cpuMetric;
   const metricUnit = metricKey === "util" ? "%" : "/sec";
   const metricLabel = metricKey === "util" ? "CPU Utilization" : (metricKey === "softirq" ? "SoftIRQ Rate" : "IRQ Rate");
-  const values = rows.map(row => Number(cpuMetricValue(cpuMap[String(row.cpu_id)], metricKey) || 0));
+  const values = rows.map(row => {
+    const raw = cpuMetricValue(cpuMap[String(row.cpu_id)], metricKey);
+    return Number(raw ?? 0);
+  });
   const max = Math.max(1, ...values);
   const min = Math.min(...values, 0);
   const grouped = groupByNuma(rows);
@@ -793,14 +796,15 @@ function renderTopologyMap(containerId, options) {
             <div class="cpu-matrix-grid" style="grid-template-columns: repeat(${layout.cols}, minmax(0, 1fr));">
               ${group.rows.map(cpu => {
                 const cpuId = String(cpu.cpu_id);
-                const entry = cpuMap[cpuId] || { irq: 0, softirq: 0, util: 0 };
-                const metricValue = Number(cpuMetricValue(entry, metricKey) || 0);
+                const entry = cpuMap[cpuId] || { irq: 0, softirq: 0, util: null };
+                const metricValueRaw = cpuMetricValue(entry, metricKey);
+                const metricValue = Number(metricValueRaw ?? 0);
                 const level = intensityLevel(metricValue, max);
                 const active = cpuId === String(state.selectedCpu) ? "active" : "";
                 return `
                   <button class="cpu-cell compact ${active}" data-level="${level}" data-cpu="${escapeHtml(cpuId)}" data-tooltip-cpu="${escapeHtml(cpuId)}">
                     <span class="cpu-name">CPU ${escapeHtml(cpuId)}</span>
-                    <span class="cpu-metric">${fmtMetricValue(metricValue, metricKey)}</span>
+                    <span class="cpu-metric">${fmtMetricValue(metricValueRaw, metricKey)}</span>
                   </button>
                 `;
               }).join("")}
@@ -899,10 +903,11 @@ function buildCpuValueMap(rows) {
   rows.forEach(row => {
     const cpu = String(row.cpu_id);
     const base = irqSoft[cpu] || { irq: 0, softirq: 0 };
+    const hasUtil = Object.prototype.hasOwnProperty.call(cpuUtil, cpu);
     map[cpu] = {
       irq: Number(base.irq || 0),
       softirq: Number(base.softirq || 0),
-      util: Number(cpuUtil[cpu] || 0),
+      util: hasUtil ? Number(cpuUtil[cpu]) : null,
     };
   });
   return map;
@@ -911,13 +916,16 @@ function buildCpuValueMap(rows) {
 function cpuMetricValue(entry, metricKey) {
   if (!entry) return 0;
   if (metricKey === "softirq") return Number(entry.softirq || 0);
-  if (metricKey === "util") return Number(entry.util || 0);
+  if (metricKey === "util") return entry.util == null ? null : Number(entry.util);
   return Number(entry.irq || 0);
 }
 
 function fmtMetricValue(value, metricKey) {
+  if (metricKey === "util") {
+    if (value == null || Number.isNaN(Number(value))) return "N/A";
+    return `${Number(value).toFixed(1)}%`;
+  }
   const n = Number(value || 0);
-  if (metricKey === "util") return `${n.toFixed(1)}%`;
   return `${fmtCount(n)}/s`;
 }
 
@@ -976,7 +984,7 @@ function groupPeakValue(rows, cpuMap, metricKey) {
 }
 
 function cpuTooltipHtml(cpuId, row, cpuMap) {
-  const entry = cpuMap[String(cpuId)] || { irq: 0, softirq: 0, util: 0 };
+  const entry = cpuMap[String(cpuId)] || { irq: 0, softirq: 0, util: null };
   const netMap = groupNetworkIrqsForCpu(cpuId);
   const networkHtml = netMap.length
     ? netMap.map(item => `<div class="key-value"><span>${escapeHtml(item.iface)} ${escapeHtml(item.direction)} IRQ</span><strong>${fmtCount(item.rate)}/s</strong></div>`).join("")
@@ -1050,7 +1058,7 @@ function renderCpuDetail() {
   const topoRows = state.topology?.rows || [];
   const topo = topoRows.find(row => String(row.cpu_id) === String(selected));
   const activityMap = buildCpuValueMap(topoRows);
-  const activity = activityMap[String(selected)] || { irq: 0, softirq: 0, util: 0 };
+  const activity = activityMap[String(selected)] || { irq: 0, softirq: 0, util: null };
   const irqRows = (state.snapshot?.irq?.rows || [])
     .filter(row => Number((row.cpu_rates || {})[selected] || 0) > 0)
     .sort((a, b) => Number((b.cpu_rates || {})[selected] || 0) - Number((a.cpu_rates || {})[selected] || 0))
