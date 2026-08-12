@@ -86,7 +86,7 @@ function qs(id) {
 
 function initializeElements() {
   [
-    "primary-nav", "sut-title", "sut-status-dot", "sut-status-label", "sut-selector",
+    "primary-nav", "sut-title", "sut-status-dot", "sut-status-label",
     "sut-meta", "page-title", "page-subtitle", "breadcrumb", "ws-pill",
     "time-controls", "custom-range", "custom-from", "custom-to", "custom-apply",
     "section-overview", "section-irq", "section-network",
@@ -265,7 +265,6 @@ function renderContextBar() {
   el["breadcrumb"].textContent = buildBreadcrumb();
   el["ws-pill"].className = `tag ${wsTone()}`;
   el["ws-pill"].textContent = `WebSocket: ${state.wsStatus}`;
-  renderSutSelector();
 }
 
 function buildBreadcrumb() {
@@ -474,27 +473,6 @@ function renderOverview() {
       render();
     };
   });
-}
-
-function renderSutSelector() {
-  const selector = el["sut-selector"];
-  if (!selector) return;
-  if (!state.systems.length) {
-    selector.innerHTML = `<option value="">No SUT detected</option>`;
-    selector.value = "";
-    selector.disabled = true;
-    return;
-  }
-  selector.disabled = false;
-  selector.innerHTML = state.systems.map(system => {
-    const label = `${system.hostname || system.name || system.id} (${system.status})`;
-    return `<option value="${escapeHtml(system.id)}">${escapeHtml(label)}</option>`;
-  }).join("");
-  if (!state.host || !state.systems.some(item => item.id === state.host)) {
-    state.host = state.systems[0].id;
-    persistSelections();
-  }
-  selector.value = state.host || state.systems[0].id;
 }
 
 function renderSystems() {
@@ -1672,13 +1650,6 @@ function bindGlobalActions() {
       state.cpuMetric = event.target.value || "irq";
       persistSelections();
       render();
-    };
-  }
-  if (el["sut-selector"]) {
-    el["sut-selector"].onchange = async event => {
-      const nextSut = event.target.value || "";
-      if (!nextSut || nextSut === state.host) return;
-      await openDashboard(nextSut);
     };
   }
   qs("diag-duration").onchange = event => {
