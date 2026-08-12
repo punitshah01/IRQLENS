@@ -1,4 +1,11 @@
-const PRIMARY_VIEWS = ["overview", "cpu", "irq", "network", "diagnostics", "sessions"];
+const PRIMARY_VIEWS = ["overview", "cpu", "irq", "network", "diagnostics"];
+const NAV_LABELS = {
+  overview: "Overview",
+  cpu: "CPU",
+  irq: "IRQ",
+  network: "Network",
+  diagnostics: "Collect Logs",
+};
 const TIME_RANGES = [
   { key: "30", label: "30s", seconds: 30 },
   { key: "60", label: "1m", seconds: 60 },
@@ -56,9 +63,13 @@ const state = {
   wsStatus: "connecting",
   charts: {},
   loading: { global: false, sessions: false, interfaceHistory: false },
+  refreshTimer: null,
+  refreshInFlight: false,
+  cpuUtilTimestamp: 0,
   diag: {
     running: false,
     sessionId: "",
+    sessionName: "",
     duration: 60,
     startedAt: 0,
     endsAt: 0,
@@ -66,6 +77,7 @@ const state = {
     categories: ["irq", "softirq", "network", "system", "interfaces", "ethtool"],
     files: [],
     completedSessionId: "",
+    error: "",
   },
 };
 
@@ -90,7 +102,7 @@ function initializeElements() {
     "sut-meta", "page-title", "page-subtitle", "breadcrumb", "ws-pill",
     "time-controls", "custom-range", "custom-from", "custom-to", "custom-apply",
     "section-overview", "section-irq", "section-network",
-    "section-cpu", "section-diagnostics", "section-sessions", "cpu-metric-selector", "cpu-legend",
+    "section-cpu", "section-diagnostics", "cpu-metric-selector", "cpu-legend",
   ].forEach(id => { el[id] = qs(id); });
 }
 
@@ -170,23 +182,32 @@ function viewTitle(view) {
     case "irq": return ["IRQ", "Trace which interrupts are driving activity."];
     case "network": return ["Network", "Inspect interface traffic, drops, errors, and related IRQs."];
     case "cpu": return ["CPU", "See which CPU and NUMA regions are absorbing IRQ activity."];
-    case "diagnostics": return ["Diagnostics", "Capture evidence for the selected SUT."];
-    case "sessions": return ["Sessions", "Review diagnostic captures, files, and downloads."];
+    case "diagnostics": return ["Collect Logs", "Capture evidence for the selected SUT and review recent captures."];
     default: return ["IRQLENS", "Monitoring dashboard"];
   }
 }
 
 function renderNavigation() {
-  el["primary-nav"].innerHTML = PRIMARY_VIEWS.map(view => {
+  const monitorViews = ["overview", "cpu", "irq", "network"];
+  const operationViews = ["diagnostics"];
+  const renderButtons = views => views.map(view => {
     const active = state.view === view ? "nav-button active" : "nav-button";
-    const label = view.charAt(0).toUpperCase() + view.slice(1);
+    const label = NAV_LABELS[view] || view;
     return `<button class="${active}" data-view="${view}">${label}</button>`;
   }).join("");
+  el["primary-nav"].innerHTML = `
+    <div class="nav-stack">
+      <div class="nav-label">Monitor</div>
+      ${renderButtons(monitorViews)}
+      <div class="nav-label" style="margin-top:14px;">Operations</div>
+      ${renderButtons(operationViews)}
+    </div>
+  `;
   [...document.querySelectorAll("[data-view]")].forEach(node => {
     node.onclick = async () => {
       state.view = node.dataset.view;
       storage.set("irqlens:view", state.view);
-      if (state.view === "sessions") await loadSessions();
+      if (state.view === "diagnostics") await loadSessions();
       if (state.view === "network" && state.selectedIface !== "ALL") await loadInterfaceHistory();
       render();
     };
@@ -274,7 +295,7 @@ function buildBreadcrumb() {
   parts.push(viewTitle(state.view)[0]);
   if (state.view === "network" && state.selectedIface && state.selectedIface !== "ALL") parts.push(state.selectedIface);
   if (state.view === "cpu" && state.selectedCpu) parts.push(`CPU ${state.selectedCpu}`);
-  if (state.view === "sessions" && state.selectedSessionId) parts.push(state.selectedSessionId);
+  if (state.view === "diagnostics" && state.selectedSessionId) parts.push(state.selectedSessionId);
   return parts.join(" → ") || "Overview";
 }
 
@@ -381,7 +402,7 @@ function emptyState(title, text, actionHtml = "") {
 function selectedIfaceRow() {
   const interfaces = state.snapshot?.network?.interfaces || [];
   if (!interfaces.length) return null;
-  if (!state.selectedIface || state.selectedIface === "ALL") return interfaces.slice().sort((a, b) => Number(b.rx_bps || 0) - Number(a.rx_bps || 0))[0] || null;
+  if (!state.selectedIface || state.selectedIface === "ALL") return null;
   return interfaces.find(item => item.interface === state.selectedIface) || null;
 }
 
@@ -402,7 +423,7 @@ function showSection(view) {
     const tooltip = qs("cpu-hover-tooltip");
     if (tooltip) tooltip.classList.add("hidden");
   }
-  ["overview", "irq", "network", "cpu", "diagnostics", "sessions"].forEach(name => {
+  ["overview", "irq", "network", "cpu", "diagnostics"].forEach(name => {
     const node = qs(`section-${name}`);
     node.classList.toggle("active", name === view);
   });
@@ -542,7 +563,7 @@ function renderIrq() {
   `).join("") : emptyState("No IRQ data", "No IRQ samples are available for the selected SUT and time context.");
 
   renderTopIrqChart(topRows);
-  renderIrqHeatmap(rows.slice(0, 40));
+  renderIrqHeatmap(rows.slice(0, 48));
 
   qs("irq-table").innerHTML = rows.length ? rows.map(row => {
     const topCpu = topCpuForIrq(row);
@@ -619,12 +640,22 @@ function renderNetwork() {
   });
 
   const iface = selectedIfaceRow();
+  const global = state.snapshot?.network?.global || {
+    rx_bps: 0,
+    tx_bps: 0,
+    rx_pps: 0,
+    tx_pps: 0,
+    rx_err_ps: 0,
+    tx_err_ps: 0,
+    rx_drop_ps: 0,
+    tx_drop_ps: 0,
+  };
   const title = state.selectedIface === "ALL" ? "All Interfaces" : escapeHtml(state.selectedIface);
   qs("network-current-title").textContent = title;
   if (!iface && state.selectedIface !== "ALL") {
     qs("network-current-cards").innerHTML = emptyState("Interface unavailable", "The selected interface is not present in current telemetry.");
   } else {
-    const source = iface || { rx_bps: 0, tx_bps: 0, rx_pps: 0, tx_pps: 0, rx_err_ps: 0, tx_err_ps: 0, rx_drop_ps: 0, tx_drop_ps: 0 };
+    const source = (state.selectedIface === "ALL") ? global : iface;
     qs("network-current-cards").innerHTML = [
       { label: "RX", value: fmtBytesRate(source.rx_bps), note: "Receive throughput" },
       { label: "TX", value: fmtBytesRate(source.tx_bps), note: "Transmit throughput" },
@@ -666,15 +697,17 @@ function renderNetworkTrend() {
 }
 
 function renderNetworkRelatedIrqs() {
-  const iface = state.selectedIface === "ALL" ? selectedIfaceRow()?.interface : state.selectedIface;
-  const rows = relatedIrqsForIface(iface);
+  const allRows = (state.snapshot?.irq?.rows || []).filter(row => row.source_class === "network");
+  const iface = state.selectedIface === "ALL" ? null : state.selectedIface;
+  const rows = iface ? relatedIrqsForIface(iface) : allRows;
   const root = qs("network-related-irqs");
-  if (!iface) {
-    root.innerHTML = emptyState("No interface selected", "Choose an interface to inspect related IRQs.");
-    return;
-  }
   if (!rows.length) {
-    root.innerHTML = emptyState("IRQ mapping unavailable", "Reliable IRQ mapping is not available for this interface on the current SUT.");
+    root.innerHTML = emptyState(
+      "IRQ mapping unavailable",
+      iface
+        ? "Reliable IRQ mapping is not available for this interface on the current SUT."
+        : "No network IRQ activity is currently visible across interfaces."
+    );
     return;
   }
   root.innerHTML = rows
@@ -684,7 +717,7 @@ function renderNetworkRelatedIrqs() {
     .map(row => `
       <div class="irq-item">
         <div class="item-title">${escapeHtml(row.irq_name || row.irq)}</div>
-        <div class="item-text">IRQ ${escapeHtml(row.irq)} • ${escapeHtml(row.direction || "Other")} • ${fmtCount(row.total_rate)}/s • CPU ${topCpuForIrq(row).cpu}</div>
+        <div class="item-text">IRQ ${escapeHtml(row.irq)} • ${escapeHtml(row.nic || "unknown")} • ${escapeHtml(row.direction || "Other")} • ${fmtCount(row.total_rate)}/s • CPU ${topCpuForIrq(row).cpu}</div>
       </div>
     `).join("");
 }
@@ -1148,6 +1181,16 @@ function renderCpuNumaBars() {
 function renderDiagnostics() {
   const system = currentSystem();
   qs("diag-selected-sut").textContent = system ? (system.hostname || system.name || system.id) : "No SUT selected";
+  const durationSelect = qs("diag-duration");
+  if (durationSelect) {
+    durationSelect.value = String(state.diag.duration || 60);
+    durationSelect.disabled = state.diag.running;
+  }
+  const sessionInput = qs("diag-session-name");
+  if (sessionInput) {
+    sessionInput.value = state.diag.sessionName || "";
+    sessionInput.disabled = state.diag.running;
+  }
   qs("diag-checkboxes").innerHTML = [
     { key: "irq", title: "IRQ", text: "Capture current interrupt distribution." },
     { key: "softirq", title: "SoftIRQ", text: "Capture current softirq summary." },
@@ -1173,19 +1216,27 @@ function renderDiagnostics() {
 
   qs("diag-progress").innerHTML = renderDiagProgressHtml();
   qs("diag-complete").innerHTML = renderDiagCompleteHtml();
+  const startBtn = qs("diag-start");
+  const stopBtn = qs("diag-stop");
+  if (startBtn) startBtn.disabled = state.diag.running;
+  if (stopBtn) stopBtn.disabled = !state.diag.running;
 }
 
 function renderDiagProgressHtml() {
   if (!state.diag.running) {
-    return emptyState("Ready to capture", "Start a diagnostic capture to collect evidence for the selected SUT.");
+    const ready = emptyState("Ready to capture", "Start a capture to collect evidence for the selected SUT.");
+    if (!state.diag.error) return ready;
+    return `${ready}<div class="detail-panel" style="margin-top:12px; border-color:#efc0c0; background:var(--red-soft);"><div class="item-title">Capture validation</div><div class="item-text">${escapeHtml(state.diag.error)}</div></div>`;
   }
   const remaining = Math.max(0, Math.round(state.diag.endsAt - nowSeconds()));
   const elapsed = Math.max(0, Math.round(nowSeconds() - state.diag.startedAt));
   return `
-    <div class="progress-card">
+      <div class="progress-card">
       <div class="item-title">Capturing...</div>
       <div class="progress-timer">${elapsed}s / ${state.diag.duration}s</div>
-      <div class="muted">Capture window closes in ${remaining}s. Files are being collected for session ${escapeHtml(state.diag.sessionId)}.</div>
+      <div class="muted">Session: ${escapeHtml(state.diag.sessionId)}</div>
+      <div class="muted">Remaining: ${remaining}s</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${Math.max(0, Math.min(100, (elapsed / Math.max(1, state.diag.duration)) * 100)).toFixed(1)}%"></div></div>
       <div class="progress-list">
         ${state.diag.categories.map(cat => `<div class="progress-item"><span>${escapeHtml(cat)}</span><strong>✓</strong></div>`).join("")}
       </div>
@@ -1197,12 +1248,22 @@ function renderDiagCompleteHtml() {
   if (!state.diag.completedSessionId) {
     return emptyState("No completed capture yet", "Completed captures will appear here with quick actions.");
   }
+  const completed = (state.sessions || []).find(item => item.session_id === state.diag.completedSessionId) || null;
+  const isDetailLoaded = state.sessionDetail && state.sessionDetail.session_id === state.diag.completedSessionId;
+  const fileCount = isDetailLoaded ? (state.sessionFiles || []).length : 0;
+  const outputDir = isDetailLoaded ? (state.sessionDetail.output_dir || "N/A") : (completed?.output_dir || "N/A");
+  const status = isDetailLoaded ? (state.sessionDetail.status || "completed") : (completed?.status || "completed");
   return `
     <div class="detail-panel">
       <div class="item-title">Capture complete</div>
       <div class="muted">Session ${escapeHtml(state.diag.completedSessionId)}</div>
+      <div class="detail-list" style="margin-top:10px;">
+        <div class="key-value"><span>Location</span><strong class="mono">${escapeHtml(outputDir)}</strong></div>
+        <div class="key-value"><span>Files</span><strong>${fileCount}</strong></div>
+        <div class="key-value"><span>Status</span><strong>${escapeHtml(status)}</strong></div>
+      </div>
       <div class="button-row" style="margin-top:14px;">
-        <button class="action-button ghost" id="diag-view-session">View Session</button>
+        <button class="action-button ghost" id="diag-view-session">View Capture</button>
         <a class="action-button primary" href="${api("/api/sessions/" + encodeURIComponent(state.diag.completedSessionId) + "/download")}">Download ZIP</a>
       </div>
     </div>
@@ -1213,12 +1274,38 @@ async function startCapture() {
   if (!state.host) {
     return;
   }
-  const body = { categories: state.diag.categories, sut_id: state.host };
+  const sessionName = String(qs("diag-session-name")?.value || state.diag.sessionName || "").trim();
+  state.diag.sessionName = sessionName;
+  if (!sessionName) {
+    state.diag.error = "Session name is required.";
+    renderDiagnostics();
+    bindDiagnosticsActions();
+    return;
+  }
+  if (!state.diag.categories.length) {
+    state.diag.error = "Select at least one capture category.";
+    renderDiagnostics();
+    bindDiagnosticsActions();
+    return;
+  }
+  const body = {
+    categories: state.diag.categories,
+    sut_id: state.host,
+    session_name: sessionName,
+    duration_seconds: Number(state.diag.duration || 60),
+  };
   const response = await fetch(api("/api/sessions/start"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+  if (!response.ok) {
+    const errorPayload = await response.json().catch(() => ({}));
+    state.diag.error = errorPayload.detail || `Unable to start capture (${response.status}).`;
+    renderDiagnostics();
+    bindDiagnosticsActions();
+    return;
+  }
   const data = await response.json();
   state.diag.running = true;
   state.diag.sessionId = data.session?.session_id || "";
@@ -1226,6 +1313,7 @@ async function startCapture() {
   state.diag.startedAt = nowSeconds();
   state.diag.endsAt = state.diag.startedAt + Number(state.diag.duration || 60);
   state.diag.completedSessionId = "";
+  state.diag.error = "";
   if (state.diag.timer) clearInterval(state.diag.timer);
   state.diag.timer = setInterval(async () => {
     if (nowSeconds() >= state.diag.endsAt) {
@@ -1252,7 +1340,11 @@ async function stopCapture(autoComplete = false) {
   state.diag.running = false;
   state.diag.completedSessionId = state.diag.sessionId;
   state.diag.sessionId = "";
+  state.diag.error = "";
   await loadSessions();
+  if (state.diag.completedSessionId) {
+    await loadSessionDetail(state.diag.completedSessionId);
+  }
   if (state.selectedSessionId !== state.diag.completedSessionId) {
     state.selectedSessionId = state.diag.completedSessionId;
   }
@@ -1270,7 +1362,7 @@ function bindDiagnosticsActions() {
         if (!latest?.session_id) return;
         state.diag.completedSessionId = latest.session_id;
       }
-      state.view = "sessions";
+      state.view = "diagnostics";
       storage.set("irqlens:view", state.view);
       state.selectedSessionId = state.diag.completedSessionId;
       await loadSessionDetail(state.selectedSessionId);
@@ -1282,7 +1374,13 @@ function bindDiagnosticsActions() {
 async function loadSessions() {
   state.loading.sessions = true;
   const data = await fetchJson("/api/sessions");
-  state.sessions = (data.sessions || []).filter(session => !state.host || session.sut_id === state.host || !session.sut_id);
+  state.sessions = (data.sessions || []).filter(session => {
+    if (!state.host) return false;
+    if (session.sut_id === state.host) return true;
+    // Backward compatibility: legacy captures without sut_id are considered local-only.
+    if (!session.sut_id && state.host === "local") return true;
+    return false;
+  });
   state.loading.sessions = false;
 }
 
@@ -1302,12 +1400,12 @@ function renderSessions() {
   const detailRoot = qs("session-detail");
   if (state.loading.sessions) {
     listRoot.innerHTML = emptyState("Loading sessions", "Fetching diagnostic capture history.");
-    detailRoot.innerHTML = emptyState("Select a session", "Choose a session to inspect summary, files, and download options.");
+    detailRoot.innerHTML = emptyState("Select a capture", "Choose a capture to inspect summary, files, and download options.");
     return;
   }
   if (!state.sessions.length) {
-    listRoot.innerHTML = emptyState("No diagnostic sessions", "Start a capture from Diagnostics to create the first session.");
-    detailRoot.innerHTML = emptyState("Select a session", "Choose a session after captures are available.");
+    listRoot.innerHTML = emptyState("No captures yet.", "Start your first capture from Collect Logs.");
+    detailRoot.innerHTML = emptyState("No captures yet.", "Start a capture while a workload is running to collect SUT evidence.");
     return;
   }
   listRoot.innerHTML = state.sessions.map(session => {
@@ -1315,7 +1413,8 @@ function renderSessions() {
     const duration = session.end_time ? Math.max(0, Math.round(session.end_time - session.start_time)) : 0;
     return `
       <button class="session-item" data-session="${escapeHtml(session.session_id)}">
-        <div class="item-title">${new Date(session.start_time * 1000).toLocaleString()}</div>
+        <div class="item-title">${escapeHtml(session.session_id)}</div>
+        <div class="item-text">${new Date(session.start_time * 1000).toLocaleString()}</div>
         <div class="item-text">${escapeHtml(session.hostname)}${session.sut_id ? ` • ${escapeHtml(session.sut_id)}` : ""}</div>
         <div class="summary-grid" style="margin-top:10px;">
           <span class="tag ${selected ? "info" : ""}">${escapeHtml(session.status)}</span>
@@ -1334,11 +1433,11 @@ function renderSessions() {
   });
 
   if (!state.selectedSessionId) {
-    detailRoot.innerHTML = emptyState("Select a session", "Choose a session to inspect summary, files, and download options.");
+    detailRoot.innerHTML = emptyState("Select a capture", "Choose a capture to inspect summary, files, and download options.");
     return;
   }
   if (!state.sessionDetail || state.sessionDetail.session_id !== state.selectedSessionId) {
-    detailRoot.innerHTML = emptyState("Loading session", "Fetching session detail and generated files.");
+    detailRoot.innerHTML = emptyState("Loading capture", "Fetching capture detail and generated files.");
     return;
   }
   const grouped = groupFilesByCategory(state.sessionFiles);
@@ -1349,7 +1448,7 @@ function renderSessions() {
       <div class="card-head">
         <div>
           <h3 class="card-title">Session ${escapeHtml(detail.session_id)}</h3>
-          <div class="card-subtitle">A user-created diagnostic capture for ${escapeHtml(detail.hostname)}${detail.sut_id ? ` (${escapeHtml(detail.sut_id)})` : ""}.</div>
+          <div class="card-subtitle">A user-created capture for ${escapeHtml(detail.hostname)}${detail.sut_id ? ` (${escapeHtml(detail.sut_id)})` : ""}.</div>
         </div>
         <a class="action-button primary" href="${api("/api/sessions/" + encodeURIComponent(detail.session_id) + "/download")}">Download ZIP</a>
       </div>
@@ -1358,6 +1457,7 @@ function renderSessions() {
         <div class="detail-panel"><div class="small">Start</div><div class="item-title">${fmtTs(detail.start_time)}</div></div>
         <div class="detail-panel"><div class="small">End</div><div class="item-title">${fmtTs(detail.end_time)}</div></div>
         <div class="detail-panel"><div class="small">Duration</div><div class="item-title">${duration}s</div></div>
+        <div class="detail-panel"><div class="small">SUT Path</div><div class="item-title mono">${escapeHtml(detail.output_dir || "N/A")}</div></div>
       </div>
       <div class="detail-panel" style="margin-top:16px;">
         <div class="item-title">Captured Data</div>
@@ -1427,6 +1527,52 @@ function render() {
   bindDiagnosticsActions();
   renderSessions();
   resizeCharts();
+}
+
+function applyLiveCpuUtilization(payload) {
+  const util = payload?.cpu_utilization;
+  if (!util || typeof util !== "object" || !Object.keys(util).length) return false;
+  const sampleTs = Number(payload.timestamp || 0);
+  if (sampleTs && state.cpuUtilTimestamp && sampleTs < state.cpuUtilTimestamp) {
+    return false;
+  }
+  state.viz = state.viz || {};
+  state.viz.cpu_utilization = util;
+  state.cpuUtilTimestamp = sampleTs || nowSeconds();
+  state.lastDataAt = nowSeconds();
+  return true;
+}
+
+function renderCpuLiveUpdate() {
+  if (!state.topology?.available || !(state.topology?.rows || []).length) return;
+  // Update only CPU visuals in-place to keep latency low during live samples.
+  if (state.view === "cpu") {
+    renderTopologyMap("cpu-topology", { compact: false, interactive: true });
+    renderCpuDetail();
+  }
+  if (state.view === "overview") {
+    renderTopologyMap("overview-topology", { compact: true });
+  }
+}
+
+function scheduleTelemetryRefresh(delayMs = 900) {
+  if (state.refreshTimer) return;
+  state.refreshTimer = setTimeout(async () => {
+    state.refreshTimer = null;
+    if (state.refreshInFlight || !state.host) return;
+    state.refreshInFlight = true;
+    try {
+      await loadSystems();
+      await loadSelectedData();
+      if (state.view === "diagnostics") {
+        await loadSessions();
+        if (state.selectedSessionId) await loadSessionDetail(state.selectedSessionId);
+      }
+      render();
+    } finally {
+      state.refreshInFlight = false;
+    }
+  }, delayMs);
 }
 
 function ensureChart(key, elementId) {
@@ -1501,34 +1647,65 @@ function renderTopIrqChart(rows) {
 }
 
 function renderIrqHeatmap(rows) {
-  const chart = ensureChart("irqHeat", "chart-irq-heatmap");
-  if (!chart) return;
+  const root = qs("chart-irq-heatmap");
+  if (!root) return;
   const cpus = [...new Set(rows.flatMap(row => Object.keys(row.cpu_rates || {})))].sort((a, b) => Number(a) - Number(b));
   if (!rows.length || !cpus.length) {
-    chart.clear();
+    root.innerHTML = emptyState("No IRQ/CPU matrix data", "No per-CPU IRQ activity is available in the current selection.");
     return;
   }
-  const values = [];
-  rows.forEach((row, rowIndex) => {
-    cpus.forEach((cpu, cpuIndex) => {
+
+  const maxRate = Math.max(1, ...rows.flatMap(row => Object.values(row.cpu_rates || {}).map(v => Number(v || 0))));
+  const labelStep = cpus.length <= 24 ? 1 : Math.ceil(cpus.length / 18);
+  const showCpuLabel = (idx) => idx === 0 || idx === cpus.length - 1 || idx % labelStep === 0;
+  const topRows = rows.slice(0, 48);
+
+  const levelFor = (rate) => {
+    const ratio = Math.max(0, Math.min(1, Number(rate || 0) / maxRate));
+    if (ratio >= 0.85) return 5;
+    if (ratio >= 0.65) return 4;
+    if (ratio >= 0.45) return 3;
+    if (ratio >= 0.25) return 2;
+    if (ratio > 0) return 1;
+    return 0;
+  };
+
+  const header = cpus.map((cpu, idx) => `
+    <div class="irq-cpu-label" title="CPU ${escapeHtml(cpu)}">${showCpuLabel(idx) ? escapeHtml(cpu) : ""}</div>
+  `).join("");
+
+  const body = topRows.map(row => {
+    const rowTitle = `${row.irq_name || row.irq}`;
+    const rowLabel = `${escapeHtml(row.irq)} • ${escapeHtml(row.nic || row.source_class || "other")}`;
+    const cells = cpus.map(cpu => {
       const rate = Number((row.cpu_rates || {})[cpu] || 0);
-      if (rate > 0) values.push([cpuIndex, rowIndex, rate, row]);
-    });
-  });
-  chart.setOption({
-    ...baseChart(),
-    animation: false,
-    tooltip: {
-      formatter: params => {
-        const row = params.data[3];
-        return `${escapeHtml(row.irq_name || row.irq)}<br/>CPU ${cpus[params.data[0]]}<br/>IRQ ${fmtCount(params.data[2])}/s`;
-      },
-    },
-    xAxis: { type: "category", data: cpus.map(cpu => `CPU ${cpu}`), axisLabel: { color: "#6b7280", interval: cpus.length > 24 ? Math.ceil(cpus.length / 24) : 0 } },
-    yAxis: { type: "category", data: rows.map(row => row.irq), axisLabel: { color: "#6b7280" } },
-    visualMap: { min: 0, max: Math.max(1, ...values.map(item => item[2])), orient: "horizontal", left: "center", bottom: 0, inRange: { color: ["#edf3ff", "#bfd6ff", "#2368d1"] } },
-    series: [{ type: "heatmap", data: values }],
-  });
+      const level = levelFor(rate);
+      return `
+        <div
+          class="irq-heat-cell"
+          data-level="${level}"
+          title="CPU ${escapeHtml(cpu)}\nIRQ source: ${escapeHtml(rowTitle)}\nIRQ rate: ${fmtCount(rate)}/s\nTotal: ${fmtCount(row.total_count || 0)}"
+        ></div>
+      `;
+    }).join("");
+    return `
+      <div class="irq-row-label" title="${escapeHtml(rowTitle)}">${rowLabel}</div>
+      ${cells}
+    `;
+  }).join("");
+
+  root.innerHTML = `
+    <div class="irq-matrix-shell">
+      <div class="legend"><span>Low</span><div class="legend-bar"></div><span>High</span><span class="muted">Current IRQ/s per (IRQ source, CPU)</span></div>
+      <div class="irq-matrix-scroll">
+        <div class="irq-matrix-grid" style="grid-template-columns: minmax(220px, 220px) repeat(${cpus.length}, minmax(14px, 14px));">
+          <div class="irq-header-label">IRQ Source</div>
+          ${header}
+          ${body}
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function withAlpha(hex, alpha) {
@@ -1586,6 +1763,7 @@ async function loadSelectedData() {
     ? `from_ts=${encodeURIComponent(bounds.from)}&to_ts=${encodeURIComponent(bounds.to)}`
     : `window_seconds=${encodeURIComponent(bounds.to - bounds.from)}`;
   state.viz = await fetchJson(`/api/systems/${encodeURIComponent(state.host)}/visualization?${query}&top_n=20`);
+  state.cpuUtilTimestamp = Number(state.viz?.timestamp || state.cpuUtilTimestamp || 0);
   state.topology = await fetchJson(`/api/systems/${encodeURIComponent(state.host)}/visualization/topology`);
   if (state.selectedIface !== "ALL") {
     await loadInterfaceHistory();
@@ -1620,7 +1798,7 @@ async function refreshAll() {
     await loadHealth();
     await loadSystems();
     await loadSelectedData();
-    if (state.view === "sessions") {
+    if (state.view === "diagnostics") {
       await loadSessions();
       if (state.selectedSessionId) await loadSessionDetail(state.selectedSessionId);
     }
@@ -1663,6 +1841,17 @@ function bindGlobalActions() {
   qs("diag-duration").onchange = event => {
     state.diag.duration = Number(event.target.value || 60);
   };
+  const sessionNameInput = qs("diag-session-name");
+  if (sessionNameInput) {
+    sessionNameInput.oninput = event => {
+      state.diag.sessionName = (event.target.value || "").trim();
+      if (state.diag.error) {
+        state.diag.error = "";
+        renderDiagnostics();
+        bindDiagnosticsActions();
+      }
+    };
+  }
   qs("diag-start").onclick = async () => {
     await startCapture();
   };
@@ -1703,14 +1892,19 @@ function wireWebSocket() {
       return;
     }
     const sutId = payload.sut_id || payload.host || "";
-    if (!sutId || sutId === state.host || payload.type === "system_registered" || payload.type === "session_started" || payload.type === "session_stopped") {
-      await loadSystems();
-      if (state.host) await loadSelectedData();
-      if (state.view === "sessions" || payload.type === "session_started" || payload.type === "session_stopped") {
-        await loadSessions();
-        if (state.selectedSessionId) await loadSessionDetail(state.selectedSessionId);
+    const isCurrentSutTelemetry = payload.type === "telemetry" && sutId && sutId === state.host;
+    if (isCurrentSutTelemetry) {
+      const updated = applyLiveCpuUtilization(payload);
+      if (updated) {
+        renderCpuLiveUpdate();
+        renderContextBar();
       }
-      render();
+      scheduleTelemetryRefresh(900);
+      return;
+    }
+
+    if (!sutId || payload.type === "system_registered" || payload.type === "session_started" || payload.type === "session_stopped") {
+      scheduleTelemetryRefresh(150);
     }
   };
 }

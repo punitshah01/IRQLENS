@@ -121,7 +121,6 @@ class Settings:
     def ensure_dirs(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        (self.output_dir / "sessions").mkdir(parents=True, exist_ok=True)
         (self.output_dir / "latest").mkdir(parents=True, exist_ok=True)
 
 

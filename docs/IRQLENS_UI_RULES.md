@@ -11,8 +11,12 @@ The default user flow is: start IRQLENS, select a SUT, monitor and investigate C
 - CPU
 - IRQ
 - Network
-- Diagnostics
-- Sessions
+- Collect Logs
+
+## Collect Logs model
+
+- Sessions are part of Collect Logs workflow.
+- Session history is accessed from Collect Logs (not a primary navigation destination).
 
 ## Explicitly excluded from primary UI
 

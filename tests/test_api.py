@@ -16,7 +16,14 @@ def test_health_endpoint():
 
 def test_sessions_lifecycle():
     with TestClient(app) as client:
-        start = client.post("/api/sessions/start", json={"categories": ["system", "network"]})
+        start = client.post(
+            "/api/sessions/start",
+            json={
+                "session_name": "api_test_capture",
+                "duration_seconds": 30,
+                "categories": ["system", "network"],
+            },
+        )
         assert start.status_code == 200
         payload = start.json()
         sid = payload["session"]["session_id"]

@@ -86,6 +86,12 @@ button {
   gap: 8px;
 }
 
+.nav-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .nav-label {
   color: rgba(243, 237, 228, 0.52);
   font-size: 11px;
@@ -648,6 +654,69 @@ button {
   flex-direction: column;
   gap: 10px;
 }
+
+.irq-matrix-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+}
+
+.irq-matrix-scroll {
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-2);
+  padding: 8px;
+  max-height: 300px;
+}
+
+.irq-matrix-grid {
+  display: grid;
+  gap: 4px;
+  align-items: center;
+}
+
+.irq-header-label,
+.irq-row-label {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--surface-2);
+  border-right: 1px solid var(--line);
+  padding: 2px 8px;
+  min-height: 16px;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.irq-header-label {
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.irq-cpu-label {
+  font-size: 10px;
+  color: var(--muted);
+  text-align: center;
+  min-height: 16px;
+}
+
+.irq-heat-cell {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid rgba(31, 36, 48, 0.07);
+  background: #f4f7ff;
+}
+
+.irq-heat-cell[data-level="1"] { background: #dce8ff; }
+.irq-heat-cell[data-level="2"] { background: #bfd6ff; }
+.irq-heat-cell[data-level="3"] { background: #9fc1ff; }
+.irq-heat-cell[data-level="4"] { background: #72a5f6; }
+.irq-heat-cell[data-level="5"] { background: #2368d1; }
 
 .rank-item {
   display: grid;

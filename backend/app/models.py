@@ -130,7 +130,7 @@ class DiagnosticCommandResult(BaseModel):
 class CollectionSession(BaseModel):
     session_id: str
     sut_id: str = ""
-    status: Literal["running", "stopped", "failed"]
+    status: Literal["running", "stopped", "completed", "failed"]
     start_time: float
     end_time: Optional[float] = None
     hostname: str
@@ -186,6 +186,8 @@ class DashboardSnapshot(BaseModel):
 class SessionStartRequest(BaseModel):
     categories: List[str] = Field(default_factory=lambda: ["irq", "softirq", "network", "interfaces", "routes", "sockets", "ethtool", "system"])
     sut_id: str = ""
+    session_name: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+    duration_seconds: int = Field(default=60, ge=1, le=1800)
 
 
 class SessionStopRequest(BaseModel):

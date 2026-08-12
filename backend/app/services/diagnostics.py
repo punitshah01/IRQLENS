@@ -32,14 +32,32 @@ class DiagnosticSessionService:
     def _safe_session_id(self, session_id: str) -> str:
         return re.sub(r"[^A-Za-z0-9_.-]", "_", session_id)
 
-    def _session_dir(self, session_id: str) -> Path:
-        return self.settings.output_dir / "sessions" / self._safe_session_id(session_id)
+    def validate_session_name(self, session_name: str) -> Tuple[bool, str]:
+        raw = (session_name or "").strip()
+        if not raw:
+            return False, "session_name is required"
+        if "/" in raw or "\\" in raw:
+            return False, "session_name must not contain path separators"
+        if ".." in raw:
+            return False, "session_name must not contain traversal sequences"
+        if raw.startswith("."):
+            return False, "session_name must start with an alphanumeric character"
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", raw):
+            return False, "session_name contains unsupported characters"
+        return True, raw
 
-    def start(self, categories: List[str], system_hostname: str, os_distribution: str, kernel: str, sut_id: str = "") -> CollectionSession:
+    def _session_dir(self, session_id: str) -> Path:
+        return self.settings.output_dir / self._safe_session_id(session_id)
+
+    def start(self, session_name: str, categories: List[str], system_hostname: str, os_distribution: str, kernel: str, sut_id: str = "") -> CollectionSession:
+        ok, safe_name = self.validate_session_name(session_name)
+        if not ok:
+            raise ValueError(safe_name)
         ts = time.time()
-        session_id = time.strftime("%Y%m%d-%H%M%S", time.localtime(ts))
-        session_id = f"{session_id}-{int((ts % 1) * 1000):03d}"
+        session_id = safe_name
         outdir = self._session_dir(session_id)
+        if outdir.exists():
+            raise FileExistsError(f"session directory already exists: {outdir}")
         outdir.mkdir(parents=True, exist_ok=True)
 
         session = CollectionSession(
@@ -59,8 +77,20 @@ class DiagnosticSessionService:
         self.store.create_session(session)
         self._active_session_id = session_id
 
-        metadata_path = outdir / "metadata.json"
-        self.exporter.write_json(metadata_path, session.model_dump())
+        metadata_dir = outdir / "metadata"
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+        self.exporter.write_json(metadata_dir / "metadata.json", session.model_dump())
+        self.exporter.write_json(outdir / "summary.json", {
+            "session_name": session_id,
+            "sut_id": sut_id,
+            "hostname": system_hostname,
+            "status": "running",
+            "start_time": ts,
+            "end_time": None,
+            "duration_seconds": 0,
+            "selected_capture_categories": categories,
+            "output_dir": str(outdir),
+        })
         return session
 
     def collect_snapshot(self, session_id: str, categories: List[str], sut_id: str = "local") -> List[ExportFile]:
@@ -108,7 +138,7 @@ class DiagnosticSessionService:
             soft_dir = outdir / "softirq"
             files.extend(self._emit_category_files(soft_dir, "softirq", soft_payload, soft_rows))
 
-        if "network" in categories or "interfaces" in categories:
+        if "network" in categories:
             category_dir = outdir / "network"
             network_json = {
                 "timestamp": ts,
@@ -117,6 +147,10 @@ class DiagnosticSessionService:
                 "samples": net_rows_raw,
             }
             files.extend(self._emit_category_files(category_dir, "network", network_json, net_rows_raw))
+
+        if "interfaces" in categories:
+            interfaces_dir = outdir / "interfaces"
+            files.extend(self._emit_category_files(interfaces_dir, "interfaces", {"interfaces": iface_infos}, iface_infos))
 
         if "system" in categories:
             category_dir = outdir / "system"
@@ -199,10 +233,30 @@ class DiagnosticSessionService:
         session = self.store.get_session(session_id)
         if not session:
             return None
-        self.store.update_session_status(session_id, status="stopped", end_time=time.time(), error="" if reason == "manual" else reason)
+        final_ts = time.time()
+        final_status = "stopped" if reason == "manual" else "completed"
+        self.store.update_session_status(session_id, status=final_status, end_time=final_ts, error="" if reason in {"manual", "duration-complete"} else reason)
         if self._active_session_id == session_id:
             self._active_session_id = ""
-        return self.store.get_session(session_id)
+        updated = self.store.get_session(session_id)
+        if updated:
+            summary_path = Path(updated.output_dir) / "summary.json"
+            self.exporter.write_json(summary_path, {
+                "session_name": updated.session_id,
+                "sut_id": updated.sut_id,
+                "hostname": updated.hostname,
+                "status": updated.status,
+                "start_time": updated.start_time,
+                "end_time": updated.end_time,
+                "duration_seconds": max(0, int((updated.end_time or final_ts) - updated.start_time)),
+                "selected_capture_categories": updated.categories,
+                "output_dir": updated.output_dir,
+                "error": updated.error,
+            })
+            metadata_dir = Path(updated.output_dir) / "metadata"
+            metadata_dir.mkdir(parents=True, exist_ok=True)
+            self.exporter.write_json(metadata_dir / "metadata.json", updated.model_dump())
+        return updated
 
     def list_files(self, session_id: str) -> List[ExportFile]:
         return self.store.session_files(session_id)
@@ -214,7 +268,7 @@ class DiagnosticSessionService:
         session_dir = Path(session.output_dir)
         if not session_dir.exists():
             return None
-        archive_base = self.settings.output_dir / "sessions" / f"{session_id}"
+        archive_base = self.settings.output_dir / f"{session_id}"
         archive_file = shutil.make_archive(str(archive_base), "zip", root_dir=str(session_dir))
         archive_path = Path(archive_file)
         self.store.add_session_files(

@@ -261,6 +261,8 @@ class TelemetrySampler:
                         "type": "telemetry",
                         "timestamp": ts,
                         "host": self.sut_ip,
+                        "sut_id": self.sut_ip,
+                        "cpu_utilization": cpu_utilization,
                         "irq_summary": irq_summary,
                         "network_global": net_global,
                     }

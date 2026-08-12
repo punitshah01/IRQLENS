@@ -15,7 +15,7 @@
       </div>
 
       <div class="nav-group">
-        <div class="nav-label">Primary</div>
+        <div class="nav-label">Navigation</div>
         <div id="primary-nav"></div>
       </div>
     </aside>
@@ -265,18 +265,26 @@
             <div class="card">
               <div class="card-head">
                 <div>
-                  <h3 class="card-title">Capture Evidence</h3>
+                  <h3 class="card-title">Collect Logs</h3>
                   <div class="card-subtitle">Selected SUT: <strong id="diag-selected-sut">No SUT selected</strong></div>
                 </div>
+              </div>
+
+              <div class="filter-row" style="margin-bottom:12px;">
+                <label for="diag-session-name"><strong>Session name:</strong></label>
+                <input id="diag-session-name" class="text-input" placeholder="mysql_peak_test" />
               </div>
 
               <div class="filter-row" style="margin-bottom:16px;">
                 <label for="diag-duration"><strong>Capture duration:</strong></label>
                 <select id="diag-duration" class="select">
-                  <option value="30">30 seconds</option>
-                  <option value="60" selected>60 seconds</option>
-                  <option value="300">5 minutes</option>
-                  <option value="900">15 minutes</option>
+                  <option value="30">30 sec</option>
+                  <option value="60" selected>1 min</option>
+                  <option value="120">2 min</option>
+                  <option value="300">5 min</option>
+                  <option value="600">10 min</option>
+                  <option value="900">15 min</option>
+                  <option value="1800">30 min</option>
                 </select>
               </div>
 
@@ -298,25 +306,22 @@
               <div id="diag-progress"></div>
               <div id="diag-complete" style="margin-top:16px;"></div>
             </div>
-          </div>
-        </section>
 
-        <section id="section-sessions" class="section">
-          <div class="grid">
-            <div class="card span-4">
+            <div class="card">
               <div class="card-head">
                 <div>
-                  <h3 class="card-title">Diagnostic Sessions</h3>
-                  <div class="card-subtitle">Each session is a user-created diagnostic capture period for the selected SUT.</div>
+                  <h3 class="card-title">Recent Captures</h3>
+                  <div class="card-subtitle">Session history is part of the Collect Logs workflow.</div>
                 </div>
               </div>
               <div id="sessions-list" class="session-list"></div>
             </div>
-
-            <div class="card span-8">
+          </div>
+          <div class="grid" style="margin-top:18px;">
+            <div class="card span-12">
               <div class="card-head">
                 <div>
-                  <h3 class="card-title">Session Detail</h3>
+                  <h3 class="card-title">Capture Detail</h3>
                   <div class="card-subtitle">Summary, captured data, files, and download actions.</div>
                 </div>
               </div>

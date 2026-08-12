@@ -4,6 +4,7 @@ import logging
 import os
 import time
 from pathlib import Path
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -52,6 +53,8 @@ app.add_middleware(
 SAMPLER = TelemetrySampler(settings=settings, store=STORE, ws_manager=WS)
 DIAGNOSTICS = DiagnosticSessionService(settings=settings, store=STORE)
 HEALTH = HealthService(settings=settings)
+SESSION_AUTO_STOP_TASKS: Dict[str, asyncio.Task] = {}
+ALLOWED_CAPTURE_DURATIONS = {30, 60, 120, 300, 600, 900, 1800}
 
 
 def _ip_allowed(request: Request) -> bool:
@@ -863,19 +866,44 @@ def session_detail(session_id: str) -> dict:
 
 @app.post("/api/sessions/start")
 async def start_session(req: SessionStartRequest) -> dict:
+    if int(req.duration_seconds) not in ALLOWED_CAPTURE_DURATIONS:
+        raise HTTPException(status_code=400, detail="duration_seconds must be one of: 30, 60, 120, 300, 600, 900, 1800")
     target = req.sut_id or "local"
     system = STORE.latest_system(target) or (SAMPLER.snapshot.system if SAMPLER.snapshot and target == "local" else None)
     hostname = system.hostname if system else "unknown"
     os_distribution = system.os_distribution if system else "Unknown"
     kernel = system.kernel if system else "Unknown"
-    session = DIAGNOSTICS.start(
-        categories=req.categories,
-        system_hostname=hostname,
-        os_distribution=os_distribution,
-        kernel=kernel,
-        sut_id=target,
-    )
+    try:
+        session = DIAGNOSTICS.start(
+            session_name=req.session_name,
+            categories=req.categories,
+            system_hostname=hostname,
+            os_distribution=os_distribution,
+            kernel=kernel,
+            sut_id=target,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
     files = DIAGNOSTICS.collect_snapshot(session.session_id, req.categories, sut_id=target)
+
+    async def _auto_stop_session(session_id: str, duration_seconds: int) -> None:
+        try:
+            await asyncio.sleep(max(1, int(duration_seconds)))
+            existing = STORE.get_session(session_id)
+            if not existing or existing.status != "running":
+                return
+            DIAGNOSTICS.collect_snapshot(session_id, existing.categories, sut_id=existing.sut_id or "local")
+            stopped = DIAGNOSTICS.stop(session_id=session_id, reason="duration-complete")
+            if stopped:
+                await WS.broadcast({"type": "session_stopped", "session_id": session_id, "timestamp": time.time()})
+        finally:
+            SESSION_AUTO_STOP_TASKS.pop(session_id, None)
+
+    task = asyncio.create_task(_auto_stop_session(session.session_id, req.duration_seconds), name=f"irqlens-session-{session.session_id}")
+    SESSION_AUTO_STOP_TASKS[session.session_id] = task
     await WS.broadcast({"type": "session_started", "session_id": session.session_id, "timestamp": time.time()})
     return {"session": session.model_dump(), "files": [item.model_dump() for item in files]}
 
@@ -977,12 +1005,25 @@ async def agent_telemetry(payload: AgentTelemetryPayload, request: Request) -> d
         )
         STORE.upsert_system(updated)
 
-    await WS.broadcast({"type": "telemetry", "sut_id": sut_id, "timestamp": payload.timestamp})
+    await WS.broadcast(
+        {
+            "type": "telemetry",
+            "sut_id": sut_id,
+            "timestamp": payload.timestamp,
+            "cpu_utilization": payload.cpu_utilization,
+        }
+    )
     return {"ok": True}
 
 
 @app.post("/api/sessions/{session_id}/stop")
 async def stop_session(session_id: str, req: SessionStopRequest) -> dict:
+    auto_task = SESSION_AUTO_STOP_TASKS.pop(session_id, None)
+    if auto_task:
+        auto_task.cancel()
+    existing = STORE.get_session(session_id)
+    if existing and existing.status == "running":
+        DIAGNOSTICS.collect_snapshot(session_id, existing.categories, sut_id=existing.sut_id or "local")
     session = DIAGNOSTICS.stop(session_id=session_id, reason=req.reason)
     if not session:
         raise HTTPException(status_code=404, detail="session not found")
