@@ -368,7 +368,6 @@ class DiagnosticSessionService:
             return "<div class=\"empty\">Not enough data points to render chart.</div>"
 
         chart_data: List[Tuple[float, float]] = []
-        base_ts: Optional[float] = None
         for point in points:
             ts = point.get("timestamp")
             y = point.get(y_key)
@@ -377,9 +376,7 @@ class DiagnosticSessionService:
                 y_f = float(y)
             except Exception:
                 continue
-            if base_ts is None:
-                base_ts = ts_f
-            chart_data.append((ts_f - base_ts, y_f))
+            chart_data.append((ts_f, y_f))
 
         if len(chart_data) < 2:
             return "<div class=\"empty\">Not enough valid data to render chart.</div>"
@@ -393,17 +390,18 @@ class DiagnosticSessionService:
         plot_w = width - left - right
         plot_h = height - top - bottom
 
+        x_min = min(pt[0] for pt in chart_data)
         x_max = max(pt[0] for pt in chart_data)
         y_min = min(pt[1] for pt in chart_data)
         y_max = max(pt[1] for pt in chart_data)
-        if x_max <= 0.0:
-            x_max = 1.0
+        if x_max <= x_min:
+            x_max = x_min + 1.0
         if y_max <= y_min:
             y_max = y_min + 1.0
 
         poly = []
-        for x_rel, y_val in chart_data:
-            x = left + (x_rel / x_max) * plot_w
+        for x_ts, y_val in chart_data:
+            x = left + ((x_ts - x_min) / (x_max - x_min)) * plot_w
             y = top + (1.0 - ((y_val - y_min) / (y_max - y_min))) * plot_h
             poly.append(f"{x:.1f},{y:.1f}")
 
@@ -418,9 +416,10 @@ class DiagnosticSessionService:
         for i in range(5):
             frac = i / 4.0
             x = left + frac * plot_w
-            sec = frac * x_max
+            tick_ts = x_min + frac * (x_max - x_min)
+            tick_label = time.strftime("%H:%M:%S", time.localtime(tick_ts))
             grid_lines.append(f"<line x1=\"{x:.1f}\" y1=\"{top}\" x2=\"{x:.1f}\" y2=\"{top + plot_h}\" stroke=\"#f4f7fb\" stroke-width=\"1\" />")
-            grid_lines.append(f"<text x=\"{x - 8:.1f}\" y=\"{height - 8}\" font-size=\"10\" fill=\"#6b778c\">{sec:.0f}s</text>")
+            grid_lines.append(f"<text x=\"{x - 22:.1f}\" y=\"{height - 8}\" font-size=\"10\" fill=\"#6b778c\">{tick_label}</text>")
 
         return (
             f"<svg class=\"chart-svg\" viewBox=\"0 0 {width} {height}\" role=\"img\" aria-label=\"time series\">"

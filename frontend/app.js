@@ -34,9 +34,26 @@ const storage = {
   },
 };
 
+function initialViewFromUrl() {
+  const fallback = "overview";
+  try {
+    const params = new URLSearchParams(window.location.search || "");
+    const queryView = String(params.get("view") || "").trim().toLowerCase();
+    if (PRIMARY_VIEWS.includes(queryView)) return queryView;
+  } catch (_) {
+    // Ignore malformed query params.
+  }
+  const rawHash = String(window.location.hash || "").trim();
+  if (rawHash) {
+    const normalized = rawHash.replace(/^#\/?/, "").split(/[?&]/, 1)[0].toLowerCase();
+    if (PRIMARY_VIEWS.includes(normalized)) return normalized;
+  }
+  return fallback;
+}
+
 const state = {
   backend: window.location.origin,
-  view: storage.get("irqlens:view", "overview"),
+  view: initialViewFromUrl(),
   host: storage.get("irqlens:host", ""),
   systems: [],
   health: null,
@@ -71,6 +88,8 @@ const state = {
   cpuUtilTimestamp: 0,
   diag: {
     running: false,
+    starting: false,
+    stopping: false,
     sessionId: "",
     sessionName: "",
     duration: 60,
@@ -1215,12 +1234,12 @@ function renderDiagnostics() {
   const durationSelect = qs("diag-duration");
   if (durationSelect) {
     durationSelect.value = String(state.diag.duration || 60);
-    durationSelect.disabled = state.diag.running;
+    durationSelect.disabled = state.diag.running || state.diag.starting || state.diag.stopping;
   }
   const sessionInput = qs("diag-session-name");
   if (sessionInput) {
     sessionInput.value = state.diag.sessionName || "";
-    sessionInput.disabled = state.diag.running;
+    sessionInput.disabled = state.diag.running || state.diag.starting || state.diag.stopping;
   }
   qs("diag-checkboxes").innerHTML = [
     { key: "irq", title: "IRQ", text: "Capture current interrupt distribution." },
@@ -1249,8 +1268,14 @@ function renderDiagnostics() {
   qs("diag-complete").innerHTML = renderDiagCompleteHtml();
   const startBtn = qs("diag-start");
   const stopBtn = qs("diag-stop");
-  if (startBtn) startBtn.disabled = state.diag.running;
-  if (stopBtn) stopBtn.disabled = !state.diag.running;
+  if (startBtn) {
+    startBtn.disabled = state.diag.running || state.diag.starting || state.diag.stopping;
+    startBtn.textContent = state.diag.starting ? "Starting..." : (state.diag.running ? "Capturing..." : "Start Capture");
+  }
+  if (stopBtn) {
+    stopBtn.disabled = !state.diag.running || state.diag.starting || state.diag.stopping;
+    stopBtn.textContent = state.diag.stopping ? "Stopping..." : "Stop Capture";
+  }
 }
 
 function renderDiagProgressHtml() {
@@ -1302,7 +1327,7 @@ function renderDiagCompleteHtml() {
 }
 
 async function startCapture() {
-  if (!state.host) {
+  if (!state.host || state.diag.running || state.diag.starting || state.diag.stopping) {
     return;
   }
   const sessionName = String(qs("diag-session-name")?.value || state.diag.sessionName || "").trim();
@@ -1325,62 +1350,90 @@ async function startCapture() {
     session_name: sessionName,
     duration_seconds: Number(state.diag.duration || 60),
   };
-  const response = await fetch(api("/api/sessions/start"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    const errorPayload = await response.json().catch(() => ({}));
-    state.diag.error = errorPayload.detail || `Unable to start capture (${response.status}).`;
-    renderDiagnostics();
-    bindDiagnosticsActions();
-    return;
-  }
-  const data = await response.json();
-  state.diag.running = true;
-  state.diag.sessionId = data.session?.session_id || "";
-  state.diag.files = data.files || [];
-  state.diag.startedAt = nowSeconds();
-  state.diag.endsAt = state.diag.startedAt + Number(state.diag.duration || 60);
-  state.diag.completedSessionId = "";
+  state.diag.starting = true;
   state.diag.error = "";
-  if (state.diag.timer) clearInterval(state.diag.timer);
-  state.diag.timer = setInterval(async () => {
-    if (nowSeconds() >= state.diag.endsAt) {
-      clearInterval(state.diag.timer);
-      state.diag.timer = null;
-      await stopCapture(true);
-      return;
-    }
-    renderDiagnostics();
-    bindDiagnosticsActions();
-  }, 1000);
   renderDiagnostics();
   bindDiagnosticsActions();
-  await loadSessions();
+
+  try {
+    const response = await fetch(api("/api/sessions/start"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => ({}));
+      state.diag.error = errorPayload.detail || `Unable to start capture (${response.status}).`;
+      return;
+    }
+    const data = await response.json();
+    state.diag.running = true;
+    state.diag.sessionId = data.session?.session_id || "";
+    state.diag.files = data.files || [];
+    state.diag.startedAt = nowSeconds();
+    state.diag.endsAt = state.diag.startedAt + Number(state.diag.duration || 60);
+    state.diag.completedSessionId = "";
+    state.diag.error = "";
+    if (state.diag.timer) clearInterval(state.diag.timer);
+    state.diag.timer = setInterval(async () => {
+      if (state.diag.stopping) return;
+      if (nowSeconds() >= state.diag.endsAt) {
+        clearInterval(state.diag.timer);
+        state.diag.timer = null;
+        await stopCapture(true);
+        return;
+      }
+      renderDiagnostics();
+      bindDiagnosticsActions();
+    }, 1000);
+    await loadSessions();
+  } catch (_) {
+    state.diag.error = "Unable to start capture. Please check backend availability and try again.";
+  } finally {
+    state.diag.starting = false;
+    renderDiagnostics();
+    bindDiagnosticsActions();
+  }
 }
 
 async function stopCapture(autoComplete = false) {
-  if (!state.diag.sessionId) return;
-  await fetch(api("/api/sessions/" + encodeURIComponent(state.diag.sessionId) + "/stop"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ reason: autoComplete ? "duration-complete" : "manual" }),
-  });
-  state.diag.running = false;
-  state.diag.completedSessionId = state.diag.sessionId;
-  state.diag.sessionId = "";
-  state.diag.error = "";
-  await loadSessions();
-  if (state.diag.completedSessionId) {
-    await loadSessionDetail(state.diag.completedSessionId);
-  }
-  if (state.selectedSessionId !== state.diag.completedSessionId) {
-    state.selectedSessionId = state.diag.completedSessionId;
-  }
+  if (!state.diag.sessionId || state.diag.stopping || state.diag.starting) return;
+  state.diag.stopping = true;
   renderDiagnostics();
   bindDiagnosticsActions();
+  try {
+    const response = await fetch(api("/api/sessions/" + encodeURIComponent(state.diag.sessionId) + "/stop"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: autoComplete ? "duration-complete" : "manual" }),
+    });
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => ({}));
+      state.diag.error = errorPayload.detail || `Unable to stop capture (${response.status}).`;
+      return;
+    }
+    state.diag.running = false;
+    state.diag.completedSessionId = state.diag.sessionId;
+    state.diag.sessionId = "";
+    state.diag.error = "";
+    if (state.diag.timer) {
+      clearInterval(state.diag.timer);
+      state.diag.timer = null;
+    }
+    await loadSessions();
+    if (state.diag.completedSessionId) {
+      await loadSessionDetail(state.diag.completedSessionId);
+    }
+    if (state.selectedSessionId !== state.diag.completedSessionId) {
+      state.selectedSessionId = state.diag.completedSessionId;
+    }
+  } catch (_) {
+    state.diag.error = "Unable to stop capture. Please check backend availability and try again.";
+  } finally {
+    state.diag.stopping = false;
+    renderDiagnostics();
+    bindDiagnosticsActions();
+  }
 }
 
 function bindDiagnosticsActions() {
@@ -1648,20 +1701,28 @@ function groupFilesByCategory(files) {
 async function startSessionReport(sessionId) {
   if (state.reportingSessions[sessionId]) return;
   state.reportingSessions[sessionId] = true;
-  const response = await fetch(api("/api/sessions/" + encodeURIComponent(sessionId) + "/report"), { method: "POST" });
-  if (!response.ok) {
-    updateSessionReportState(sessionId, { report_status: "failed", report_error: "Report generation failed. Check the session report logs." });
-    await loadSessionDetail(sessionId);
+  renderSessions();
+  try {
+    const response = await fetch(api("/api/sessions/" + encodeURIComponent(sessionId) + "/report"), { method: "POST" });
+    if (!response.ok) {
+      updateSessionReportState(sessionId, { report_status: "failed", report_error: "Report generation failed. Check the session report logs." });
+      if (state.selectedSessionId === sessionId) {
+        await loadSessionDetail(sessionId);
+      }
+      return;
+    }
+    updateSessionReportState(sessionId, { report_status: "pending", report_error: "", report_path: "" });
+    renderSessions();
+    await pollSessionReportStatus(sessionId, 25);
+    if (state.selectedSessionId === sessionId) {
+      await loadSessionDetail(sessionId);
+    }
+  } catch (_) {
+    updateSessionReportState(sessionId, { report_status: "failed", report_error: "Unable to generate report. Please retry." });
+  } finally {
     delete state.reportingSessions[sessionId];
     renderSessions();
-    return;
   }
-  updateSessionReportState(sessionId, { report_status: "pending", report_error: "", report_path: "" });
-  renderSessions();
-  await pollSessionReportStatus(sessionId, 25);
-  await loadSessionDetail(sessionId);
-  delete state.reportingSessions[sessionId];
-  renderSessions();
 }
 
 function updateSessionReportState(sessionId, patch) {
@@ -1706,29 +1767,36 @@ async function deleteSession(sessionId) {
   const confirmed = window.confirm(`Delete capture ${sessionId}? This removes DB records and generated files.`);
   if (!confirmed) return;
   state.deletingSessions[sessionId] = true;
+  renderSessions();
 
   state.sessions = (state.sessions || []).filter(item => item.session_id !== sessionId);
   if (state.expandedSessionId === sessionId) state.expandedSessionId = "";
-  const response = await fetch(api("/api/sessions/" + encodeURIComponent(sessionId)), { method: "DELETE" });
-  if (!response.ok) {
+  try {
+    const response = await fetch(api("/api/sessions/" + encodeURIComponent(sessionId)), { method: "DELETE" });
+    if (!response.ok) {
+      delete state.deletingSessions[sessionId];
+      await loadSessions();
+      renderSessions();
+      return;
+    }
+    if (state.selectedSessionId === sessionId) {
+      state.selectedSessionId = "";
+      state.sessionDetail = null;
+      state.sessionFiles = [];
+    }
+    if (state.diag.completedSessionId === sessionId) {
+      state.diag.completedSessionId = "";
+    }
+    delete state.deletingSessions[sessionId];
+    renderSessions();
+    renderDiagnostics();
+    await loadSessions();
+    renderSessions();
+  } catch (_) {
     delete state.deletingSessions[sessionId];
     await loadSessions();
     renderSessions();
-    return;
   }
-  if (state.selectedSessionId === sessionId) {
-    state.selectedSessionId = "";
-    state.sessionDetail = null;
-    state.sessionFiles = [];
-  }
-  if (state.diag.completedSessionId === sessionId) {
-    state.diag.completedSessionId = "";
-  }
-  delete state.deletingSessions[sessionId];
-  renderSessions();
-  renderDiagnostics();
-  await loadSessions();
-  renderSessions();
 }
 
 function renderSettings() {

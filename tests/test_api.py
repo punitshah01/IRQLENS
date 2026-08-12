@@ -40,6 +40,88 @@ def test_sessions_lifecycle():
         assert stop.status_code == 200
 
 
+def test_session_duration_and_name_validation():
+    with TestClient(app) as client:
+        bad_duration = client.post(
+            "/api/sessions/start",
+            json={
+                "session_name": f"duration_bad_{int(time.time() * 1000)}",
+                "duration_seconds": 10,
+                "categories": ["system"],
+            },
+        )
+        assert bad_duration.status_code == 400
+        assert "duration_seconds" in bad_duration.json().get("detail", "")
+
+        invalid_names = ["", "../test", "../../etc", "mysql test", "\\\\bad", ".hidden"]
+        for value in invalid_names:
+            r = client.post(
+                "/api/sessions/start",
+                json={
+                    "session_name": value,
+                    "duration_seconds": 30,
+                    "categories": ["system"],
+                },
+            )
+            assert r.status_code == 422
+
+
+def test_session_sorting_newest_first():
+    with TestClient(app) as client:
+        base = f"sort_case_{int(time.time() * 1000)}"
+        ids = []
+        for idx in range(3):
+            sid = f"{base}_{idx}"
+            start = client.post(
+                "/api/sessions/start",
+                json={
+                    "session_name": sid,
+                    "duration_seconds": 30,
+                    "categories": ["system"],
+                },
+            )
+            assert start.status_code == 200
+            ids.append(sid)
+            stop = client.post(f"/api/sessions/{sid}/stop", json={"reason": "manual"})
+            assert stop.status_code == 200
+            time.sleep(0.01)
+
+        listed = client.get("/api/sessions")
+        assert listed.status_code == 200
+        ours = [item for item in listed.json().get("sessions", []) if item.get("session_id", "").startswith(base)]
+        assert len(ours) == 3
+        ordered_ids = [item["session_id"] for item in ours]
+        assert ordered_ids == list(reversed(ids))
+
+
+def test_session_delete_removes_db_and_directory():
+    with TestClient(app) as client:
+        sid = f"delete_case_{int(time.time() * 1000)}"
+        start = client.post(
+            "/api/sessions/start",
+            json={
+                "session_name": sid,
+                "duration_seconds": 30,
+                "categories": ["system", "network"],
+            },
+        )
+        assert start.status_code == 200
+        stop = client.post(f"/api/sessions/{sid}/stop", json={"reason": "manual"})
+        assert stop.status_code == 200
+
+        detail = client.get(f"/api/sessions/{sid}")
+        assert detail.status_code == 200
+        output_dir = Path(detail.json()["output_dir"])
+        assert output_dir.exists()
+
+        delete = client.delete(f"/api/sessions/{sid}")
+        assert delete.status_code == 200
+
+        detail_after = client.get(f"/api/sessions/{sid}")
+        assert detail_after.status_code == 404
+        assert not output_dir.exists()
+
+
 def test_visualization_endpoints():
     with TestClient(app) as client:
         reg = client.post(
@@ -432,3 +514,42 @@ def test_session_report_uses_timeseries_data():
         assert "CPU Frequency Avg" in text
         assert "Network Activity" in text
         assert "IRQ Activity" in text
+
+
+def test_session_report_status_consistency_when_file_missing():
+    with TestClient(app) as client:
+        sid = f"report_consistency_{int(time.time() * 1000)}"
+        start = client.post(
+            "/api/sessions/start",
+            json={
+                "session_name": sid,
+                "duration_seconds": 30,
+                "categories": ["system"],
+            },
+        )
+        assert start.status_code == 200
+        stop = client.post(f"/api/sessions/{sid}/stop", json={"reason": "manual"})
+        assert stop.status_code == 200
+
+        report = client.post(f"/api/sessions/{sid}/report")
+        assert report.status_code == 200
+
+        status_payload = {"status": "pending"}
+        for _ in range(80):
+            status_resp = client.get(f"/api/sessions/{sid}/report")
+            assert status_resp.status_code == 200
+            status_payload = status_resp.json()
+            if status_payload.get("status") in {"ready", "failed"}:
+                break
+            time.sleep(0.05)
+
+        assert status_payload.get("status") == "ready"
+        report_path = Path(status_payload.get("report_path", ""))
+        assert report_path.exists()
+
+        report_path.unlink()
+        status_after_remove = client.get(f"/api/sessions/{sid}/report")
+        assert status_after_remove.status_code == 200
+        payload = status_after_remove.json()
+        assert payload.get("status") == "none"
+        assert payload.get("report_path") == ""

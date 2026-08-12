@@ -5,7 +5,7 @@ Validate IRQLENS end-to-end with a real Linux SUT, real backend process, real SQ
 
 ## Scope and Environment
 - Workspace: IRQLENS
-- SUT: FL31CA106KS1002 (10.45.154.35)
+- SUT: REDACTED-SUT (REDACTED-IP)
 - SUT OS: CentOS Stream 9, Linux 6.14.0-cwf
 - Backend: FastAPI on port 8080 (remote host)
 - Access path for QA: local tunnel http://127.0.0.1:18080
@@ -29,7 +29,7 @@ Validate IRQLENS end-to-end with a real Linux SUT, real backend process, real SQ
 | T002 | Backend startup | Backend process starts and serves root | HTTP 200 on / | test-results/liveqa/http_root_status.txt |
 | T003 | Health API | GET /api/health | ok=true, db=ok, websocket connected | test-results/liveqa/api_health.json |
 | T004 | Systems registry | GET /api/systems | local and remote systems listed | test-results/liveqa/api_systems.json |
-| T005 | Agent registration | Remote agent registers SUT | sut-fl31ca106ks1002 exists and ONLINE | test-results/liveqa/api_systems.json |
+| T005 | Agent registration | Remote agent registers SUT | remote SUT exists and ONLINE | test-results/liveqa/api_systems.json |
 | T006 | Heartbeat flow | Agent heartbeats refresh last_seen | last_seen updates and status ONLINE | test-results/liveqa/api_systems.json |
 | T007 | IRQ ingest/query | GET /api/irq/current?sut_id=... | Non-empty IRQ rows from remote SUT | test-results/liveqa/api_irq_remote.json |
 | T008 | SoftIRQ ingest/query | GET /api/softirq/current?sut_id=... | SoftIRQ sample object returned | test-results/liveqa/api_softirq_remote.json |

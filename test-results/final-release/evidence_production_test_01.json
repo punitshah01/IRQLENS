@@ -1,0 +1,137 @@
+{
+  "session_id": "production_test_01",
+  "db": {
+    "detail": {
+      "session_id": "production_test_01",
+      "status": "completed",
+      "start_time": 1786534110.9747949,
+      "end_time": 1786534171.1966536,
+      "report_status": "ready",
+      "report_path": "C:\\root\\irqlens\\production_test_01\\report.html",
+      "output_dir": "C:\\root\\irqlens\\production_test_01",
+      "duration_seconds": 60.221858739852905
+    },
+    "file_count": 20,
+    "consistency": {
+      "row_exists": true,
+      "output_dir_exists": true,
+      "report_status": "ready",
+      "report_path_exists": true,
+      "ready_implies_file": true
+    }
+  },
+  "filesystem": {
+    "output_dir_exists": true,
+    "output_dir": "C:\\root\\irqlens\\production_test_01",
+    "json_file_count": 15,
+    "csv_file_count": 6,
+    "json_valid": {
+      "C:\\root\\irqlens\\production_test_01\\commands\\commands.json": true,
+      "C:\\root\\irqlens\\production_test_01\\interfaces\\interfaces.json": true,
+      "C:\\root\\irqlens\\production_test_01\\irq\\irqtop.json": true,
+      "C:\\root\\irqlens\\production_test_01\\metadata\\metadata.json": true,
+      "C:\\root\\irqlens\\production_test_01\\network\\network.json": true,
+      "C:\\root\\irqlens\\production_test_01\\softirq\\softirq.json": true,
+      "C:\\root\\irqlens\\production_test_01\\summary.json": true,
+      "C:\\root\\irqlens\\production_test_01\\system\\system.json": true,
+      "C:\\root\\irqlens\\production_test_01\\timeseries\\cpu\\cpu_frequency_timeseries.json": true,
+      "C:\\root\\irqlens\\production_test_01\\timeseries\\cpu\\cpu_utilization_timeseries.json": true,
+      "C:\\root\\irqlens\\production_test_01\\timeseries\\irq\\irq_timeseries.json": true,
+      "C:\\root\\irqlens\\production_test_01\\timeseries\\irq\\irq_top_sources.json": true,
+      "C:\\root\\irqlens\\production_test_01\\timeseries\\network\\network_interfaces_timeseries.json": true,
+      "C:\\root\\irqlens\\production_test_01\\timeseries\\network\\network_timeseries.json": true,
+      "C:\\root\\irqlens\\production_test_01\\timeseries\\softirq\\softirq_timeseries.json": true
+    },
+    "csv_valid": {
+      "C:\\root\\irqlens\\production_test_01\\commands\\commands.csv": true,
+      "C:\\root\\irqlens\\production_test_01\\interfaces\\interfaces.csv": true,
+      "C:\\root\\irqlens\\production_test_01\\irq\\irqtop.csv": true,
+      "C:\\root\\irqlens\\production_test_01\\network\\network.csv": true,
+      "C:\\root\\irqlens\\production_test_01\\softirq\\softirq.csv": true,
+      "C:\\root\\irqlens\\production_test_01\\system\\system.csv": true
+    }
+  },
+  "report": {
+    "status_payload": {
+      "session_id": "production_test_01",
+      "status": "ready",
+      "report_path": "C:\\root\\irqlens\\production_test_01\\report.html",
+      "report_url": "/api/files?path=C%3A%5Croot%5Cirqlens%5Cproduction_test_01%5Creport.html",
+      "error": ""
+    },
+    "path_exists": true,
+    "size_bytes": 29969,
+    "required_tokens": {
+      "IRQLENS Session Report": true,
+      "CPU Util Avg": true,
+      "CPU Frequency Avg": true,
+      "IRQ Activity": true,
+      "SoftIRQ Activity": true,
+      "Network Activity": true,
+      "acceptance-host": true,
+      "Ubuntu": true,
+      "6.8.0": true
+    },
+    "has_timestamp_axis_labels": false
+  },
+  "downloads": {
+    "report_downloaded": true,
+    "report_size_bytes": 30107,
+    "zip_downloaded": true,
+    "zip_size_bytes": 24470,
+    "zip_contains_report": true,
+    "zip_entry_count": 34
+  },
+  "timeseries": {
+    "cpu_util": {
+      "exists": true,
+      "sample_count": 30,
+      "monotonic": true,
+      "within_range": true,
+      "first_ts": null,
+      "last_ts": null
+    },
+    "cpu_freq": {
+      "exists": true,
+      "sample_count": 30,
+      "monotonic": true,
+      "within_range": true,
+      "first_ts": null,
+      "last_ts": null
+    },
+    "network": {
+      "exists": true,
+      "sample_count": 30,
+      "monotonic": true,
+      "within_range": true,
+      "first_ts": null,
+      "last_ts": null
+    },
+    "irq": {
+      "exists": true,
+      "sample_count": 30,
+      "monotonic": true,
+      "within_range": true,
+      "first_ts": null,
+      "last_ts": null
+    },
+    "softirq": {
+      "exists": true,
+      "sample_count": 30,
+      "monotonic": true,
+      "within_range": true,
+      "first_ts": null,
+      "last_ts": null
+    }
+  },
+  "api_contract": {
+    "session_detail_status": 200,
+    "session_files_status": 200,
+    "report_status_endpoint": 200,
+    "report_file_status": 200,
+    "zip_status": 200,
+    "missing_session_404": 404,
+    "invalid_duration_400": 400,
+    "invalid_name_422": 422
+  }
+}
