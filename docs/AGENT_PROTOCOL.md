@@ -11,11 +11,48 @@ This document describes the implemented protocol between `agent/main.py` and `ba
 - `POST /api/agent/register`
 - `POST /api/agent/heartbeat`
 - `POST /api/agent/telemetry`
+- `POST /api/agent/diagnostics/poll`
+- `POST /api/agent/diagnostics/{job_id}/results`
 
 ## Authentication
-- Server checks bearer token only when `IRQLENS_AGENT_TOKEN` is non-empty.
-- If token is empty, server accepts requests without auth header.
+- Server checks `IRQLENS_AGENT_TOKEN`, falling back to `IRQLENS_API_TOKEN`.
+- If both tokens are empty, server accepts requests without auth headers for isolated development only.
 - Unauthorized token returns `401`.
+- Dashboard/API credentials are separate when both tokens are set. All agents currently share one agent token; it is not a per-SUT identity credential. Use HTTPS and restrict network access.
+
+## Remote Command Diagnostics
+Requires agent version 1.1.0 or newer. The server persists a job for each remote command snapshot at capture start/stop. The agent's separate diagnostic worker polls every two seconds without blocking its telemetry loop.
+
+Poll with `POST /api/agent/diagnostics/poll`:
+
+```json
+{"sut_id": "sut-01"}
+```
+
+Response is `{"job": null}` or:
+
+```json
+{"job": {"job_id": "server-generated-id", "session_id": "capture-name", "lease_token": "32-character-hex-lease", "categories": ["routes", "sockets", "ethtool"], "command_timeout_seconds": 8.0}}
+```
+
+Only `network`, `interfaces`, `routes`, `sockets`, and `ethtool` categories are accepted by the agent. Executable/argument lists are built locally from the allowlist and locally discovered interfaces. There is no remote arbitrary-command or shell interface.
+
+Upload to `POST /api/agent/diagnostics/{job_id}/results` with:
+
+```json
+{
+  "sut_id": "sut-01",
+  "lease_token": "00000000000000000000000000000000",
+  "results": [{"timestamp": 1786389901.4, "category": "routes", "command": "ip route", "interface": "", "exit_code": 0, "stdout": "default via 192.0.2.1", "stderr": "", "success": true, "duration_ms": 2.0}],
+  "error": ""
+}
+```
+
+The lease in the upload must be the exact server-issued value, not the example above. Results are scoped to the claimed SUT and session. Duplicate uploads with the same completed lease are idempotent; stale leases return `409`. Jobs can be reclaimed after five minutes if an agent crashes or loses connectivity. The worker retries result uploads without rerunning commands while its process remains alive; a restart/reclaim may execute read-only commands again.
+
+Missing tools and unsuccessful commands are exported with `success: false` and make the job `failed`. Successful output is exported under `<session>/commands/<job-id>/` in JSON/CSV/XML/TXT plus individual command text files. Session detail returns a `remote_diagnostics` list, and `/ws` broadcasts `session_diagnostics_ready` after an upload.
+
+Queued/running jobs may outlive the capture timer, particularly with old or disconnected agents. Downloads/reports represent the data available when requested; wait for jobs to finish for complete command evidence. Late results clear report status so the report can be regenerated.
 
 ## Registration
 Endpoint: `POST /api/agent/register`
@@ -214,7 +251,7 @@ Server marks SUT status based on time since last seen:
 
 ## Version Compatibility
 Current in-repo agent version string:
-- `AGENT_VERSION = "1.0.0"`
+- `AGENT_VERSION = "1.1.0"`
 
 Compatibility status:
 - No explicit protocol negotiation endpoint is implemented.

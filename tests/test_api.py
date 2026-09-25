@@ -4,8 +4,37 @@ import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+import pytest
+from starlette.websockets import WebSocketDisconnect
 
-from backend.app.main import app
+from backend.app.main import app, settings
+
+
+def test_access_control_and_browser_auth(monkeypatch):
+    monkeypatch.setattr(settings, "agent_token", "test-agent-token")
+    monkeypatch.setattr(settings, "api_token", "test-api-token")
+    client = TestClient(app)
+    for path in ["/", "/frontend/app.js", "/api/systems", "/api/sessions", "/api/files?path=missing"]:
+        response = client.get(path)
+        assert response.status_code == 401
+        assert "Basic" in response.headers["www-authenticate"]
+    assert client.delete("/api/sessions/missing").status_code == 401
+    assert client.post("/api/systems", json={}).status_code == 401
+    assert client.post("/api/irq/ingest", json={}).status_code == 401
+    assert client.get("/health").status_code == 200
+    assert client.get("/api/systems", auth=("irqlens", "test-api-token")).status_code == 200
+    assert client.get("/api/systems", headers={"Authorization": "Bearer test-agent-token"}).status_code == 401
+    assert client.get("/api/systems", headers={"Authorization": "Basic invalid!"}).status_code == 401
+    assert client.post("/api/irq/ingest", json={}, headers={"Authorization": "Bearer test-agent-token"}).status_code == 200
+    response = client.delete("/api/sessions/missing", auth=("irqlens", "test-api-token"), headers={"Origin": "https://untrusted.example"})
+    assert response.status_code == 403
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/ws"):
+            pass
+    with client.websocket_connect("/ws", headers={"Authorization": "Bearer test-api-token"}) as socket:
+        assert socket.receive_json()["type"] == "connection"
+    monkeypatch.setattr(settings, "api_token", "")
+    assert client.get("/api/systems", auth=("irqlens", "test-agent-token")).status_code == 200
 
 
 def test_health_endpoint():
@@ -15,6 +44,30 @@ def test_health_endpoint():
         data = r.json()
         assert "application" in data
         assert "collector_status" in data
+
+
+def test_browser_session_cookie_protects_websocket(monkeypatch):
+    monkeypatch.setattr(settings, "api_token", "test-browser-token")
+    client = TestClient(app)
+    response = client.get("/", auth=("irqlens", "test-browser-token"))
+    assert response.status_code == 200
+    cookie_header = response.headers["set-cookie"]
+    assert "HttpOnly" in cookie_header and "SameSite=strict" in cookie_header
+    assert "test-browser-token" not in cookie_header
+    assert client.get("/api/sessions").status_code == 200
+    with client.websocket_connect("/ws", headers={"Origin": "http://testserver"}) as socket:
+        assert socket.receive_json()["type"] == "connection"
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/ws", headers={"Origin": "https://untrusted.example"}):
+            pass
+    cookie = client.cookies.get("irqlens_session")
+    client.cookies.clear()
+    client.cookies.set("irqlens_session", cookie + "invalid")
+    assert client.get("/api/sessions").status_code == 401
+    client.cookies.clear()
+    client.cookies.set("irqlens_session", cookie)
+    monkeypatch.setattr("backend.app.main.time.time", lambda: int(cookie.split(".")[0]) + 1)
+    assert client.get("/api/sessions").status_code == 401
 
 
 def test_sessions_lifecycle():
@@ -38,6 +91,30 @@ def test_sessions_lifecycle():
 
         stop = client.post(f"/api/sessions/{sid}/stop", json={"reason": "manual"})
         assert stop.status_code == 200
+
+
+def test_capture_quality_endpoint(monkeypatch):
+    with TestClient(app) as client:
+        session_id = f"quality_api_{time.time_ns()}"
+        response = client.post("/api/sessions/start", json={
+            "session_name": session_id, "duration_seconds": 30, "categories": ["system"],
+        })
+        assert response.status_code == 200
+        endpoint = f"/api/sessions/{session_id}/quality"
+        assert client.post(endpoint).status_code == 409
+        assert client.post(f"/api/sessions/{session_id}/stop", json={"reason": "manual"}).status_code == 200
+        quality = client.post(endpoint)
+        assert quality.status_code == 200
+        assert quality.json()["status"] == "INCOMPLETE"
+        assert quality.json()["scope"] == "capture_quality"
+        assert quality.json()["checks"]
+        detail = client.get(f"/api/sessions/{session_id}").json()
+        assert detail["capture_quality"]["status"] == "INCOMPLETE"
+        files = client.get(f"/api/sessions/{session_id}/files").json()["files"]
+        assert any(item["name"] == "capture_quality.json" for item in files)
+        assert client.post("/api/sessions/missing-quality/quality").status_code == 404
+        monkeypatch.setattr(settings, "api_token", "test-quality-token")
+        assert client.post(endpoint).status_code == 401
 
 
 def test_session_duration_and_name_validation():
@@ -334,6 +411,36 @@ def test_session_report_generation():
 
         html_text = report_path.read_text(encoding="utf-8")
         assert "IRQLENS Session Report" in html_text
+
+        view = client.get(f"/api/sessions/{sid}/report/view")
+        assert view.status_code == 200
+        assert view.headers["content-type"].startswith("text/html")
+        assert view.headers["content-disposition"].startswith("inline")
+        assert "sandbox" in view.headers["content-security-policy"]
+        assert "IRQLENS Session Report" in view.text
+        download = client.get("/api/files", params={"path": str(report_path)})
+        assert download.headers["content-disposition"].startswith("attachment")
+        artifact = client.get(f"/api/sessions/{sid}/report/system/system.json")
+        assert artifact.status_code == 200
+        assert artifact.headers["content-disposition"].startswith("attachment")
+        assert artifact.json().get("hostname")
+        assert client.get(f"/api/sessions/{sid}/report/summary.json").status_code == 404
+        assert client.get(f"/api/sessions/{sid}/report/..%2F..%2Flatest%2Fsession.txt").status_code == 403
+
+
+def test_report_view_unavailable_and_path_safety(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from backend.app.main import STORE
+
+    client = TestClient(app)
+    monkeypatch.setattr(STORE, "get_session", lambda session_id: None)
+    assert client.get("/api/sessions/missing/report/view").status_code == 404
+    session = SimpleNamespace(report_status="pending", report_path="")
+    monkeypatch.setattr(STORE, "get_session", lambda session_id: session)
+    assert client.get("/api/sessions/capture/report/view").status_code == 409
+    session.report_status = "ready"
+    session.report_path = str(tmp_path / "outside.html")
+    assert client.get("/api/sessions/capture/report/view").status_code == 403
 
 
 def test_session_report_uses_timeseries_data():

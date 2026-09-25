@@ -65,6 +65,8 @@ const state = {
   expandedSessionId: "",
   deletingSessions: {},
   reportingSessions: {},
+  qualityRequests: {},
+  qualityErrors: {},
   sessionDetail: null,
   sessionFiles: [],
   selectedSessionId: "",
@@ -256,9 +258,7 @@ function renderTimeControls() {
     node.onclick = async () => {
       state.timeRange = node.dataset.range;
       storage.set("irqlens:timeRange", state.timeRange);
-      if (el["custom-range"]) {
-        el["custom-range"].classList.toggle("active", state.timeRange === "custom");
-      }
+      renderTimeControls();
       await refreshSelectedHistory();
       render();
     };
@@ -276,7 +276,7 @@ function timeBounds() {
       return { from: Math.min(fromMs, toMs) / 1000, to: Math.max(fromMs, toMs) / 1000 };
     }
   }
-  const selected = TIME_RANGES.find(item => item.key === state.timeRange) || TIME_RANGES[2];
+  const selected = TIME_RANGES.find(item => item.key === state.timeRange && item.seconds !== null) || TIME_RANGES[2];
   const to = nowSeconds();
   return { from: to - selected.seconds, to };
 }
@@ -428,7 +428,7 @@ function healthSummaryText() {
 }
 
 function emptyState(title, text, actionHtml = "") {
-  return `<div class="empty-state"><h3 class="empty-title">${title}</h3><div class="muted">${text}</div>${actionHtml}</div>`;
+  return `<div class="empty-state"><h3 class="empty-title">${escapeHtml(title)}</h3><div class="muted">${escapeHtml(text)}</div>${actionHtml}</div>`;
 }
 
 function selectedIfaceRow() {
@@ -482,7 +482,7 @@ function renderOverview() {
     <div class="kpi-card">
       <div class="kpi-label">${item.label}</div>
       <div class="kpi-value">${item.value}</div>
-      <div class="kpi-note">${item.note}</div>
+      <div class="kpi-note">${escapeHtml(item.note)}</div>
     </div>
   `).join("");
 
@@ -514,7 +514,7 @@ function renderOverview() {
   qs("overview-findings").innerHTML = findings.map(item => `
     <div class="finding ${item.tone}">
       <div class="finding-title">${item.title}</div>
-      <div class="finding-text">${item.text}</div>
+      <div class="finding-text">${escapeHtml(item.text)}</div>
       <div class="button-row" style="margin-top:10px;"><button class="action-button ghost" data-target-view="${item.target}">${item.action}</button></div>
     </div>
   `).join("");
@@ -788,6 +788,7 @@ function renderNetworkMeta() {
           <div class="key-value"><span>Speed</span><strong>${ifaceMeta.speed_mbps ?? "N/A"} Mbps</strong></div>
           <div class="key-value"><span>Driver</span><strong>${escapeHtml(ifaceMeta.driver || "N/A")}</strong></div>
           <div class="key-value"><span>IPv4</span><strong>${escapeHtml((ifaceMeta.ipv4 || []).join(", ") || "N/A")}</strong></div>
+          <div class="key-value"><span>IPv6</span><strong>${escapeHtml((ifaceMeta.ipv6 || []).join(", ") || "N/A")}</strong></div>
         </div>
       </div>
     `);
@@ -1247,6 +1248,8 @@ function renderDiagnostics() {
     { key: "network", title: "Network", text: "Capture current interface traffic." },
     { key: "system", title: "System information", text: "Capture system identity and baseline details." },
     { key: "interfaces", title: "Interface metadata", text: "Capture NIC metadata and addressing." },
+    { key: "routes", title: "Routes", text: "Capture routing tables and rules." },
+    { key: "sockets", title: "Sockets", text: "Capture socket summaries and listeners." },
     { key: "ethtool", title: "Network commands", text: "Capture ethtool output when supported." },
   ].map(item => `
     <label class="checkbox-card">
@@ -1433,6 +1436,8 @@ async function stopCapture(autoComplete = false) {
     state.diag.stopping = false;
     renderDiagnostics();
     bindDiagnosticsActions();
+    renderSessions();
+    renderContextBar();
   }
 }
 
@@ -1448,9 +1453,17 @@ function bindDiagnosticsActions() {
       }
       state.view = "diagnostics";
       storage.set("irqlens:view", state.view);
-      state.selectedSessionId = state.diag.completedSessionId;
-      await loadSessionDetail(state.selectedSessionId);
-      render();
+      try {
+        await loadSessions();
+        await loadSessionDetail(state.diag.completedSessionId);
+        state.expandedSessionId = state.selectedSessionId;
+        render();
+        qs("session-detail").scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch (_) {
+        state.diag.error = "Unable to load capture details. Please retry.";
+        renderDiagnostics();
+        bindDiagnosticsActions();
+      }
     };
   }
 }
@@ -1540,8 +1553,8 @@ function renderSessions() {
                 ${reportFailed ? `<div class="muted" style="color:#b23a3a;">${escapeHtml(session.report_error || "Report generation failed. Check the session report logs.")}</div>` : ""}
                 <div class="button-row compact-actions">
                   <button class="action-button ghost" data-view-session="${escapeHtml(session.session_id)}" ${deleting ? "disabled" : ""}>View</button>
-                  <button class="action-button primary" data-generate-report="${escapeHtml(session.session_id)}" ${reportPending ? "disabled" : ""}>${reportPending ? "Generating..." : "Generate Report"}</button>
-                  ${reportReady ? `<a class="action-button ghost" target="_blank" href="${api("/api/files?path=" + encodeURIComponent(session.report_path))}">View Report</a>` : ""}
+                  <button class="action-button primary" data-generate-report="${escapeHtml(session.session_id)}" ${reportPending || session.status === "running" ? "disabled" : ""}>${reportPending ? "Generating..." : "Generate Report"}</button>
+                  ${reportReady ? `<a class="action-button ghost" target="_blank" rel="noopener" href="${api("/api/sessions/" + encodeURIComponent(session.session_id) + "/report/view")}">View Report</a>` : ""}
                   ${reportReady ? `<a class="action-button ghost" href="${api("/api/files?path=" + encodeURIComponent(session.report_path))}" download>Download Report</a>` : ""}
                   <button class="action-button danger" data-delete-session="${escapeHtml(session.session_id)}" ${deleting ? "disabled" : ""}>${deleting ? "Deleting..." : "Delete"}</button>
                 </div>
@@ -1620,8 +1633,10 @@ function renderSessions() {
   const detail = state.sessionDetail;
   const duration = detail.end_time ? Math.max(0, Math.round(detail.end_time - detail.start_time)) : 0;
   const reportReady = detail.report_status === "ready" && detail.report_path;
-  const reportPending = detail.report_status === "pending";
+  const reportPending = detail.report_status === "pending" || !!state.reportingSessions[detail.session_id];
   const reportFailed = detail.report_status === "failed";
+  const quality = detail.capture_quality || { status: "NOT_EVALUATED", checks: [] };
+  const qualityBusy = !!state.qualityRequests[detail.session_id];
   detailRoot.innerHTML = `
     <div class="detail-panel">
       <div class="card-head">
@@ -1630,8 +1645,8 @@ function renderSessions() {
           <div class="card-subtitle">${escapeHtml(detail.hostname)}${detail.sut_id ? ` (${escapeHtml(detail.sut_id)})` : ""} • ${escapeHtml(detail.status)}</div>
         </div>
         <div class="button-row session-action-bar">
-          <button class="action-button primary" id="session-generate-report" ${reportPending ? "disabled" : ""}>${reportPending ? "Generating..." : "Generate Report"}</button>
-          ${reportReady ? `<a class="action-button ghost" target="_blank" href="${api("/api/files?path=" + encodeURIComponent(detail.report_path))}">View Report</a>` : ""}
+          <button class="action-button primary" id="session-generate-report" ${reportPending || detail.status === "running" ? "disabled" : ""}>${reportPending ? "Generating..." : "Generate Report"}</button>
+          ${reportReady ? `<a class="action-button ghost" target="_blank" rel="noopener" href="${api("/api/sessions/" + encodeURIComponent(detail.session_id) + "/report/view")}">View Report</a>` : ""}
           ${reportReady ? `<a class="action-button ghost" href="${api("/api/files?path=" + encodeURIComponent(detail.report_path))}" download>Download Report</a>` : ""}
           <a class="action-button ghost" href="${api("/api/sessions/" + encodeURIComponent(detail.session_id) + "/download")}">Download ZIP</a>
           <button class="action-button danger" id="session-delete">Delete Session</button>
@@ -1649,9 +1664,39 @@ function renderSessions() {
         ${reportFailed ? `<div class="item-text" style="margin-top:8px;color:#b23a3a;">${escapeHtml(detail.report_error || "Report generation failed. Check the session report logs.")}</div>` : ""}
       </div>
       <div class="detail-panel" style="margin-top:16px;">
-        <div class="item-title">Captured Data</div>
-        <div class="button-row" style="margin-top:10px;">${(detail.categories || []).map(cat => `<span class="tag good">✓ ${escapeHtml(cat)}</span>`).join("")}</div>
+        <div class="item-title">Selected Categories</div>
+        <div class="button-row" style="margin-top:10px;">${(detail.categories || []).map(cat => `<span class="tag">${escapeHtml(cat)}</span>`).join("")}</div>
       </div>
+      <section id="capture-quality" style="margin-top:16px;">
+        <div class="card-head">
+          <h3 class="card-title">Capture Quality</h3>
+          <button class="action-button ghost" id="session-check-quality" ${qualityBusy || detail.status === "running" ? "disabled" : ""}>${qualityBusy ? "Checking..." : "Check Evidence"}</button>
+        </div>
+        <div class="key-value"><span>Evidence completeness</span><strong class="tag ${quality.status === "COMPLETE" ? "good" : quality.status === "INCOMPLETE" ? "warn" : "info"}">${escapeHtml(quality.status === "NOT_EVALUATED" ? "Not evaluated" : quality.status)}</strong></div>
+        <div class="key-value"><span>Workload / silicon verdict</span><strong>NOT EVALUATED</strong></div>
+        ${quality.generated_at ? `<div class="key-value"><span>Checked</span><span>${fmtTs(quality.generated_at)}</span></div>` : ""}
+        ${state.qualityErrors[detail.session_id] ? `<div role="alert" class="item-text">${escapeHtml(state.qualityErrors[detail.session_id])}</div>` : ""}
+        ${(quality.checks || []).length ? `
+          <div class="table-wrap" style="margin-top:12px;">
+            <table class="table">
+              <thead><tr><th>Check</th><th>Status</th><th>Samples received / expected</th><th>Coverage</th><th>Largest gap</th><th>Findings</th></tr></thead>
+              <tbody>${quality.checks.map(check => `<tr>
+                <td>${escapeHtml(check.name)}</td><td>${escapeHtml(check.status)}</td>
+                <td>${check.unique_samples != null ? `${Number(check.unique_samples)} / ${check.expected_samples == null ? "Unknown" : Number(check.expected_samples)}` : "N/A"}</td>
+                <td>${check.coverage_percent == null ? "N/A" : `${Number(check.coverage_percent).toFixed(1)}%`}</td>
+                <td>${check.max_gap_seconds == null ? "N/A" : `${Number(check.max_gap_seconds).toFixed(2)}s`}</td>
+                <td>${escapeHtml((check.reasons || []).join(" "))}</td>
+              </tr>`).join("")}</tbody>
+            </table>
+          </div>
+        ` : ""}
+      </section>
+      ${(detail.remote_diagnostics || []).length ? `
+        <div class="detail-panel" style="margin-top:16px;">
+          <div class="item-title">Remote Commands</div>
+          ${(detail.remote_diagnostics || []).map(job => `<div class="key-value"><span class="mono">${escapeHtml(job.job_id)}</span><strong>${escapeHtml(job.status)}</strong></div>${job.error ? `<div class="item-text">${escapeHtml(job.error)}</div>` : ""}`).join("")}
+        </div>
+      ` : ""}
       <div class="detail-panel" style="margin-top:16px;">
         <div class="item-title">Session Files</div>
         <div class="file-list compact-file-list" style="margin-top:10px;">
@@ -1680,6 +1725,30 @@ function renderSessions() {
       await deleteSession(detail.session_id);
     };
   }
+  const qualityBtn = qs("session-check-quality");
+  if (qualityBtn) qualityBtn.onclick = () => checkCaptureEvidence(detail.session_id);
+}
+
+async function checkCaptureEvidence(sessionId) {
+  if (state.qualityRequests[sessionId]) return;
+  state.qualityRequests[sessionId] = true;
+  delete state.qualityErrors[sessionId];
+  renderSessions();
+  try {
+    const response = await fetch(api(`/api/sessions/${encodeURIComponent(sessionId)}/quality`), { method: "POST" });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(typeof payload.detail === "string" ? payload.detail : "Evidence check failed.");
+    }
+    if (state.sessionDetail?.session_id === sessionId) state.sessionDetail.capture_quality = payload;
+    const files = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}/files`);
+    if (state.selectedSessionId === sessionId) state.sessionFiles = files.files || [];
+  } catch (error) {
+    state.qualityErrors[sessionId] = error.message || "Unable to check evidence. Please retry.";
+  } finally {
+    delete state.qualityRequests[sessionId];
+    renderSessions();
+  }
 }
 
 function groupFilesByCategory(files) {
@@ -1705,10 +1774,8 @@ async function startSessionReport(sessionId) {
   try {
     const response = await fetch(api("/api/sessions/" + encodeURIComponent(sessionId) + "/report"), { method: "POST" });
     if (!response.ok) {
-      updateSessionReportState(sessionId, { report_status: "failed", report_error: "Report generation failed. Check the session report logs." });
-      if (state.selectedSessionId === sessionId) {
-        await loadSessionDetail(sessionId);
-      }
+      const error = await response.json().catch(() => ({}));
+      updateSessionReportState(sessionId, { report_status: "failed", report_error: typeof error.detail === "string" ? error.detail : `Report generation failed (${response.status}). Please retry.` });
       return;
     }
     updateSessionReportState(sessionId, { report_status: "pending", report_error: "", report_path: "" });
@@ -2238,6 +2305,7 @@ function wireWebSocket() {
       || payload.type === "session_stopped"
       || payload.type === "session_deleted"
       || payload.type === "session_report_ready"
+      || payload.type === "session_diagnostics_ready"
     ) {
       scheduleTelemetryRefresh(150);
     }

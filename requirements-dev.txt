@@ -1,0 +1,3 @@
+-r backend/requirements.txt
+playwright==1.55.0
+pytest-playwright==0.7.1

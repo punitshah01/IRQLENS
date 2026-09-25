@@ -12,8 +12,9 @@ git clone <repository-url>
 cd IRQLENS
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r backend/requirements.txt
-python -m pytest -q
+python -m pip install -r requirements-dev.txt
+python -m playwright install chromium
+python -m pytest tests -q --browser chromium
 ```
 
 ## Coding Standards
@@ -24,7 +25,9 @@ python -m pytest -q
 
 ## Testing Requirements
 Before opening a PR:
-- Run `python -m pytest -q`.
+- Run `python -m pytest tests -q --browser chromium` with development dependencies installed.
+- Tests automatically use temporary database/output directories and clear authentication defaults; security tests set their own credentials.
+- Backend-only installs explicitly skip browser tests. Linux CI installs Chromium with `--with-deps`; backend CI covers Linux/Windows and Python 3.9/3.13.
 - If touching telemetry/visualization behavior, add or update tests in `tests/`.
 - If touching docs, verify commands and paths are still correct.
 
@@ -49,7 +52,7 @@ Guidelines:
 - Add unit tests for parser and rate logic.
 
 ## Adding Visualizations
-Frontend charts are in `frontend/index.html`.
+Frontend layout is in `frontend/index.html`; rendering and chart behavior are in `frontend/app.js`. Read `docs/IRQLENS_UI_RULES.md` before UI changes.
 
 Guidelines:
 - Source chart data from existing APIs where possible.
@@ -66,3 +69,6 @@ When changing protocol:
 - Keep server backward-compatibility strategy explicit.
 - Update `docs/AGENT_PROTOCOL.md` with examples.
 - Add/update API tests (`tests/test_remote_agent.py`, `tests/test_api.py`).
+
+## Licensing
+The project remains unlicensed pending owner approval. Do not add a license or assume redistribution rights without an explicit owner decision. Dependencies retain their own licenses.

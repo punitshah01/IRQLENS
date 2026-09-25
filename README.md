@@ -166,7 +166,7 @@ Repository-grounded requirements:
 - Root may be required for complete IRQ/device metadata depending on kernel/security policy.
 
 ### Disk
-- SQLite database growth is bounded by row-retention trimming per SUT (`IRQLENS_METRIC_RETENTION`).
+- IRQ, SoftIRQ, network, interface, and system history is trimmed by row count per SUT (`IRQLENS_METRIC_RETENTION`). CPU utilization, topology, and heartbeat history is not yet trimmed.
 - Session artifacts are written under `IRQLENS_OUTPUT_DIR` (default `/root/irqlens`).
 - `IRQLENS_RETENTION_DAYS`, `IRQLENS_MAX_SESSIONS`, and `IRQLENS_MAX_STORAGE_MB` are configurable but not currently enforced by cleanup logic.
 
@@ -211,9 +211,9 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 3. Start IRQLENS server.
 4. On each Linux SUT, start IRQLENS agent.
 5. Set server URL and token on agent.
-6. Verify SUT appears as `ONLINE` in Systems view.
+6. Verify SUT appears as `ONLINE` in `GET /api/systems`.
 7. Open dashboard in browser: `http://<server>:8080`.
-8. Select SUT from host selector.
+8. Check the selected SUT hostname in the header. The UI currently restores a saved SUT or automatically chooses a remote SUT, falling back to the local system.
 9. Confirm live updates (`Connected` WebSocket status).
 10. Review IRQ, SoftIRQ, CPU, and Network visualizations.
 11. Start a diagnostics session and download artifacts.
@@ -263,77 +263,38 @@ Agent configuration options:
 - `--heartbeat-interval` (or `IRQLENS_AGENT_HEARTBEAT_INTERVAL`)
 
 Authentication:
-- Server-side setting `IRQLENS_AGENT_TOKEN` controls bearer-token validation.
-- Empty server token means agent auth is not enforced.
+- Agent and legacy-ingest endpoints use `IRQLENS_AGENT_TOKEN`, falling back to `IRQLENS_API_TOKEN` when only that token is set.
+- Dashboard, other APIs, downloads, and WebSocket use `IRQLENS_API_TOKEN`, falling back to `IRQLENS_AGENT_TOKEN`.
+- Both empty means authentication is disabled for trusted, isolated development only. See [Security](#security).
 
 Permissions and host requirement:
 - Agent is intended for Linux only.
 - Agent reads `/proc` and `/sys` directly on SUT.
 
 How to verify connection:
-- UI Systems page shows SUT status (`ONLINE`, `STALE`, `OFFLINE`).
+- The header shows the selected SUT status (`ONLINE`, `STALE`, `OFFLINE`).
 - API: `GET /api/systems`.
 - UI WebSocket status should show `Connected`.
 
 ## Dashboard Pages
-Implemented pages in `frontend/index.html`:
+The five primary views follow [IRQLENS UI Rules](docs/IRQLENS_UI_RULES.md):
 
 ### Overview
-- Purpose: High-level health and trends for selected SUT or fleet summary.
-- Shows: KPI cards, IRQ+network trend, CPU IRQ heatmap, top IRQ bar, interface heatmap, SoftIRQ distribution, correlation sankey, health meters, activity timeline.
-- Data sources: `/api/health`, `/api/summary/current`, `/api/systems/{sut_id}/visualization`, plus live refresh triggers from `/ws` events.
-
-### Systems
-- Purpose: List local and remote registered systems.
-- Shows: status, address, host info, CPU count, interface count, mode.
-- Data source: `/api/systems`.
-
-### IRQ Monitor
-- Purpose: Detailed IRQ table and IRQ-focused visualizations.
-- Shows: IRQ/sec, counts, affinity, NUMA, CPU distribution, source class.
-- Data sources: `/api/irq/current`, `/api/systems/{sut_id}/visualization`.
-
-### SoftIRQ
-- Purpose: SoftIRQ rates by class and trend.
-- Shows: class rates and time trend.
-- Data sources: `/api/softirq/current`, visualization payload softirq series.
+Current IRQ/SoftIRQ/network KPIs, IRQ and network trends, CPU/NUMA matrix, and findings for the selected SUT.
 
 ### CPU
-- Purpose: CPU-centric interrupt distribution and topology.
-- Shows: CPU grid heatmap, NUMA IRQ bar chart, CPU topology tree, CPU IRQ table.
-- Data sources: visualization payload + `/api/systems/{sut_id}/visualization/topology`.
+Topology-based CPU matrix with IRQ, SoftIRQ, and utilization metrics, per-CPU detail, and utilization history.
+
+### IRQ
+Ranked interrupt sources, IRQ-to-CPU heatmap, search/filter controls, and IRQ metadata table.
 
 ### Network
-- Purpose: Throughput and per-interface behavior.
-- Shows: totals, trend, ranking, error/drop trend, interface table.
-- Data sources: `/api/network/current`, visualization payload network series.
+Interface selection, throughput trends, packet errors/drops, related IRQs, and metadata including IPv4/IPv6 addresses.
 
-### Interfaces
-- Purpose: Interface metadata view.
-- Shows: state, MTU, MAC, speed, duplex, driver, IP lists.
-- Data source: `/api/interfaces`.
+### Collect Logs
+Named timed captures, category selection, recent capture history, remote-command job status, file downloads, ZIP archives, and HTML reports.
 
-### Diagnostics
-- Purpose: one-click snapshot collection.
-- Shows: category selectors, start/stop actions, generated file links.
-- Data sources: `/api/sessions/start`, `/api/sessions/{id}/stop`, `/api/files`.
-
-### Sessions
-- Purpose: historical session catalog and downloads.
-- Shows: session metadata, files, zip download.
-- Data sources: `/api/sessions`, `/api/sessions/{id}/files`, `/api/sessions/{id}/download`.
-
-### Logs
-- Purpose: UI event stream for connection/refresh/diagnostic actions.
-- Data source: browser-side event log from API/WebSocket actions.
-
-### Compare
-- Purpose: side-by-side two-SUT metric comparison.
-- Data source: `/api/visualization/compare`.
-
-### Settings
-- Purpose: display runtime interval/dependency status and tune frontend anomaly thresholds.
-- Data source: `/api/health`.
+There are no separate Systems, Sessions, Settings, Admin, Logs, or Compare pages. System listing and comparison APIs remain available. Interactive multi-SUT switching is currently not exposed in the UI; the header identifies the automatically selected or previously saved SUT.
 
 ## Visualizations
 ### IRQ heatmap
@@ -347,10 +308,9 @@ Implemented pages in `frontend/index.html`:
 - Y-axis: metric (`IRQ/s`, `SoftIRQ/s`)
 - Cell intensity: per-CPU metric rate
 
-### Network heatmap
-- Rows: interfaces
-- Metric selector: `rx_bps`, `tx_bps`, `rx_pps`, `tx_pps`, `errors_ps`, `drops_ps`
-- Cell intensity: selected metric value per interface
+### Network trends
+- RX/TX history for all interfaces or the selected interface.
+- Current packet rates, errors, drops, and interface metadata accompany the trend.
 
 ### IRQ/CPU correlation
 - Relationship from observed per-IRQ `cpu_rates` and top CPU contributors.
@@ -369,7 +329,7 @@ Implemented pages in `frontend/index.html`:
 ### Health and anomalies
 - IRQ balance: entropy/CV-based score from backend `irq_balance_score`.
 - Spike detection: baseline-window ratio from backend `detect_spikes`.
-- UI threshold sliders filter displayed timeline events.
+- Overview findings summarize IRQ concentration and packet drops; no global threshold sliders are exposed.
 
 ## Linux Data Sources
 | Source | Used For | Required |
@@ -391,7 +351,7 @@ Implemented pages in `frontend/index.html`:
 | `/sys/devices/system/node/` | NUMA node count | Optional enrichment |
 
 Command usage:
-- `ip`: addresses, links, routes, neighbors
+- `ip`: addresses, links, routes, neighbors. Interface addressing uses `ip -j address show`, cached for 30 seconds; missing/unsupported `ip` leaves address lists empty without stopping telemetry.
 - `ss`: socket summaries/listeners
 - `ethtool`: NIC details and counters
 - `sysctl`: network/system kernel settings snapshot
@@ -445,9 +405,11 @@ SQLite backend (`backend/app/store.py`) stores:
 - `agent_heartbeats`: liveness records
 - `sessions`: diagnostic session metadata
 - `session_files`: exported file catalog
+- `diagnostic_jobs`: persisted remote-command requests and lease/status metadata
 
 Retention behavior:
-- Metric tables are trimmed per SUT to `IRQLENS_METRIC_RETENTION` rows.
+- IRQ, SoftIRQ, network, interface, and system tables are trimmed per SUT to `IRQLENS_METRIC_RETENTION` rows; CPU utilization, topology, and heartbeats currently are not.
+- Row retention is not a duration guarantee. Large IRQ/interface counts can truncate history before a capture ends.
 - Day/session/storage-limit settings are present in config but currently not actively enforced by cleanup jobs.
 
 ## Diagnostic Collection
@@ -458,7 +420,7 @@ Start Session
       |
 Collect selected categories from store/local collectors
       |
-Run allowlisted diagnostic commands (local mode only)
+Run local allowlisted commands or enqueue a remote agent job
       |
 Save raw command output .txt files
       |
@@ -477,57 +439,72 @@ Output formats:
 - TXT
 - ZIP (session archive endpoint)
 
+Remote commands require agent version 1.1.0 or newer. A separate agent worker polls every two seconds and executes only fixed diagnostic categories on the selected SUT. Jobs survive server restarts; an unacknowledged running job can be retried after its five-minute lease expires. No arbitrary command text is accepted from the server.
+
+Capture details show `queued`, `running`, `completed`, or `failed` remote jobs. A timed capture can finish while its commands are still pending; wait for terminal job states before taking a final ZIP/report. Downloads are point-in-time snapshots. Late results invalidate the report status so it can be regenerated. Missing tools, permissions, timeouts, and output limits are preserved in command results, not reported as successful collection.
+
+Command batches have a 120-second budget checked between commands, at most 500 executed commands, and an approximately 4 MiB output budget. Individual streams are capped at 65,536 characters with a truncation warning. Remote per-command timeouts are capped at 30 seconds. IRQ/network time-series capture retains its existing database-retention limitations.
+
 ## Output Directory Structure
+### Capture Quality
+Each completed capture includes `capture_quality.json`, a file inventory with sizes and SHA-256 hashes, and `metadata/capture_config.json` recording the requested duration and sampling interval at capture start. New captures export time-series files only for selected categories. Metadata is refreshed when reports and ZIPs are generated.
+
+In Collect Logs, open a capture and use **Check Evidence** to recalculate its quality. The authenticated endpoint is `POST /api/sessions/{session_id}/quality`; session detail includes the saved result as `capture_quality`. Checks do not regenerate telemetry or move the capture's start/end timestamps. Running captures cannot be manually rechecked.
+
+- `COMPLETE`: all required evidence checks passed. This is not a workload or silicon PASS.
+- `INCOMPLETE`: missing/unusable snapshots, unknown sampling configuration, missing files, failed/pending commands, or insufficient stream coverage.
+- `CAPTURING`: capture is still running.
+- `NOT_EVALUATED`: no saved quality result, typically for an older capture.
+
+Required streams need at least two unique samples, at least 90% of the expected sample count, and no gap larger than 2.5 sampling intervals, including both capture boundaries. Invalid, duplicate, out-of-window, and out-of-order timestamps fail completeness. Per-interface coverage is checked for network captures. CPU frequency is optional. Old captures without recorded sampling configuration remain incomplete; no interval is guessed.
+
+The manifest describes current evidence and provides hashes for downstream integrity checks; rechecking recomputes those hashes, not a comparison against a trusted original. Clock synchronization, counter correctness, IRQ mapping, performance thresholds, and silicon qualification are not evaluated. Existing retention limits can still remove samples; the quality check identifies the resulting missing coverage rather than recovering it.
+
+### Files
 Default root: `/root/irqlens`
 
 ```text
 /root/irqlens/
-├── latest/
-│   └── session.txt
-└── sessions/
-    ├── <session-id>/
-    │   ├── metadata.json
-    │   ├── irq/
-    │   │   ├── irqtop.json
-    │   │   ├── irqtop.csv
-    │   │   ├── irqtop.xml
-    │   │   └── irqtop.txt
-    │   ├── softirq/
-    │   │   ├── softirq.json
-    │   │   ├── softirq.csv
-    │   │   ├── softirq.xml
-    │   │   └── softirq.txt
-    │   ├── network/
-    │   │   ├── network.json
-    │   │   ├── network.csv
-    │   │   ├── network.xml
-    │   │   └── network.txt
-    │   ├── system/
-    │   │   ├── system.json
-    │   │   ├── system.csv
-    │   │   ├── system.xml
-    │   │   └── system.txt
-    │   └── commands/
-    │       ├── commands.json
-    │       ├── commands.csv
-    │       ├── commands.xml
-    │       ├── commands.txt
-    │       └── <command-name>.txt
-    └── <session-id>.zip
++-- latest/session.txt
++-- <session-name>/
+|   +-- metadata/metadata.json
+|   +-- summary.json
+|   +-- irq/irqtop.{json,csv,xml,txt}
+|   +-- softirq/softirq.{json,csv,xml,txt}
+|   +-- network/network.{json,csv,xml,txt}
+|   +-- interfaces/interfaces.{json,csv,xml,txt}
+|   +-- system/system.{json,csv,xml,txt}
+|   +-- commands/commands.{json,csv,xml,txt}  (local)
+|   +-- commands/command_001.txt             (local raw output)
+|   +-- commands/<job-id>/                   (remote)
+|   |   +-- commands.{json,csv,xml,txt}
+|   |   +-- command_001.txt
+|   |   +-- status.json
+|   +-- timeseries/                         (JSON history)
+|   +-- report.html                         (generated on request)
++-- <session-name>.zip                      (generated on download)
 ```
 
 Local legacy collector (`collector/irq_collector.py`) also writes artifacts to `IRQLENS_ARTIFACT_DIR` (default `./artifacts`).
 
 ## Security
 Current implemented controls:
-- Optional agent bearer-token auth (`IRQLENS_AGENT_TOKEN`)
+- Optional dashboard/API token (`IRQLENS_API_TOKEN`) protects pages, telemetry reads, management mutations, session exports, API docs, and WebSocket access.
+- Optional agent bearer token (`IRQLENS_AGENT_TOKEN`) protects every `/api/agent/*` endpoint and legacy `/api/irq/ingest`.
+- Each token falls back to the other when only one is configured. Configure distinct values to prevent agent credentials from accessing dashboard/management APIs.
+- Browser sign-in uses HTTP Basic: username `irqlens`, password equal to the dashboard/API token. Scripts use `Authorization: Bearer <token>`. Credentials are not stored in browser local storage or URL query strings.
+- Browser sign-in issues a signed 12-hour HttpOnly, SameSite=Strict session cookie for subsequent requests and WebSockets; it is Secure over HTTPS and contains no API token. Token rotation invalidates existing cookies. Native HTTP Basic credential caching remains browser-controlled.
+- Cross-origin mutations and WebSocket connections require the same origin or an explicit `IRQLENS_CORS_ORIGINS` entry; `*` does not grant this permission.
+- `/health` is an intentionally unauthenticated, minimal liveness endpoint.
 - Optional ingest IP allowlist (`IRQLENS_ALLOWED_INGEST_IPS`) for legacy ingest API
 - Command execution is restricted to allowlisted diagnostics in `DiagnosticCommandCollector`
 - No arbitrary shell execution API exists
 - File download endpoint validates requested paths are under configured output root
 
 Important operational warning:
-- Do not expose IRQLENS management/API endpoints to untrusted networks without additional controls (TLS termination, network ACLs, authentication gateway, and access restrictions).
+- Authentication is disabled when both tokens are empty. Set tokens before exposing the server beyond an isolated trusted environment. Restart the server after changing token configuration.
+- HTTP Basic and bearer tokens require HTTPS/WSS outside loopback. Use TLS termination, network ACLs, and access restrictions. This is shared-token authentication, not per-user roles or per-SUT credentials.
+- A reverse proxy must forward Authorization and WebSocket upgrades and preserve the external scheme/host with trusted proxy configuration.
 
 TLS/WSS note:
 - Native HTTPS/WSS termination is not configured in this repository.
@@ -563,6 +540,7 @@ Major API groups:
 - Visualization: `/api/systems/{sut_id}/visualization*`, `/api/visualization/compare`
 - Sessions/files: `/api/sessions*`, `/api/files`
 - Agent protocol: `/api/agent/register`, `/api/agent/heartbeat`, `/api/agent/telemetry`
+- Remote commands: `/api/agent/diagnostics/poll`, `/api/agent/diagnostics/{job_id}/results`
 - Legacy ingest compatibility: `/api/irq/ingest`, `/api/irq/latest`, `/api/host/latest`, `/api/summary/current`
 
 WebSocket:
@@ -570,7 +548,7 @@ WebSocket:
 - Agent does not use WebSocket in current implementation; it uses HTTP POST telemetry + heartbeat.
 
 ## Configuration Reference
-From `backend/.env.example` and `backend/app/config.py`:
+From `backend/app/config.py`. Set environment variables in the launching shell; a `.env` file is not automatically loaded. The root launcher currently binds `0.0.0.0:8080`; use explicit uvicorn `--host`/`--port` flags for another bind address.
 
 | Setting | Description | Default | Required |
 |---|---|---|---|
@@ -590,33 +568,29 @@ From `backend/.env.example` and `backend/app/config.py`:
 | `IRQLENS_ALLOWED_INGEST_IPS` | Legacy ingest allowed client IPs | empty | No |
 | `IRQLENS_DISABLE_INGEST_ALLOWLIST` | Disable ingest IP allowlist | `0` | No |
 | `IRQLENS_AGENT_TOKEN` | Agent bearer token | empty | No (recommended in remote mode) |
+| `IRQLENS_API_TOKEN` | Dashboard/API credential; falls back to agent token | empty | Recommended outside isolated development |
 | `IRQLENS_AGENT_HEARTBEAT_INTERVAL` | Suggested heartbeat interval returned to agent | `5` | No |
 | `IRQLENS_AGENT_STALE_THRESHOLD` | Stale/offline threshold basis | `15` | No |
 
 ## Testing
-Repository test command:
+Backend tests (storage is automatically isolated in a temporary directory):
 
 ```bash
-python -m pytest -q
+python -m pip install -r backend/requirements.txt
+python -m pytest tests -q
 ```
 
-Current implemented coverage areas:
-- IRQ parser/rate behavior
-- SoftIRQ parser/rate behavior
-- Network interface discovery and parsing
-- Export engine JSON/CSV/XML/TXT output
-- API health and session endpoints
-- Remote agent register/heartbeat/telemetry routing
-- Visualization math (`irq_balance_score`, `detect_spikes`)
-- Visualization API payload and topology endpoint
+Full suite including Chromium:
 
-Current status from local run in this workspace:
-- `10 passed`, plus FastAPI deprecation warnings (`on_event`).
+```bash
+python -m pip install -r requirements-dev.txt
+python -m playwright install chromium
+python -m pytest tests -q --browser chromium
+```
 
-Not currently present as dedicated automated suites:
-- Standalone frontend unit tests
-- Dedicated WebSocket test module
-- End-to-end browser automation suite
+On Linux CI, use `python -m playwright install --with-deps chromium`. Browser tests explicitly skip when their optional dependencies are absent. CI runs backend tests on Linux/Windows with Python 3.9 and 3.13 and browser tests on Linux.
+
+Coverage includes API and WebSocket authentication, origin rejection, legacy-client headers, remote command routing/retry/export, interface address discovery, timeout decoding, session export formats, frontend navigation, untrusted telemetry escaping, and remote failure display. Real Linux driver permissions and live multi-SUT/network-failure scenarios still require SUT validation.
 
 ## Validation
 Validation tool:
@@ -721,4 +695,4 @@ IRQLENS/
 See `CONTRIBUTING.md`.
 
 ## License
-LICENSE file not present; project license should be selected by the repository owner.
+No project license has been granted. The repository remains unlicensed pending owner approval; do not assume permission to redistribute or sublicense it. A LICENSE file will be added only after the owner selects and approves its terms. Third-party dependencies retain their respective licenses.

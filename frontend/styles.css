@@ -539,6 +539,23 @@ button {
   row-gap: 8px;
 }
 
+#section-diagnostics .card {
+  min-width: 0;
+}
+
+#session-detail .card-head {
+  flex-wrap: wrap;
+}
+
+#session-detail .card-head > *,
+#session-detail .key-value > *,
+#session-detail .item-title,
+#section-diagnostics .compact-kv > strong {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .session-action-bar .action-button {
   min-height: 34px;
   padding: 0 11px;

@@ -363,7 +363,7 @@ def parse_netdev(nic: str = "") -> Dict[str, int]:
     return total
 
 
-def post_json(url: str, payload: dict, timeout: float = 3.0) -> None:
+def post_json(url: str, payload: dict, timeout: float = 3.0, token: str = "") -> None:
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -371,11 +371,14 @@ def post_json(url: str, payload: dict, timeout: float = 3.0) -> None:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
+    token = token or os.getenv("IRQLENS_AGENT_TOKEN", "") or os.getenv("IRQLENS_API_TOKEN", "")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
     with _OPENER.open(req, timeout=timeout):
         return
 
 
-def collect_loop(server: str, sut_ip: str, interval: float, topn: int, nic: str = "") -> None:
+def collect_loop(server: str, sut_ip: str, interval: float, topn: int, nic: str = "", token: str = "") -> None:
     prev: Dict[str, List[int]] = {}
     prev_soft: Dict[str, int] = {}
     prev_net: Dict[str, int] = {}
@@ -581,6 +584,7 @@ def collect_loop(server: str, sut_ip: str, interval: float, topn: int, nic: str 
             post_json(
                 f"{server.rstrip('/')}/api/irq/ingest",
                 {"samples": out, "host_samples": host_samples},
+                token=token,
             )
 
         prev = {k: v[1] for k, v in rows.items()}
@@ -600,6 +604,7 @@ def main() -> int:
     ap.add_argument("--interval", type=float, default=1.0)
     ap.add_argument("--topn", type=int, default=64)
     ap.add_argument("--nic", default="", help="Optional NIC name (e.g. ens3np0). Empty means auto/all interfaces.")
+    ap.add_argument("--token", default="", help="Agent token; defaults to IRQLENS_AGENT_TOKEN or IRQLENS_API_TOKEN")
     args = ap.parse_args()
 
     collect_loop(
@@ -608,6 +613,7 @@ def main() -> int:
         interval=args.interval,
         topn=args.topn,
         nic=args.nic,
+        token=args.token,
     )
     return 0
 

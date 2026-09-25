@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import os
-import socket
+import json
+import subprocess
+import time
+from ipaddress import ip_interface
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -11,6 +14,35 @@ from .base import read_first_line, read_text_safe
 class NetworkCollector:
     def __init__(self) -> None:
         self._prev: Dict[str, Dict[str, int]] = {}
+        self._addresses: Dict[str, Dict[str, List[str]]] = {}
+        self._addresses_updated: float = -30.0
+
+    def _refresh_addresses(self) -> None:
+        now = time.monotonic()
+        if now - self._addresses_updated < 30.0:
+            return
+        self._addresses_updated = now
+        addresses: Dict[str, Dict[str, List[str]]] = {}
+        try:
+            result = subprocess.run(["ip", "-j", "address", "show"], capture_output=True, text=True, check=True, timeout=2.0)
+            payload = json.loads(result.stdout)
+            if not isinstance(payload, list):
+                payload = []
+            for interface in payload:
+                if not isinstance(interface, dict) or not interface.get("ifname"):
+                    continue
+                entry = {"ipv4": [], "ipv6": []}
+                for address in interface.get("addr_info") or []:
+                    try:
+                        parsed = ip_interface(f"{address['local']}/{address['prefixlen']}")
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    key = "ipv4" if parsed.version == 4 else "ipv6"
+                    entry[key].append(str(parsed))
+                addresses[interface["ifname"]] = entry
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+        self._addresses = addresses
 
     def discover_interfaces(self) -> List[str]:
         interfaces = set()
@@ -68,15 +100,7 @@ class NetworkCollector:
             except OSError:
                 driver = "N/A"
 
-        ipv4: List[str] = []
-        ipv6: List[str] = []
-        try:
-            for item in socket.getaddrinfo(None, 0):
-                _ = item
-        except Exception:
-            pass
-
-        # IP addresses are populated by command collector using `ip -br addr` when available.
+        addresses = self._addresses.get(interface, {})
         return {
             "timestamp": ts,
             "name": interface,
@@ -87,11 +111,12 @@ class NetworkCollector:
             "duplex": duplex,
             "driver": driver,
             "firmware": "N/A",
-            "ipv4": ipv4,
-            "ipv6": ipv6,
+            "ipv4": addresses.get("ipv4", []),
+            "ipv6": addresses.get("ipv6", []),
         }
 
     def collect(self, elapsed: float, ts: float) -> Tuple[List[Dict[str, object]], Dict[str, float], List[Dict[str, object]]]:
+        self._refresh_addresses()
         cur = self._netdev()
         interfaces = sorted(cur.keys())
         samples: List[Dict[str, object]] = []

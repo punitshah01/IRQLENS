@@ -62,6 +62,7 @@ class Settings:
     agent_token: str
     heartbeat_interval: int
     stale_threshold: int
+    api_token: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -116,6 +117,7 @@ class Settings:
             agent_token=agent_token,
             heartbeat_interval=max(1, heartbeat_interval),
             stale_threshold=max(3, stale_threshold),
+            api_token=_env("IRQLENS_API_TOKEN", ""),
         )
 
     def ensure_dirs(self) -> None:

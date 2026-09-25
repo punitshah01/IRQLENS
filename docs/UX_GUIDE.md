@@ -10,16 +10,13 @@ IRQLENS is organized around one question sequence:
 
 ## Navigation
 Primary navigation:
-- Systems
 - Overview
+- CPU
 - IRQ
 - Network
-- CPU
-- Diagnostics
-- Sessions
+- Collect Logs
 
-Secondary navigation:
-- Settings
+Capture history is part of Collect Logs. There are no Admin, Settings, Management, or standalone Systems/Sessions views. See `IRQLENS_UI_RULES.md` for the UI contract.
 
 ## Core Context
 The top header always shows:
@@ -31,16 +28,8 @@ The top header always shows:
 
 This context is preserved while moving between views.
 
-## Systems
-Use Systems to choose a target SUT.
-
-`Open Dashboard` will:
-- select the SUT
-- load its current telemetry
-- load its history
-- load its topology
-- preserve the selected SUT across navigation
-- open Overview automatically
+## SUT Context
+The current UI restores a saved SUT or automatically selects a remote SUT, falling back to local. The header displays its hostname and status. Interactive SUT switching is currently not exposed; system inventory is available through the API.
 
 ## Overview
 Overview is intentionally limited to:
@@ -88,26 +77,30 @@ Use CPU to answer:
 The CPU page contains:
 - topology-based CPU / NUMA map
 - CPU detail panel
-- hottest CPU ranking
-- NUMA summary
+- IRQ, SoftIRQ, or CPU utilization metric selection
+- CPU utilization history
 
 Click any CPU cell to inspect it.
 
-## Diagnostics
+## Collect Logs
 A diagnostic session is a user-created capture period for a selected SUT.
 
 Diagnostics provides a workflow:
+- name the capture
 - choose duration
 - choose data categories
 - start capture
 - watch capture progress
 - view completed session
 - download ZIP evidence
+- inspect remote-command job status and failures
 
 This is separate from live monitoring.
 
-## Sessions
-Sessions shows completed diagnostic captures with:
+Remote agents execute fixed command categories on the selected SUT. Queued or running command jobs may continue after the timed capture ends. Wait for those jobs to finish before downloading final evidence; missing tools and permissions appear as failed jobs with preserved output.
+
+## Capture History
+Recent Captures within Collect Logs shows diagnostic captures with:
 - SUT
 - start/end
 - duration
@@ -115,7 +108,7 @@ Sessions shows completed diagnostic captures with:
 - generated files
 - download actions
 
-Use Sessions to review evidence after capture.
+Select a capture to review files and remote-command status, generate an HTML report, or download a ZIP. Snapshot categories export JSON, CSV, XML, and TXT; time-series files are JSON.
 
 ## Time Range
 Time range is controlled from the page header, not inside charts.
@@ -139,5 +132,7 @@ Examples:
 - `No diagnostic sessions`
 
 ## Known Functional Limits
-- CPU load is not currently exposed in the frontend telemetry model, so the CPU metric selector supports IRQ and SoftIRQ now and leaves CPU Load unavailable.
+- CPU utilization depends on receiving two usable CPU-counter samples.
+- Interface addresses require `ip` with JSON support on the monitored host and refresh at most every 30 seconds.
+- Agents older than 1.1.0 do not execute queued command jobs.
 - Some advanced developer/debug surfaces from the prior UI were intentionally removed from the main workflow.

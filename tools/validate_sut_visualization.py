@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import sys
 import time
@@ -170,10 +171,14 @@ def _numa_nodes() -> List[str]:
     return sorted([p.name for p in root.iterdir() if p.name.startswith("node")])
 
 
-def _http_get_json(base: str, path: str) -> Optional[dict]:
+def _http_get_json(base: str, path: str, token: str = "") -> Optional[dict]:
     url = base.rstrip("/") + path
+    token = token or os.getenv("IRQLENS_API_TOKEN", "") or os.getenv("IRQLENS_AGENT_TOKEN", "")
+    request = urllib.request.Request(url)
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(url, timeout=10) as r:
+        with urllib.request.urlopen(request, timeout=10) as r:
             payload = r.read().decode("utf-8")
         return json.loads(payload)
     except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError):
@@ -189,6 +194,7 @@ def run_validation(
     sut_id: str,
     interval: float,
     mode: str,
+    token: str = "",
 ) -> Tuple[List[CheckResult], List[CheckResult], List[CheckResult]]:
     passes: List[CheckResult] = []
     warns: List[CheckResult] = []
@@ -295,10 +301,10 @@ def run_validation(
         warns.append(CheckResult("WARN", f"Skipping local Linux source checks in mode={mode} on host_os={platform.system()}"))
 
     if server_url and sut_id:
-        viz = _http_get_json(server_url, f"/api/systems/{urllib.parse.quote(sut_id)}/visualization?window_seconds=60&top_n=20")
-        topo_api = _http_get_json(server_url, f"/api/systems/{urllib.parse.quote(sut_id)}/visualization/topology")
-        net_api = _http_get_json(server_url, f"/api/network/current?sut_id={urllib.parse.quote(sut_id)}")
-        irq_api = _http_get_json(server_url, f"/api/irq/current?sut_id={urllib.parse.quote(sut_id)}&limit=1024")
+        viz = _http_get_json(server_url, f"/api/systems/{urllib.parse.quote(sut_id)}/visualization?window_seconds=60&top_n=20", token)
+        topo_api = _http_get_json(server_url, f"/api/systems/{urllib.parse.quote(sut_id)}/visualization/topology", token)
+        net_api = _http_get_json(server_url, f"/api/network/current?sut_id={urllib.parse.quote(sut_id)}", token)
+        irq_api = _http_get_json(server_url, f"/api/irq/current?sut_id={urllib.parse.quote(sut_id)}&limit=1024", token)
 
         if viz is None:
             fails.append(CheckResult("FAIL", "IRQLENS visualization endpoint unreachable or invalid JSON"))
@@ -366,6 +372,7 @@ def main() -> int:
     ap.add_argument("--server-url", default="", help="Optional IRQLENS server URL, e.g. http://127.0.0.1:8080")
     ap.add_argument("--sut-id", default="", help="SUT ID used by IRQLENS (required with --server-url)")
     ap.add_argument("--sample-interval", type=float, default=1.0, help="Seconds between counter samples")
+    ap.add_argument("--token", default="", help="Dashboard/API token; defaults to IRQLENS_API_TOKEN or IRQLENS_AGENT_TOKEN")
     ap.add_argument(
         "--mode",
         choices=["auto", "local", "api-only"],
@@ -374,7 +381,7 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    passes, warns, fails = run_validation(args.server_url, args.sut_id, args.sample_interval, args.mode)
+    passes, warns, fails = run_validation(args.server_url, args.sut_id, args.sample_interval, args.mode, args.token)
 
     for row in passes:
         print(_status_line(row.status, row.message))

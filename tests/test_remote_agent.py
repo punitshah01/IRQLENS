@@ -7,6 +7,46 @@ from fastapi.testclient import TestClient
 from backend.app.main import app
 
 
+def test_legacy_and_validation_clients_send_tokens(monkeypatch):
+    from unittest.mock import MagicMock
+    from collector.irq_collector import post_json
+    from tools.validate_sut_visualization import _http_get_json
+
+    monkeypatch.setenv("IRQLENS_AGENT_TOKEN", "test-agent")
+    monkeypatch.setenv("IRQLENS_API_TOKEN", "test-api")
+    opener = MagicMock()
+    monkeypatch.setattr("collector.irq_collector._OPENER", opener)
+    post_json("http://localhost/api/irq/ingest", {})
+    assert opener.open.call_args.args[0].get_header("Authorization") == "Bearer test-agent"
+    fetch = MagicMock()
+    fetch.return_value.__enter__.return_value.read.return_value = b'{}'
+    monkeypatch.setattr("tools.validate_sut_visualization.urllib.request.urlopen", fetch)
+    assert _http_get_json("http://localhost", "/api/health") == {}
+    assert fetch.call_args.args[0].get_header("Authorization") == "Bearer test-api"
+
+
+def test_diagnostic_jobs_persist_and_reclaim(tmp_path, monkeypatch):
+    from backend.app.store import SqliteStore
+
+    store = SqliteStore(str(tmp_path / "jobs.db"), 100)
+    clock = [1000.0]
+    monkeypatch.setattr("backend.app.store.time.time", lambda: clock[0])
+    job_id = store.enqueue_diagnostics("capture", "sut-a", ["routes"])
+    store = SqliteStore(str(tmp_path / "jobs.db"), 100)
+    assert store.claim_diagnostics("sut-b") is None
+    first = store.claim_diagnostics("sut-a")
+    assert first["job_id"] == job_id
+    assert first["categories"] == ["routes"]
+    assert store.claim_diagnostics("sut-a") is None
+    clock[0] += 301
+    retry = store.claim_diagnostics("sut-a")
+    assert retry["lease_token"] != first["lease_token"]
+    assert not store.finish_diagnostics(job_id, first["lease_token"])
+    assert store.finish_diagnostics(job_id, retry["lease_token"])
+    assert store.diagnostic_jobs("capture")[0]["status"] == "completed"
+    assert store.claim_diagnostics("sut-a") is None
+
+
 def _sample_registration(sut_id: str = "sut-01") -> dict:
     now = time.time()
     return {
@@ -149,6 +189,8 @@ def test_agent_register_heartbeat_and_routing():
         assert systems.status_code == 200
         ids = [s["id"] for s in systems.json().get("systems", [])]
         assert "sut-01" in ids
+        registered = next(system for system in systems.json()["systems"] if system["id"] == "sut-01")
+        assert registered["sampling_interval_seconds"] == 1.0
 
         irq = client.get("/api/systems/sut-01/irq")
         assert irq.status_code == 200
@@ -159,3 +201,44 @@ def test_agent_register_heartbeat_and_routing():
         net = client.get("/api/network/current?sut_id=sut-01")
         assert net.status_code == 200
         assert net.json().get("host") == "sut-01"
+
+
+def test_remote_diagnostics_round_trip(monkeypatch):
+    from backend.app.main import DIAGNOSTICS, settings
+    from backend.app.models import DiagnosticCommandResult
+    from agent.main import _collect_diagnostic_job
+
+    monkeypatch.setattr(settings, "agent_token", "test-agent")
+    monkeypatch.setattr(settings, "api_token", "test-dashboard")
+    agent_headers = {"Authorization": "Bearer test-agent"}
+    dashboard_headers = {"Authorization": "Bearer test-dashboard"}
+    session_id = f"remote_commands_{time.time_ns()}"
+    client = TestClient(app)
+    assert client.post("/api/agent/register", json=_sample_registration("diagnostic-sut"), headers=agent_headers).status_code == 200
+    DIAGNOSTICS.start(session_id, ["routes"], "sut-host", "Linux", "test", "diagnostic-sut")
+    DIAGNOSTICS.collect_snapshot(session_id, ["routes"], "diagnostic-sut")
+    assert client.post("/api/agent/diagnostics/poll", json={"sut_id": "diagnostic-sut"}).status_code == 401
+    job = client.post("/api/agent/diagnostics/poll", json={"sut_id": "diagnostic-sut"}, headers=agent_headers).json()["job"]
+    seen = {}
+
+    def collect_commands(self, interfaces, categories):
+        seen["categories"] = categories
+        return [DiagnosticCommandResult(timestamp=time.time(), category="routes", command="ip route", exit_code=0,
+            stdout="default via 192.0.2.1", stderr="", success=True, duration_ms=1)]
+
+    monkeypatch.setattr("agent.main.DiagnosticCommandCollector.collect", collect_commands)
+    payload = _collect_diagnostic_job("diagnostic-sut", {**job, "categories": ["routes", "arbitrary-shell"]})
+    assert seen["categories"] == ["routes"]
+    endpoint = f"/api/agent/diagnostics/{job['job_id']}/results"
+    wrong_sut = client.post(endpoint, json={**payload, "sut_id": "another-sut"}, headers=agent_headers)
+    assert wrong_sut.status_code == 404
+    assert client.post(endpoint, json=payload, headers=agent_headers).status_code == 200
+    assert client.post(endpoint, json=payload, headers=agent_headers).status_code == 200
+    detail = client.get(f"/api/sessions/{session_id}", headers=dashboard_headers).json()
+    assert detail["remote_diagnostics"][0]["status"] == "completed"
+    files = client.get(f"/api/sessions/{session_id}/files", headers=dashboard_headers).json()["files"]
+    assert {item["format"] for item in files} == {"json", "csv", "xml", "txt"}
+    raw = next(item for item in files if item["name"] == "command_001.txt")
+    download = client.get("/api/files", params={"path": raw["path"]}, headers=dashboard_headers)
+    assert "default via 192.0.2.1" in download.text
+    assert client.delete(f"/api/sessions/{session_id}", headers=dashboard_headers).status_code == 200

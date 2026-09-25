@@ -50,6 +50,37 @@ class DiagnosticCommandCollector:
 
         return cmds
 
+    def collect(self, interfaces: List[str], categories: List[str]) -> List[DiagnosticCommandResult]:
+        commands = self.available_commands(interfaces, categories)
+        results: List[DiagnosticCommandResult] = []
+        deadline = time.monotonic() + 120.0
+        output_size = 0
+        for category in categories:
+            if not commands.get(category):
+                results.append(DiagnosticCommandResult(
+                    timestamp=time.time(), category=category, command=category,
+                    exit_code=127, stdout="", stderr="Required diagnostic tool or interface is unavailable.",
+                    success=False, duration_ms=0.0,
+                ))
+            for command in commands.get(category, []):
+                if time.monotonic() >= deadline or len(results) >= 500 or output_size >= 4 * 1024 * 1024:
+                    results.append(DiagnosticCommandResult(
+                        timestamp=time.time(), category=category, command="capture limit",
+                        exit_code=124, stdout="", stderr="Diagnostic capture time, command, or output limit reached.",
+                        success=False, duration_ms=0.0,
+                    ))
+                    return results
+                interface = command[-1] if command[0] == "ethtool" else ""
+                result = self.run(category, command, interface)
+                if len(result.stdout) > 65536 or len(result.stderr) > 65536:
+                    result = result.model_copy(update={
+                        "stdout": result.stdout[:65536], "stderr": result.stderr[:65536] + "\nOutput truncated at 65536 characters per stream.",
+                        "success": False,
+                    })
+                output_size += len(result.stdout.encode()) + len(result.stderr.encode())
+                results.append(result)
+        return results
+
     def run(self, category: str, command: List[str], interface: str = "") -> DiagnosticCommandResult:
         started = time.time()
         try:
@@ -73,14 +104,16 @@ class DiagnosticCommandCollector:
                 duration_ms=(time.time() - started) * 1000.0,
             )
         except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+            stderr = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
             return DiagnosticCommandResult(
                 timestamp=time.time(),
                 category=category,
                 command=" ".join(command),
                 interface=interface,
                 exit_code=124,
-                stdout=exc.stdout or "",
-                stderr=(exc.stderr or "") + "\ncommand timed out",
+                stdout=stdout,
+                stderr=stderr + "\ncommand timed out",
                 success=False,
                 duration_ms=(time.time() - started) * 1000.0,
             )

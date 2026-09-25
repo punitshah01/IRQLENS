@@ -3,6 +3,11 @@ from __future__ import annotations
 import logging
 import os
 import time
+import base64
+import binascii
+import secrets
+import hashlib
+import hmac
 from pathlib import Path
 import asyncio
 from typing import Any, Dict, List, Optional
@@ -10,8 +15,9 @@ from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.requests import HTTPConnection
 
 from .config import settings
 from .models import (
@@ -19,6 +25,8 @@ from .models import (
     AgentHeartbeatRequest,
     AgentRegistrationRequest,
     AgentTelemetryPayload,
+    AgentDiagnosticPollRequest,
+    AgentDiagnosticResultsRequest,
     IRQSample,
     NetworkSample,
     SessionStartRequest,
@@ -84,12 +92,71 @@ def _resolve_sut(sut_id: Optional[str], host: Optional[str]) -> str:
 
 
 def _agent_authorized(request: Request) -> bool:
-    token = settings.agent_token
+    token = settings.agent_token or settings.api_token
     if not token:
         return True
     auth = request.headers.get("Authorization", "")
     expected = f"Bearer {token}"
-    return auth.strip() == expected
+    return secrets.compare_digest(auth.strip().encode(), expected.encode())
+
+
+def _api_authorized(connection: HTTPConnection) -> bool:
+    token = settings.api_token or settings.agent_token
+    if not token:
+        return True
+    auth = connection.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return secrets.compare_digest(auth[7:].encode(), token.encode())
+    if auth.startswith("Basic "):
+        try:
+            credentials = base64.b64decode(auth[6:], validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError, binascii.Error):
+            return False
+        username, separator, password = credentials.partition(":")
+        return bool(separator and username == "irqlens" and secrets.compare_digest(password.encode(), token.encode()))
+    if not auth:
+        cookie = connection.cookies.get("irqlens_session", "")
+        parts = cookie.split(".")
+        if len(parts) == 3:
+            expires, nonce, signature = parts
+            if expires.isdigit() and len(expires) <= 12 and int(expires) > time.time() and len(nonce) == 32:
+                expected = hmac.new(token.encode(), f"{expires}.{nonce}".encode(), hashlib.sha256).hexdigest()
+                return secrets.compare_digest(signature.encode(), expected.encode())
+    return False
+
+
+def _origin_allowed(connection: HTTPConnection) -> bool:
+    origin = connection.headers.get("Origin")
+    if not origin:
+        return True
+    same_origin = str(connection.base_url).rstrip("/").replace("ws://", "http://").replace("wss://", "https://")
+    return origin == same_origin or origin in [value for value in settings.cors_origins if value != "*"]
+
+
+@app.middleware("http")
+async def access_control(request: Request, call_next):
+    if request.url.path == "/health":
+        return await call_next(request)
+    agent_request = request.url.path.startswith("/api/agent/") or request.url.path == "/api/irq/ingest"
+    authorized = _agent_authorized(request) if agent_request else _api_authorized(request)
+    if not authorized:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "authentication required"},
+            headers={"WWW-Authenticate": 'Basic realm="IRQLENS", charset="UTF-8"'},
+        )
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and not _origin_allowed(request):
+        return JSONResponse(status_code=403, content={"detail": "origin not allowed"})
+    response = await call_next(request)
+    token = settings.api_token or settings.agent_token
+    if token and request.url.path == "/" and request.headers.get("Authorization", "").startswith("Basic "):
+        session = f"{int(time.time()) + 43200}.{secrets.token_hex(16)}"
+        signature = hmac.new(token.encode(), session.encode(), hashlib.sha256).hexdigest()
+        response.set_cookie(
+            "irqlens_session", f"{session}.{signature}", max_age=43200,
+            httponly=True, secure=request.url.scheme == "https", samesite="strict",
+        )
+    return response
 
 
 def _refresh_system_statuses() -> None:
@@ -162,6 +229,7 @@ def _register_local_system_snapshot() -> None:
             mode="local",
         )
     existing = STORE.get_system("local")
+    local = local.model_copy(update={"sampling_interval_seconds": settings.collection_interval})
     if existing:
         local = local.model_copy(update={"created_at": existing.created_at})
     STORE.upsert_system(local)
@@ -865,7 +933,24 @@ def session_detail(session_id: str) -> dict:
     row = STORE.get_session(session_id)
     if not row:
         raise HTTPException(status_code=404, detail="session not found")
-    return row.model_dump()
+    return {
+        **row.model_dump(),
+        "remote_diagnostics": STORE.diagnostic_jobs(session_id),
+        "capture_quality": DIAGNOSTICS.capture_quality(session_id),
+    }
+
+
+@app.post("/api/sessions/{session_id}/quality")
+async def check_capture_quality(session_id: str) -> dict:
+    session = STORE.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    if session.status == "running":
+        raise HTTPException(status_code=409, detail="capture is still running")
+    quality = await asyncio.to_thread(DIAGNOSTICS.refresh_capture_quality, session_id)
+    if quality is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return quality
 
 
 @app.delete("/api/sessions/{session_id}")
@@ -942,9 +1027,43 @@ def session_report_status(session_id: str) -> dict:
         "session_id": session_id,
         "status": status,
         "report_path": report_path if has_report else "",
-        "report_url": f"/api/files?path={quote(report_path, safe='')}" if has_report else "",
+        "report_url": f"/api/sessions/{quote(session_id, safe='')}/report/view" if has_report else "",
         "error": session.report_error or "",
     }
+
+
+@app.get("/api/sessions/{session_id}/report/view")
+def session_report_view(session_id: str) -> FileResponse:
+    session = STORE.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    if session.report_status != "ready" or not session.report_path:
+        raise HTTPException(status_code=409, detail="report is not ready")
+    target = _safe_path_in_output(session.report_path)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="report file not found")
+    return FileResponse(
+        str(target), media_type="text/html", filename=target.name,
+        content_disposition_type="inline",
+        headers={
+            "Content-Security-Policy": "sandbox allow-same-origin allow-downloads; default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.get("/api/sessions/{session_id}/report/{artifact_path:path}")
+def session_report_artifact(session_id: str, artifact_path: str) -> FileResponse:
+    session = STORE.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    base = _safe_path_in_output(session.output_dir)
+    target = _safe_path_in_output(str(base / artifact_path))
+    if base not in target.parents:
+        raise HTTPException(status_code=403, detail="file outside session directory")
+    if not target.is_file() or not any(Path(item.path).resolve() == target for item in STORE.session_files(session_id)):
+        raise HTTPException(status_code=404, detail="session file not found")
+    return FileResponse(str(target), filename=target.name)
 
 
 @app.post("/api/sessions/start")
@@ -964,6 +1083,7 @@ async def start_session(req: SessionStartRequest) -> dict:
             os_distribution=os_distribution,
             kernel=kernel,
             sut_id=target,
+            duration_seconds=req.duration_seconds,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -1020,6 +1140,7 @@ async def agent_register(payload: AgentRegistrationRequest, request: Request) ->
         interfaces=payload.interfaces,
         ip_addresses=payload.ip_addresses,
         mode="remote",
+        sampling_interval_seconds=payload.telemetry_interval,
     )
     STORE.upsert_system(row)
     if payload.cpu_topology:
@@ -1034,6 +1155,40 @@ async def agent_heartbeat(payload: AgentHeartbeatRequest, request: Request) -> d
         raise HTTPException(status_code=401, detail="unauthorized agent")
     STORE.add_heartbeat(payload.sut_id, payload.timestamp, payload.uptime_seconds, payload.agent_version)
     await WS.broadcast({"type": "agent_heartbeat", "sut_id": payload.sut_id, "timestamp": payload.timestamp})
+    return {"ok": True}
+
+
+@app.post("/api/agent/diagnostics/poll")
+def agent_diagnostics_poll(payload: AgentDiagnosticPollRequest) -> dict:
+    if not STORE.get_system(payload.sut_id):
+        raise HTTPException(status_code=404, detail="system not registered")
+    job = STORE.claim_diagnostics(payload.sut_id)
+    if job:
+        job["command_timeout_seconds"] = min(30.0, settings.command_timeout_seconds)
+    return {"job": job}
+
+
+@app.post("/api/agent/diagnostics/{job_id}/results")
+async def agent_diagnostics_results(job_id: str, payload: AgentDiagnosticResultsRequest) -> dict:
+    job = STORE.diagnostic_job(job_id)
+    if not job or job["sut_id"] != payload.sut_id:
+        raise HTTPException(status_code=404, detail="diagnostic job not found")
+    if not secrets.compare_digest(job["lease_token"], payload.lease_token):
+        raise HTTPException(status_code=409, detail="diagnostic job lease expired")
+    if job["status"] in {"completed", "failed"}:
+        return {"ok": True}
+    if job["status"] != "running":
+        raise HTTPException(status_code=409, detail="diagnostic job not claimed")
+    error = payload.error
+    if not payload.results and not error:
+        error = "Agent returned no diagnostic results."
+    if any(not result.success for result in payload.results) and not error:
+        error = "One or more commands failed or were unavailable; see command output."
+    try:
+        await asyncio.to_thread(DIAGNOSTICS.record_remote_diagnostics, job, payload.results, error)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    await WS.broadcast({"type": "session_diagnostics_ready", "session_id": job["session_id"], "timestamp": time.time()})
     return {"ok": True}
 
 
@@ -1139,6 +1294,9 @@ def file_download(path: str) -> FileResponse:
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket) -> None:
+    if not _api_authorized(ws) or not _origin_allowed(ws):
+        await ws.close(code=1008)
+        return
     await WS.connect(ws)
     try:
         while True:

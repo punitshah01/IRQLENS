@@ -47,7 +47,7 @@ curl -s http://127.0.0.1:8080/api/systems
 ## 4. Logs
 - Server logs: stdout/stderr of uvicorn process
 - Agent logs: stdout/stderr of `agent/main.py`
-- UI logs page: browser-side event stream (not persisted on server)
+- Browser failures: inspect browser developer tools; there is no dedicated Logs page.
 
 ## 5. Database
 - SQLite DB path: `IRQLENS_DB_PATH`
@@ -56,7 +56,8 @@ curl -s http://127.0.0.1:8080/api/systems
 
 Operational notes:
 - Back up DB before schema/manual edits.
-- Row count trimming is applied to metric tables per SUT.
+- Row count trimming applies to IRQ, SoftIRQ, network, interface, and system samples per SUT, not yet CPU utilization/topology or heartbeats.
+- Remote diagnostic jobs are persisted in SQLite and reclaimable after a five-minute lease expires.
 
 ## 6. Session Files and Downloads
 - Output root: `IRQLENS_OUTPUT_DIR` (default `/root/irqlens`)
@@ -76,7 +77,7 @@ Suggested process:
 Minimum backup set:
 - SQLite DB file (`IRQLENS_DB_PATH`)
 - Output root (`IRQLENS_OUTPUT_DIR`)
-- `.env` configuration file in backend directory if used
+- Environment/service configuration used to launch the server; `.env` files are not loaded automatically
 
 ## 9. Cleanup and Retention
 Current implemented behavior:
@@ -95,3 +96,19 @@ Manual cleanup options:
 - SUT stale/offline: check agent process, token, and network route
 - No data: verify `/proc` and `/sys` readability on SUT
 - Validation: run `tools/validate_sut_visualization.py` with appropriate mode
+
+## 11. Access Control
+- Set `IRQLENS_API_TOKEN` for dashboard/API access and `IRQLENS_AGENT_TOKEN` for agents/legacy ingestion. If only one is set, it protects both surfaces.
+- Browser sign-in: username `irqlens`, password equal to the API token (or agent token when it is the only one configured).
+- Browser WebSockets use a signed 12-hour HttpOnly session cookie issued at sign-in. It is SameSite=Strict, Secure over HTTPS, and invalidated by token rotation.
+- Use separate token values to keep agent credentials out of management APIs. Tokens are shared credentials, not user accounts or per-SUT identities.
+- The validator accepts `--token` or `IRQLENS_API_TOKEN`; the legacy collector accepts `--token` or `IRQLENS_AGENT_TOKEN`.
+- Use TLS outside loopback and preserve Authorization and WebSocket upgrades through any proxy. Only `/health` remains public when authentication is configured.
+- Both tokens empty disables authentication. Restart after changing credentials.
+
+## 12. Remote Commands
+- Upgrade agents to 1.1.0 for command capture. Jobs use outbound polling; no inbound agent port is required.
+- Capture details show queued/running/completed/failed jobs. Keep the agent running until jobs finish.
+- A failed job retains command stdout/stderr and exit codes. Check missing tools, privileges, timeout, and output-limit messages.
+- ZIP/report downloads include data currently available. Generate/download again after late results arrive; report status is cleared when results change.
+- Automatic session/artifact cleanup and recovery of capture auto-stop timers after server restart remain unimplemented.

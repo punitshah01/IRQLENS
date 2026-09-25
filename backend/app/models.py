@@ -149,7 +149,7 @@ class CollectionSession(BaseModel):
 class ExportFile(BaseModel):
     name: str
     category: str
-    format: Literal["json", "csv", "txt", "zip", "html"]
+    format: Literal["json", "csv", "xml", "txt", "zip", "html"]
     path: str
     size_bytes: int
 
@@ -236,6 +236,7 @@ class SystemRecord(BaseModel):
     interfaces: List[str] = Field(default_factory=list)
     ip_addresses: List[str] = Field(default_factory=list)
     mode: Literal["local", "remote"] = "remote"
+    sampling_interval_seconds: Optional[float] = None
 
 
 class CPUTopologyEntry(BaseModel):
@@ -265,7 +266,7 @@ class AgentRegistrationRequest(BaseModel):
     port: int = 8443
     token_hint: str = ""
     agent_version: str
-    telemetry_interval: float = 1.0
+    telemetry_interval: float = Field(default=1.0, gt=0, le=3600, allow_inf_nan=False)
     hostname: str
     os_distribution: str
     os_version: str
@@ -286,6 +287,17 @@ class AgentHeartbeatRequest(BaseModel):
     agent_version: str
     uptime_seconds: float
     timestamp: float
+
+
+class AgentDiagnosticPollRequest(BaseModel):
+    sut_id: str
+
+
+class AgentDiagnosticResultsRequest(BaseModel):
+    sut_id: str
+    lease_token: str = Field(min_length=32, max_length=32, pattern=r"^[a-f0-9]+$")
+    results: List[DiagnosticCommandResult] = Field(default_factory=list, max_length=512)
+    error: str = Field(default="", max_length=2000)
 
 
 class AgentTelemetryPayload(BaseModel):

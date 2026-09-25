@@ -8,6 +8,7 @@ import subprocess
 import socket
 import sys
 import time
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -17,9 +18,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.app.collectors import IRQCollector, NetworkCollector, SoftIRQCollector, SystemCollector  # noqa: E402
+from backend.app.collectors import DiagnosticCommandCollector, IRQCollector, NetworkCollector, SoftIRQCollector, SystemCollector  # noqa: E402
 
-AGENT_VERSION = "1.0.0"
+AGENT_VERSION = "1.1.0"
 
 
 def _post_json(url: str, payload: dict, token: str) -> dict:
@@ -36,6 +37,44 @@ def _post_json(url: str, payload: dict, token: str) -> dict:
 
 def _hostname() -> str:
     return socket.gethostname() or "unknown"
+
+
+def _collect_diagnostic_job(sut_id: str, job: dict) -> dict:
+    payload = {"sut_id": sut_id, "lease_token": job["lease_token"], "results": [], "error": ""}
+    try:
+        allowed = {"network", "interfaces", "routes", "sockets", "ethtool"}
+        categories = sorted(set(job.get("categories", [])) & allowed)
+        if not categories:
+            payload["error"] = "No supported diagnostic categories requested."
+            return payload
+        collector = DiagnosticCommandCollector(max(1.0, min(30.0, float(job.get("command_timeout_seconds", 8.0)))))
+        interfaces = NetworkCollector().discover_interfaces()
+        payload["results"] = [result.model_dump() for result in collector.collect(interfaces, categories)]
+    except Exception as exc:
+        payload["error"] = str(exc)[:2000]
+    return payload
+
+
+def _diagnostic_worker(server: str, sut_id: str, token: str) -> None:
+    pending = None
+    while True:
+        try:
+            if pending is None:
+                response = _post_json(server.rstrip("/") + "/api/agent/diagnostics/poll", {"sut_id": sut_id}, token)
+                job = response.get("job")
+                if job:
+                    pending = (job["job_id"], _collect_diagnostic_job(sut_id, job))
+            if pending is not None:
+                job_id, payload = pending
+                _post_json(server.rstrip("/") + f"/api/agent/diagnostics/{job_id}/results", payload, token)
+                pending = None
+        except urllib.error.HTTPError as exc:
+            if exc.code in {404, 409}:
+                pending = None
+            print(f"[irqlens-agent] diagnostics HTTP error: {exc.code}")
+        except Exception as exc:
+            print(f"[irqlens-agent] diagnostics retry: {exc}")
+        time.sleep(2.0)
 
 
 def _ip_addrs() -> List[str]:
@@ -247,6 +286,8 @@ def run_agent(server: str, sut_id: str, name: str, token: str, telemetry_interva
         except Exception as exc:
             print(f"[irqlens-agent] register retry: {exc}")
             time.sleep(2)
+
+    threading.Thread(target=_diagnostic_worker, args=(server, sut_id, token), name="irqlens-diagnostics", daemon=True).start()
 
     while True:
         cycle_start = time.monotonic()

@@ -5,6 +5,7 @@ import sqlite3
 import time
 from threading import Lock
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from .config import settings
 from .models import CPUTopologyEntry, CollectionSession, ExportFile, InterfaceInfo, IRQSample, NetworkSample, SoftIRQSample, SystemInfo, SystemRecord
@@ -222,6 +223,7 @@ class SqliteStore:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_systems_status ON systems(status, updated_at)")
+            self._ensure_column(conn, "systems", "sampling_interval_seconds", "REAL")
 
             conn.execute(
                 """
@@ -235,6 +237,75 @@ class SqliteStore:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_heartbeats_sut_ts ON agent_heartbeats(sut_id, timestamp)")
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS diagnostic_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    sut_id TEXT NOT NULL,
+                    categories_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    created_at REAL NOT NULL,
+                    claimed_at REAL NOT NULL DEFAULT 0,
+                    lease_token TEXT NOT NULL DEFAULT '',
+                    error TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_diagnostic_jobs_sut ON diagnostic_jobs(sut_id, status, created_at)")
+
+    def enqueue_diagnostics(self, session_id: str, sut_id: str, categories: List[str]) -> str:
+        job_id = uuid4().hex
+        with self._lock, self._conn() as conn:
+            conn.execute(
+                "INSERT INTO diagnostic_jobs(job_id, session_id, sut_id, categories_json, created_at) VALUES(?, ?, ?, ?, ?)",
+                (job_id, session_id, sut_id, json.dumps(categories), time.time()),
+            )
+        return job_id
+
+    def claim_diagnostics(self, sut_id: str) -> Optional[Dict[str, Any]]:
+        now = time.time()
+        with self._lock, self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT * FROM diagnostic_jobs WHERE sut_id = ?
+                AND (status = 'queued' OR (status = 'running' AND claimed_at < ?))
+                ORDER BY created_at LIMIT 1
+                """,
+                (sut_id, now - 300.0),
+            ).fetchone()
+            if row is None:
+                return None
+            job = dict(row)
+            job["lease_token"] = uuid4().hex
+            conn.execute(
+                "UPDATE diagnostic_jobs SET status = 'running', claimed_at = ?, lease_token = ? WHERE job_id = ?",
+                (now, job["lease_token"], job["job_id"]),
+            )
+            return {"job_id": job["job_id"], "session_id": job["session_id"], "lease_token": job["lease_token"], "categories": json.loads(job["categories_json"])}
+
+    def diagnostic_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM diagnostic_jobs WHERE job_id = ?", (job_id,)).fetchone()
+        return dict(row) if row else None
+
+    def diagnostic_jobs(self, session_id: str) -> List[Dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT job_id, status, error, created_at FROM diagnostic_jobs WHERE session_id = ? ORDER BY created_at",
+                (session_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def finish_diagnostics(self, job_id: str, lease_token: str, error: str = "") -> bool:
+        with self._lock, self._conn() as conn:
+            changed = conn.execute(
+                "UPDATE diagnostic_jobs SET status = ?, error = ? WHERE job_id = ? AND lease_token = ? AND status = 'running'",
+                ("failed" if error else "completed", error, job_id, lease_token),
+            ).rowcount
+        return changed == 1
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
         rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -1118,6 +1189,7 @@ class SqliteStore:
             with self._conn() as conn:
                 deleted = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,)).rowcount
                 conn.execute("DELETE FROM session_files WHERE session_id = ?", (session_id,))
+                conn.execute("DELETE FROM diagnostic_jobs WHERE session_id = ?", (session_id,))
         return deleted > 0
 
     def summary_current(self) -> List[Dict[str, Any]]:
@@ -1194,8 +1266,8 @@ class SqliteStore:
                         id, name, hostname, address, port, os_distribution, os_version, kernel,
                         architecture, agent_version, status, last_seen, created_at, updated_at,
                         cpu_count, cpu_model, memory_total_kb, numa_nodes, interfaces_json,
-                        ip_addresses_json, mode
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ip_addresses_json, mode, sampling_interval_seconds
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         name=excluded.name,
                         hostname=excluded.hostname,
@@ -1215,7 +1287,8 @@ class SqliteStore:
                         numa_nodes=excluded.numa_nodes,
                         interfaces_json=excluded.interfaces_json,
                         ip_addresses_json=excluded.ip_addresses_json,
-                        mode=excluded.mode
+                        mode=excluded.mode,
+                        sampling_interval_seconds=excluded.sampling_interval_seconds
                     """,
                     (
                         system.id,
@@ -1239,6 +1312,7 @@ class SqliteStore:
                         json.dumps(system.interfaces, separators=(",", ":")),
                         json.dumps(system.ip_addresses, separators=(",", ":")),
                         system.mode,
+                        system.sampling_interval_seconds,
                     ),
                 )
 
@@ -1270,6 +1344,7 @@ class SqliteStore:
                     interfaces=json.loads(row["interfaces_json"] or "[]"),
                     ip_addresses=json.loads(row["ip_addresses_json"] or "[]"),
                     mode=row["mode"] or "remote",
+                    sampling_interval_seconds=row["sampling_interval_seconds"],
                 )
             )
         return out
@@ -1301,6 +1376,7 @@ class SqliteStore:
             interfaces=json.loads(row["interfaces_json"] or "[]"),
             ip_addresses=json.loads(row["ip_addresses_json"] or "[]"),
             mode=row["mode"] or "remote",
+            sampling_interval_seconds=row["sampling_interval_seconds"],
         )
 
     def delete_system(self, sut_id: str) -> None:
