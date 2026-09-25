@@ -233,6 +233,15 @@ button {
   font-weight: 600;
 }
 
+.action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  text-align: center;
+  box-sizing: border-box;
+}
+
 .action-button.primary {
   background: var(--blue);
   color: white;

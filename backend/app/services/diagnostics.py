@@ -491,8 +491,10 @@ class DiagnosticSessionService:
             x = left + frac * plot_w
             tick_ts = x_min + frac * (x_max - x_min)
             tick_label = time.strftime("%H:%M:%S", time.localtime(tick_ts))
+            # Anchor edge ticks inward so labels never clip past the SVG viewBox.
+            anchor = "start" if i == 0 else "end" if i == 4 else "middle"
             grid_lines.append(f"<line x1=\"{x:.1f}\" y1=\"{top}\" x2=\"{x:.1f}\" y2=\"{top + plot_h}\" stroke=\"#f4f7fb\" stroke-width=\"1\" />")
-            grid_lines.append(f"<text x=\"{x - 22:.1f}\" y=\"{height - 8}\" font-size=\"10\" fill=\"#6b778c\">{tick_label}</text>")
+            grid_lines.append(f"<text x=\"{x:.1f}\" y=\"{height - 8}\" font-size=\"10\" fill=\"#6b778c\" text-anchor=\"{anchor}\">{tick_label}</text>")
 
         return (
             f"<svg class=\"chart-svg\" viewBox=\"0 0 {width} {height}\" role=\"img\" aria-label=\"time series\">"
