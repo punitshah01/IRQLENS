@@ -599,7 +599,7 @@ def collect_loop(server: str, sut_ip: str, interval: float, topn: int, nic: str 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="IRQLENS collector")
-    ap.add_argument("--server", required=True, help="Dashboard backend URL, e.g. http://10.0.0.1:8080")
+    ap.add_argument("--server", required=True, help="Dashboard backend URL, e.g. http://10.0.0.1:10000")
     ap.add_argument("--sut-ip", required=True, help="SUT identifier/IP")
     ap.add_argument("--interval", type=float, default=1.0)
     ap.add_argument("--topn", type=int, default=64)

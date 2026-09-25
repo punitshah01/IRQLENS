@@ -369,7 +369,7 @@ def run_validation(
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Validate Linux SUT telemetry sources for IRQLENS visualizations")
-    ap.add_argument("--server-url", default="", help="Optional IRQLENS server URL, e.g. http://127.0.0.1:8080")
+    ap.add_argument("--server-url", default="", help="Optional IRQLENS server URL, e.g. http://127.0.0.1:10000")
     ap.add_argument("--sut-id", default="", help="SUT ID used by IRQLENS (required with --server-url)")
     ap.add_argument("--sample-interval", type=float, default=1.0, help="Seconds between counter samples")
     ap.add_argument("--token", default="", help="Dashboard/API token; defaults to IRQLENS_API_TOKEN or IRQLENS_AGENT_TOKEN")

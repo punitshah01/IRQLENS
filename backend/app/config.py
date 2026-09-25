@@ -67,7 +67,7 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         bind_host = _env("IRQLENS_HOST", "0.0.0.0")
-        bind_port = _env_int("IRQLENS_PORT", 8080)
+        bind_port = _env_int("IRQLENS_PORT", 10000)
         db_path = Path(_env("IRQLENS_DB_PATH", str(Path(__file__).resolve().parents[1] / "data" / "irqlens.db"))).resolve()
         output_dir = Path(_env("IRQLENS_OUTPUT_DIR", "/root/irqlens")).resolve()
         log_level = _env("IRQLENS_LOG_LEVEL", "INFO")

@@ -157,9 +157,9 @@ Repository-grounded requirements:
 - Core telemetry continues if optional tools are missing.
 
 ### Ports
-- Default server bind: `0.0.0.0:8080`.
+- Default server bind: `0.0.0.0:10000`.
 - Browser connects to server over HTTP and WebSocket on the same port.
-- Agent sends HTTP POSTs to server on server port (default 8080).
+- Agent sends HTTP POSTs to server on server port (default 10000).
 
 ### Permissions
 - Non-root works for core telemetry in many environments.
@@ -192,7 +192,7 @@ cd IRQLENS/backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8080
+uvicorn app.main:app --host 0.0.0.0 --port 10000
 ```
 
 ### Windows backend setup
@@ -202,7 +202,7 @@ cd IRQLENS\backend
 python -m venv .venv
 . .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8080
+uvicorn app.main:app --host 0.0.0.0 --port 10000
 ```
 
 ## Quick Start
@@ -212,7 +212,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 4. On each Linux SUT, start IRQLENS agent.
 5. Set server URL and token on agent.
 6. Verify SUT appears as `ONLINE` in `GET /api/systems`.
-7. Open dashboard in browser: `http://<server>:8080`.
+7. Open dashboard in browser: `http://<server>:10000`.
 8. Check the selected SUT hostname in the header. The UI currently restores a saved SUT or automatically chooses a remote SUT, falling back to the local system.
 9. Confirm live updates (`Connected` WebSocket status).
 10. Review IRQ, SoftIRQ, CPU, and Network visualizations.
@@ -230,11 +230,11 @@ or
 
 ```bash
 # from backend/
-uvicorn app.main:app --host 0.0.0.0 --port 8080
+uvicorn app.main:app --host 0.0.0.0 --port 10000
 ```
 
 Runtime details:
-- Host and port: `IRQLENS_HOST` / `IRQLENS_PORT` (default `0.0.0.0:8080`)
+- Host and port: `IRQLENS_HOST` / `IRQLENS_PORT` (default `0.0.0.0:10000`)
 - DB location: `IRQLENS_DB_PATH` (default from `run_irqlens.py`: `backend/data/irqlens.db`)
 - Session/log output root: `IRQLENS_OUTPUT_DIR` (default `/root/irqlens`)
 - Log level: `IRQLENS_LOG_LEVEL` (default `INFO`)
@@ -246,7 +246,7 @@ Agent implementation path: `agent/main.py`
 # on Linux SUT
 cd IRQLENS
 python3 agent/main.py \
-  --server http://<irqlens-server>:8080 \
+  --server http://<irqlens-server>:10000 \
   --sut-id <sut-id> \
   --name <display-name> \
   --token <agent-token> \
@@ -522,8 +522,8 @@ Connection direction:
 Default flow:
 
 ```text
-Browser  --->  IRQLENS Server :8080 (HTTP + WS)
-Agent    --->  IRQLENS Server :8080 (HTTP POST)
+Browser  --->  IRQLENS Server :10000 (HTTP + WS)
+Agent    --->  IRQLENS Server :10000 (HTTP POST)
 ```
 
 The `port` field in system registration defaults to `8443` as metadata for SUT records; current telemetry transport still targets server URL/port configured by agent (`--server`).
@@ -548,12 +548,12 @@ WebSocket:
 - Agent does not use WebSocket in current implementation; it uses HTTP POST telemetry + heartbeat.
 
 ## Configuration Reference
-From `backend/app/config.py`. Set environment variables in the launching shell; a `.env` file is not automatically loaded. The root launcher currently binds `0.0.0.0:8080`; use explicit uvicorn `--host`/`--port` flags for another bind address.
+From `backend/app/config.py`. Set environment variables in the launching shell; a `.env` file is not automatically loaded. The root launcher currently binds `0.0.0.0:10000`; use explicit uvicorn `--host`/`--port` flags for another bind address.
 
 | Setting | Description | Default | Required |
 |---|---|---|---|
 | `IRQLENS_HOST` | Server bind address | `0.0.0.0` | No |
-| `IRQLENS_PORT` | Server bind port | `8080` | No |
+| `IRQLENS_PORT` | Server bind port | `10000` | No |
 | `IRQLENS_DB_PATH` | SQLite DB file path | `./data/irqlens.db` | No |
 | `IRQLENS_OUTPUT_DIR` | Session/output root | `/root/irqlens` | No |
 | `IRQLENS_COLLECTION_INTERVAL` | Local sampler interval (seconds) | `1.0` | No |
@@ -600,7 +600,7 @@ Example (Linux full local source + API checks):
 
 ```bash
 python3 tools/validate_sut_visualization.py \
-  --server-url http://<server>:8080 \
+  --server-url http://<server>:10000 \
   --sut-id <sut-id> \
   --mode local \
   --sample-interval 1.0
@@ -610,7 +610,7 @@ Example (non-Linux host validating API payload path only):
 
 ```bash
 python tools/validate_sut_visualization.py \
-  --server-url http://127.0.0.1:8080 \
+  --server-url http://127.0.0.1:10000 \
   --sut-id <sut-id> \
   --mode api-only
 ```

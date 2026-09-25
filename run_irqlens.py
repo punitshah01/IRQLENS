@@ -105,7 +105,7 @@ def main() -> int:
     env.setdefault("IRQLENS_DB_PATH", str((backend / "data" / "irqlens.db").resolve()))
     env.setdefault("IRQLENS_OUTPUT_DIR", "/root/irqlens")
     host_ip = _detect_host_ip()
-    url = f"http://{host_ip}:8080"
+    url = f"http://{host_ip}:10000"
     no_proxy_hosts = [host_ip, "127.0.0.1", "::1", "localhost"]
     existing_no_proxy = env.get("no_proxy") or env.get("NO_PROXY") or ""
     entries = [x.strip() for x in existing_no_proxy.split(",") if x.strip()]
@@ -125,7 +125,7 @@ def main() -> int:
         "--host",
         "0.0.0.0",
         "--port",
-        "8080",
+        "10000",
     ]
     print("Starting IRQLENS")
     print(f"Platform: {platform.system()} {platform.release()}")

@@ -13,7 +13,7 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8080
+uvicorn app.main:app --host 0.0.0.0 --port 10000
 ```
 
 ### Stop
@@ -24,7 +24,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 ### Start on Linux SUT
 ```bash
 python3 agent/main.py \
-  --server http://<server>:8080 \
+  --server http://<server>:10000 \
   --sut-id <sut-id> \
   --name <display-name> \
   --token <token>
@@ -40,8 +40,8 @@ python3 agent/main.py \
 
 Quick curl checks:
 ```bash
-curl -s http://127.0.0.1:8080/api/health
-curl -s http://127.0.0.1:8080/api/systems
+curl -s http://127.0.0.1:10000/api/health
+curl -s http://127.0.0.1:10000/api/systems
 ```
 
 ## 4. Logs

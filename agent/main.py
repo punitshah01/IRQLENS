@@ -371,7 +371,7 @@ def run_agent(server: str, sut_id: str, name: str, token: str, telemetry_interva
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="IRQLENS SUT Agent")
-    ap.add_argument("--server", default=os.getenv("IRQLENS_AGENT_SERVER", "http://127.0.0.1:8080"))
+    ap.add_argument("--server", default=os.getenv("IRQLENS_AGENT_SERVER", "http://127.0.0.1:10000"))
     ap.add_argument("--sut-id", default=os.getenv("IRQLENS_AGENT_SUT_ID", _hostname()))
     ap.add_argument("--name", default=os.getenv("IRQLENS_AGENT_NAME", _hostname()))
     ap.add_argument("--token", default=os.getenv("IRQLENS_AGENT_TOKEN", ""))
