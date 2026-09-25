@@ -2,7 +2,7 @@
 
 Linux IRQ, SoftIRQ, CPU, network, and system performance monitoring and diagnostics dashboard.
 
-[![Python](https://img.shields.io/badge/Python-Repository%20does%20not%20pin%20minor%20version-2f7ed8)](#requirements) [![Tests](https://img.shields.io/badge/Tests-pytest%20(local%20command)-2f7ed8)](#testing) [![License](https://img.shields.io/badge/License-Not%20specified-b76e00)](#license) [![Status](https://img.shields.io/badge/Status-Active%20development-2f7ed8)](#overview)
+[![Python](https://img.shields.io/badge/Python-Repository%20does%20not%20pin%20minor%20version-2f7ed8)](#requirements) [![Tests](https://img.shields.io/badge/Tests-pytest%20%28local%20command%29-2f7ed8)](#testing) [![License](https://img.shields.io/badge/License-Not%20specified-b76e00)](#license) [![Status](https://img.shields.io/badge/Status-Active%20development-2f7ed8)](#overview)
 
 ## Table of Contents
 - [Overview](#overview)
