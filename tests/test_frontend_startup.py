@@ -351,6 +351,118 @@ def test_sut_switcher_lists_status_and_switches(dashboard_page):
     assert page.evaluate("localStorage.getItem('irqlens:host')") == '"sut-two"'
 
 
+def _fleet(received=5e9, drops=0.0, client_status="ONLINE", extra_machines=()):
+    machine = {"status": "ONLINE", "last_seen": time.time(), "cpu_count": 8, "cpu_util_avg": 12.4, "cpu_util_max": 97.2, "irq_rate": 1234567.0}
+    link = {"state": "up", "tx_bps": 0.0, "errors_ps": 0.0}
+    return {
+        "machines": [
+            {**machine, "id": "sut-test", "hostname": "test-host", "role": "server"},
+            {**machine, "id": "sut-two", "hostname": "second-host", "role": "client", "status": client_status, "last_seen": time.time() - 60},
+            *({**machine, "id": name, "hostname": name, "role": "client"} for name in extra_machines),
+        ],
+        "networks": [{"cidr": "192.0.2.0/25", "members": [
+            {**link, "machine": "sut-test", "nic": "ens3", "address": "192.0.2.13", "speed_mbps": 400000,
+             "rx_bps": received, "utilization_pct": received * 8 / 4e9, "drops_ps": drops},
+            {**link, "machine": "sut-two", "nic": "<b>ens7</b>", "address": "192.0.2.35", "speed_mbps": 200000,
+             "rx_bps": 0.0, "utilization_pct": 0.0, "drops_ps": 0.0},
+        ]}],
+    }
+
+
+def _show_fleet(page, fleet):
+    page.route("**/api/fleet", lambda route: route.fulfill(json=fleet))
+    page.evaluate("async () => { await loadSelectedData(); render(); }")
+
+
+def test_machine_map_shows_how_machines_are_connected(dashboard_page):
+    page = dashboard_page
+    card = page.locator("#fleet-card")
+    # One machine reporting, or none: Overview looks as it always did.
+    assert not card.is_visible()
+    _show_fleet(page, {"machines": _fleet()["machines"][:1], "networks": []})
+    assert not card.is_visible()
+
+    _show_fleet(page, _fleet())
+    assert card.is_visible()
+    boxes = page.locator(".fleet-machine")
+    # Clients on the left, servers on the right, the network between them.
+    assert [box.get_attribute("data-machine") for box in boxes.all()] == ["sut-two", "sut-test"]
+    server = page.locator('.fleet-machine[data-machine="sut-test"]')
+    text = server.inner_text()
+    for expected in ("SERVER", "test-host", "CPU 12% avg, 97% max", "IRQ 1.2M/s", "400G", "ens3", "192.0.2.13", "RX 40.0 Gbit/s", "10% of link"):
+        assert expected in text
+    assert "selected" in server.get_attribute("class")
+    assert page.locator(".fleet-network").inner_text().split() == ["192.0.2.0/25", "2", "machines"]
+    assert page.locator(".fleet-machine b").count() == 0 and "<b>ens7</b>" in boxes.nth(0).inner_text()
+
+    lines = page.evaluate("""() => [...document.querySelectorAll('.fleet-links path')].map(path => {
+        const box = path.getBBox();
+        return { tone: path.getAttribute('class'), width: path.style.strokeWidth, left: box.x, right: box.x + box.width };
+    })""")
+    assert [(line["tone"], line["width"]) for line in lines] == [("active", "2.8px"), ("", "2px")]
+    edges = page.evaluate("""() => {
+        const base = document.getElementById('fleet-map').getBoundingClientRect();
+        const edge = selector => document.querySelector(selector).getBoundingClientRect();
+        return {
+            server: edge('.fleet-machine[data-machine="sut-test"]').left - base.left,
+            client: edge('.fleet-machine[data-machine="sut-two"]').right - base.left,
+            pillLeft: edge('.fleet-network').left - base.left,
+            pillRight: edge('.fleet-network').right - base.left,
+        };
+    }""")
+    # Each line runs from the edge of its machine to the edge of the network.
+    assert lines[0]["left"] == pytest.approx(edges["pillRight"], abs=1) and lines[0]["right"] == pytest.approx(edges["server"], abs=1)
+    assert lines[1]["left"] == pytest.approx(edges["client"], abs=1) and lines[1]["right"] == pytest.approx(edges["pillLeft"], abs=1)
+
+    # Selecting a machine is the same as choosing it in the SUT switcher.
+    with page.expect_request(lambda request: "/api/systems/sut-two/visualization?" in request.url):
+        boxes.nth(0).click()
+    page.wait_for_function("document.getElementById('sut-title').textContent === 'SUT: second-host'")
+    assert page.locator("#sut-switcher").input_value() == "sut-two"
+    assert "selected" in boxes.nth(0).get_attribute("class") and "selected" not in server.get_attribute("class")
+    server.focus()
+    page.keyboard.press("Enter")
+    page.wait_for_function("document.getElementById('sut-title').textContent === 'SUT: test-host'")
+
+    # A narrow window stacks the boxes and leaves the lines out.
+    page.set_viewport_size({"width": 700, "height": 900})
+    assert not page.locator(".fleet-links").is_visible() and boxes.nth(1).is_visible()
+
+
+def test_machine_map_updates_in_place(dashboard_page):
+    page = dashboard_page
+    _show_fleet(page, _fleet())
+    page.evaluate("document.querySelector('.fleet-machine').dataset.marker = 'kept'")
+    marker = "document.querySelector('.fleet-machine').dataset.marker || ''"
+    server = page.locator('.fleet-machine[data-machine="sut-test"]')
+    line = "(index) => { const path = document.querySelectorAll('.fleet-links path')[index]; return [path.getAttribute('class'), path.style.strokeWidth]; }"
+
+    # New numbers change text and lines; the boxes themselves stay.
+    _show_fleet(page, _fleet(received=25e9, drops=7.0))
+    assert "RX 200.0 Gbit/s" in server.inner_text() and "50% of link" in server.inner_text() and "7.0 drops/s" in server.inner_text()
+    assert page.evaluate(line, 0) == ["bad", "6px"]
+    assert page.evaluate(marker) == "kept"
+
+    # A machine that stopped reporting keeps its place, without numbers that are no longer current.
+    _show_fleet(page, _fleet(client_status="STALE"))
+    client = page.locator('.fleet-machine[data-machine="sut-two"]')
+    assert "stale" in client.get_attribute("class") and "STALE" in client.inner_text() and "No live data" in client.inner_text()
+    assert "CPU" not in client.inner_text()
+    assert page.evaluate(line, 1) == ["stale", "2px"]
+    assert page.evaluate(marker) == "kept"
+
+    # Another machine is a new shape: the map is rebuilt.
+    _show_fleet(page, _fleet(extra_machines=("third-host",)))
+    assert page.locator(".fleet-machine").count() == 3 and page.evaluate(marker) == ""
+
+    # The map is fetched on Overview only.
+    page.get_by_role("button", name="CPU", exact=True).click()
+    requested = []
+    page.on("request", lambda request: requested.append(urlparse(request.url).path))
+    page.evaluate("loadSelectedData()")
+    assert "/api/irq/current" in requested and "/api/fleet" not in requested
+
+
 def test_header_status_follows_sut_that_stopped_reporting(dashboard_page):
     page = dashboard_page
     assert page.locator("#sut-status-label").inner_text() == "ONLINE"

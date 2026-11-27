@@ -42,6 +42,7 @@ It supports:
 - Local Linux monitoring (server-side collectors read local /proc and /sys)
 - Remote Linux SUT monitoring through the IRQLENS agent
 - Multi-SUT registration and selection
+- A machine map when two or more machines report: which machines share a network, at what link speed, and how busy each link is
 - Live telemetry updates through WebSocket to the browser
 
 ## What IRQLENS Can Do
@@ -288,6 +289,7 @@ Agent configuration options:
 - `--telemetry-interval` (or `IRQLENS_AGENT_TELEMETRY_INTERVAL`)
 - `--heartbeat-interval` (or `IRQLENS_AGENT_HEARTBEAT_INTERVAL`)
 - `--include-virtual-disks` to also report `loop*`, `ram*`, `dm-*`, `md*`, and `zram*` block devices
+- `--role client|server` (default `client`): the side of the Overview [machine map](#dashboard-pages) this machine is drawn on
 
 The agent needs only the Python standard library plus `pydantic` (it imports the collectors from `backend/app/collectors`). Storage, PCIe, and softnet telemetry require agent 1.2.0 or newer; older agents keep working without those views.
 
@@ -310,6 +312,10 @@ The six primary views follow [IRQLENS UI Rules](docs/IRQLENS_UI_RULES.md):
 
 ### Overview
 Current IRQ/SoftIRQ/network KPIs, IRQ and network trends, CPU/NUMA matrix, and findings for the selected SUT. Findings include IRQ concentration, cross-NUMA IRQ handling, PCIe link downgrades, AER errors, softnet backlog drops, and packet drops.
+
+When two or more machines report, a **Machines** card sits above those details: one box per machine (clients left, servers right) with its CPU utilization and IRQ rate, and one pill per IPv4 network that at least two of them share. Each line from a network interface to its network shows the link speed (`400G`), current RX/TX in bit/s, and the share of the link in use; the line gets thicker with traffic, turns red on drops, errors, or a link that is down, and is dashed for a machine that stopped reporting. Selecting a box is the same as choosing that machine in the SUT dropdown. With one machine the card is not shown.
+
+The machine IRQLENS runs on is drawn as the server unless another machine reports `--role server`. Networks are inferred from interface addresses, so a switch between two machines is not drawn separately, and an address that several machines have in common (`docker0` on `172.17.0.1/16`) is ignored.
 
 ### CPU
 Topology-based CPU matrix with IRQ, SoftIRQ, and utilization metrics, per-CPU detail, and utilization history.
@@ -622,6 +628,7 @@ OpenAPI and docs:
 
 Major API groups:
 - Health/system routing: `/api/health`, `/api/system`, `/api/systems*`
+- Machine map: `/api/fleet`
 - Telemetry reads: `/api/irq/*`, `/api/softirq/current`, `/api/network/*`, `/api/interfaces`
 - Visualization: `/api/systems/{sut_id}/visualization*`, `/api/visualization/compare`
 - Storage, PCIe, softnet: `/api/systems/{sut_id}/io`

@@ -105,6 +105,8 @@ Response fields:
 - `heartbeat_interval`
 - `stale_threshold`
 
+Optional field added in agent 1.3.0: `"role": "client"` or `"server"` (agent `--role`, default `client`). It decides the side of the Overview machine map the machine is drawn on. Older agents omit it and are drawn as clients.
+
 ## Heartbeat
 Endpoint: `POST /api/agent/heartbeat`
 
@@ -287,7 +289,7 @@ Server marks SUT status based on time since last seen:
 
 ## Version Compatibility
 Current in-repo agent version string:
-- `AGENT_VERSION = "1.2.0"`
+- `AGENT_VERSION = "1.3.0"`
 
 Compatibility status:
 - No explicit protocol negotiation endpoint is implemented.

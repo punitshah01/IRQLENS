@@ -320,6 +320,7 @@ class SqliteStore:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_systems_status ON systems(status, updated_at)")
             self._ensure_column(conn, "systems", "sampling_interval_seconds", "REAL")
+            self._ensure_column(conn, "systems", "role", "TEXT NOT NULL DEFAULT ''")
 
             conn.execute(
                 """
@@ -1334,8 +1335,8 @@ class SqliteStore:
                         id, name, hostname, address, port, os_distribution, os_version, kernel,
                         architecture, agent_version, status, last_seen, created_at, updated_at,
                         cpu_count, cpu_model, memory_total_kb, numa_nodes, interfaces_json,
-                        ip_addresses_json, mode, sampling_interval_seconds
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ip_addresses_json, mode, sampling_interval_seconds, role
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         name=excluded.name,
                         hostname=excluded.hostname,
@@ -1356,7 +1357,8 @@ class SqliteStore:
                         interfaces_json=excluded.interfaces_json,
                         ip_addresses_json=excluded.ip_addresses_json,
                         mode=excluded.mode,
-                        sampling_interval_seconds=excluded.sampling_interval_seconds
+                        sampling_interval_seconds=excluded.sampling_interval_seconds,
+                        role=excluded.role
                     """,
                     (
                         system.id,
@@ -1381,47 +1383,12 @@ class SqliteStore:
                         json.dumps(system.ip_addresses, separators=(",", ":")),
                         system.mode,
                         system.sampling_interval_seconds,
+                        system.role,
                     ),
                 )
 
-    def list_systems(self) -> List[SystemRecord]:
-        with self._conn() as conn:
-            rows = conn.execute("SELECT * FROM systems ORDER BY name").fetchall()
-        out: List[SystemRecord] = []
-        for row in rows:
-            out.append(
-                SystemRecord(
-                    id=row["id"],
-                    name=row["name"],
-                    hostname=row["hostname"],
-                    address=row["address"],
-                    port=row["port"],
-                    os_distribution=row["os_distribution"],
-                    os_version=row["os_version"],
-                    kernel=row["kernel"],
-                    architecture=row["architecture"],
-                    agent_version=row["agent_version"],
-                    status=row["status"],
-                    last_seen=row["last_seen"],
-                    created_at=row["created_at"],
-                    updated_at=row["updated_at"],
-                    cpu_count=row["cpu_count"],
-                    cpu_model=row["cpu_model"],
-                    memory_total_kb=row["memory_total_kb"],
-                    numa_nodes=row["numa_nodes"],
-                    interfaces=json.loads(row["interfaces_json"] or "[]"),
-                    ip_addresses=json.loads(row["ip_addresses_json"] or "[]"),
-                    mode=row["mode"] or "remote",
-                    sampling_interval_seconds=row["sampling_interval_seconds"],
-                )
-            )
-        return out
-
-    def get_system(self, sut_id: str) -> Optional[SystemRecord]:
-        with self._conn() as conn:
-            row = conn.execute("SELECT * FROM systems WHERE id = ?", (sut_id,)).fetchone()
-        if not row:
-            return None
+    @staticmethod
+    def _system_from_row(row: sqlite3.Row) -> SystemRecord:
         return SystemRecord(
             id=row["id"],
             name=row["name"],
@@ -1445,7 +1412,61 @@ class SqliteStore:
             ip_addresses=json.loads(row["ip_addresses_json"] or "[]"),
             mode=row["mode"] or "remote",
             sampling_interval_seconds=row["sampling_interval_seconds"],
+            role=row["role"] if row["role"] in ("server", "client") else "",
         )
+
+    def list_systems(self) -> List[SystemRecord]:
+        with self._conn() as conn:
+            rows = conn.execute("SELECT * FROM systems ORDER BY name").fetchall()
+        return [self._system_from_row(row) for row in rows]
+
+    def get_system(self, sut_id: str) -> Optional[SystemRecord]:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM systems WHERE id = ?", (sut_id,)).fetchone()
+        return self._system_from_row(row) if row else None
+
+    def machine_summaries(self, sut_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        # What the machine map shows: the newest tick of every machine, read over one connection.
+        out: Dict[str, Dict[str, Any]] = {}
+        with self._conn() as conn:
+            for sut_id in sut_ids:
+                key = (sut_id, sut_id)
+                interfaces = conn.execute(
+                    """
+                    SELECT payload_json FROM interface_samples
+                    WHERE sut_ip = ? AND timestamp = (SELECT MAX(timestamp) FROM interface_samples WHERE sut_ip = ?)
+                    """,
+                    key,
+                ).fetchall()
+                traffic = conn.execute(
+                    """
+                    SELECT interface, rx_bps, tx_bps, rx_drop_ps + tx_drop_ps AS drops_ps, rx_err_ps + tx_err_ps AS errors_ps
+                    FROM network_samples
+                    WHERE sut_ip = ? AND timestamp = (SELECT MAX(timestamp) FROM network_samples WHERE sut_ip = ?)
+                    """,
+                    key,
+                ).fetchall()
+                irq = conn.execute(
+                    """
+                    SELECT SUM(total_rate) AS rate FROM irq_samples
+                    WHERE sut_ip = ? AND timestamp = (SELECT MAX(timestamp) FROM irq_samples WHERE sut_ip = ?)
+                    """,
+                    key,
+                ).fetchone()
+                cpu = conn.execute(
+                    "SELECT payload_json FROM cpu_utilization_samples WHERE sut_id = ? ORDER BY timestamp DESC LIMIT 1",
+                    (sut_id,),
+                ).fetchone()
+                out[sut_id] = {
+                    "interfaces": [InterfaceInfo.model_validate_json(row["payload_json"]) for row in interfaces],
+                    "traffic": {
+                        str(row["interface"]): {name: float(row[name] or 0.0) for name in ("rx_bps", "tx_bps", "drops_ps", "errors_ps")}
+                        for row in traffic
+                    },
+                    "irq_rate": float(irq["rate"]) if irq and irq["rate"] is not None else None,
+                    "cpu_utilization": [float(value) for value in json.loads(cpu["payload_json"] or "{}").values()] if cpu else [],
+                }
+        return out
 
     def delete_system(self, sut_id: str) -> None:
         with self._lock:

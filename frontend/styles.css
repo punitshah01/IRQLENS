@@ -1103,6 +1103,141 @@ button {
   color: var(--red);
 }
 
+/* Machine map: machines left and right, the networks they share in the middle. */
+.fleet-map {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  column-gap: 96px;
+  align-items: center;
+}
+
+.fleet-map.one-sided {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.fleet-column {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.fleet-links {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.fleet-links path {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: 2px;
+  stroke-linecap: round;
+  transition: stroke 0.4s, stroke-width 0.4s;
+}
+
+.fleet-links path.active { stroke: var(--blue); }
+.fleet-links path.bad { stroke: var(--red); }
+.fleet-links path.stale { stroke-dasharray: 6 8; }
+
+.fleet-machine {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--surface-2);
+  padding: 12px 14px;
+  cursor: pointer;
+}
+
+.fleet-machine:hover,
+.fleet-machine:focus-visible {
+  border-color: var(--line-strong);
+}
+
+.fleet-machine.selected {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+}
+
+.fleet-machine.stale {
+  opacity: 0.7;
+}
+
+.fleet-head,
+.fleet-nic-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fleet-role {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.fleet-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.fleet-stats,
+.fleet-nic-rate {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.fleet-nic {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.fleet-nic-head {
+  flex-wrap: wrap;
+}
+
+.fleet-speed {
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: var(--surface-3);
+  font-weight: 700;
+}
+
+.fleet-network {
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  padding: 10px 18px;
+  text-align: center;
+}
+
+.fleet-network .muted,
+.fleet-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .fleet-map,
+  .fleet-map.one-sided {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 12px;
+  }
+  /* Without room for lines, the addresses in the boxes carry the picture. */
+  .fleet-links,
+  .fleet-network { display: none; }
+}
+
 @media (max-width: 1440px) {
   .kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .span-8, .span-7, .span-6, .span-5, .span-4, .span-3 { grid-column: span 12; }

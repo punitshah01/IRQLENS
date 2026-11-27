@@ -62,6 +62,7 @@ const state = {
   view: initialViewFromUrl(),
   host: storage.get("irqlens:host", ""),
   systems: [],
+  fleet: null,
   health: null,
   snapshot: null,
   viz: null,
@@ -193,6 +194,21 @@ function fmtBytesRate(value) {
   if (n >= 1e6) return (n / 1e6).toFixed(2) + " MB/s";
   if (n >= 1e3) return (n / 1e3).toFixed(2) + " KB/s";
   return n.toFixed(0) + " B/s";
+}
+
+// Next to a link speed, traffic reads in bits; samples arrive as bytes per second.
+function fmtBitRate(bytesPerSecond) {
+  const bits = Number(bytesPerSecond || 0) * 8;
+  if (bits >= 1e9) return (bits / 1e9).toFixed(1) + " Gbit/s";
+  if (bits >= 1e6) return (bits / 1e6).toFixed(1) + " Mbit/s";
+  if (bits >= 1e3) return (bits / 1e3).toFixed(1) + " kbit/s";
+  return bits.toFixed(0) + " bit/s";
+}
+
+function fmtLinkSpeed(mbps) {
+  const n = Number(mbps || 0);
+  if (!n) return "speed n/a";
+  return n >= 1000 ? `${Number((n / 1000).toFixed(1))}G` : `${n}M`;
 }
 
 function fmtTs(ts) {
@@ -555,7 +571,133 @@ function showSection(view) {
   });
 }
 
+// Machine map: one box per machine and one pill per network that two or more of them share.
+function renderFleet() {
+  const card = qs("fleet-card");
+  if (!card) return;
+  const machines = state.fleet?.machines || [];
+  const networks = state.fleet?.networks || [];
+  card.classList.toggle("hidden", machines.length < 2);
+  if (machines.length < 2) return;
+  const root = qs("fleet-map");
+  const links = networks.flatMap((network, networkIndex) => network.members.map(member => ({ member, networkIndex })));
+  // Built once per shape and updated in place, so a box never changes under the pointer.
+  const shape = JSON.stringify([
+    machines.map(machine => [machine.id, machine.hostname, machine.role]),
+    networks.map(network => [network.cidr, network.members.map(member => [member.machine, member.nic, member.address])]),
+  ]);
+  if (root.dataset.shape !== shape) {
+    root.dataset.shape = shape;
+    const box = machine => `
+      <div class="fleet-machine" data-machine="${escapeHtml(machine.id)}" role="button" tabindex="0">
+        <div class="fleet-head">
+          <span class="fleet-role">${machine.role === "server" ? "Server" : "Client"}</span>
+          <span class="fleet-name">${escapeHtml(machine.hostname)}</span>
+          <span class="dot"></span>
+        </div>
+        <div class="fleet-stats"></div>
+        ${links.map((link, index) => (link.member.machine !== machine.id ? "" : `
+          <div class="fleet-nic" data-link="${index}">
+            <div class="fleet-nic-head">
+              <span class="fleet-speed"></span>
+              <span class="mono">${escapeHtml(link.member.nic)}</span>
+              <span class="muted mono">${escapeHtml(link.member.address)}</span>
+            </div>
+            <div class="fleet-nic-rate"></div>
+          </div>
+        `)).join("")}
+      </div>
+    `;
+    const column = role => machines.filter(machine => (machine.role === "server") === (role === "server")).map(box).join("");
+    const clients = column("client");
+    const servers = column("server");
+    const pills = networks.length ? networks.map(network => `
+      <div class="fleet-network">
+        <div class="mono">${escapeHtml(network.cidr)}</div>
+        <div class="muted">${new Set(network.members.map(member => member.machine)).size} machines</div>
+      </div>
+    `).join("") : `<div class="fleet-note">No shared IPv4 network found.</div>`;
+    const columns = clients && servers ? [clients, pills, servers] : [clients || servers, pills];
+    root.classList.toggle("one-sided", columns.length === 2);
+    root.innerHTML = `
+      <svg class="fleet-links" aria-hidden="true">${links.map((link, index) => `<path data-link="${index}" data-network="${link.networkIndex}"></path>`).join("")}</svg>
+      ${columns.map(html => `<div class="fleet-column">${html}</div>`).join("")}
+    `;
+    root.onclick = event => {
+      const node = event.target.closest(".fleet-machine");
+      if (node) selectSut(node.dataset.machine);
+    };
+    root.onkeydown = event => {
+      if ((event.key === "Enter" || event.key === " ") && event.target.classList.contains("fleet-machine")) {
+        event.preventDefault();
+        selectSut(event.target.dataset.machine);
+      }
+    };
+  }
+
+  const set = (node, key, value) => {
+    if (node[key] !== value) node[key] = value;
+  };
+  const byId = new Map(machines.map(machine => [machine.id, machine]));
+  root.querySelectorAll(".fleet-machine").forEach(node => {
+    const machine = byId.get(node.dataset.machine);
+    const live = machine.status === "ONLINE";
+    const cpu = machine.cpu_util_avg == null ? "n/a" : `${Number(machine.cpu_util_avg).toFixed(0)}% avg, ${Number(machine.cpu_util_max).toFixed(0)}% max`;
+    const irq = machine.irq_rate == null ? "n/a" : `${fmtCount(machine.irq_rate)}/s`;
+    set(node, "className", `fleet-machine${machine.id === state.host ? " selected" : ""}${live ? "" : " stale"}`);
+    set(node.querySelector(".dot"), "className", `dot ${statusTone(machine.status)}`);
+    set(node.querySelector(".fleet-stats"), "textContent", live
+      ? `CPU ${cpu} • IRQ ${irq}`
+      : `${machine.status} • last update ${fmtAgo(machine.last_seen)}`);
+  });
+  links.forEach(({ member }, index) => {
+    const row = root.querySelector(`.fleet-nic[data-link="${index}"]`);
+    const live = byId.get(member.machine).status === "ONLINE";
+    const down = member.state === "down";
+    const drops = Number(member.drops_ps || 0);
+    const errors = Number(member.errors_ps || 0);
+    const busiest = Math.max(Number(member.rx_bps || 0), Number(member.tx_bps || 0));
+    const used = member.utilization_pct == null ? null : Number(member.utilization_pct);
+    const rate = [`RX ${fmtBitRate(member.rx_bps)}`, `TX ${fmtBitRate(member.tx_bps)}`];
+    if (used >= 0.05) rate.push(`${used.toFixed(used < 10 ? 1 : 0)}% of link`);
+    if (drops > 0) rate.push(`${fmtCount(drops)} drops/s`);
+    if (errors > 0) rate.push(`${fmtCount(errors)} errors/s`);
+    set(row.querySelector(".fleet-speed"), "textContent", fmtLinkSpeed(member.speed_mbps));
+    set(row.querySelector(".fleet-nic-rate"), "textContent", !live ? "No live data" : (down ? "Link down" : rate.join(" • ")));
+    const path = root.querySelector(`path[data-link="${index}"]`);
+    const tone = !live ? "stale" : (down || drops + errors > 0 ? "bad" : (busiest * 8 >= 1e6 ? "active" : ""));
+    if (path.getAttribute("class") !== tone) path.setAttribute("class", tone);
+    // 2 px when idle, up to 10 px on a saturated link.
+    path.style.strokeWidth = `${(2 + (live && used ? used * 0.08 : 0)).toFixed(1)}px`;
+  });
+  drawFleetLinks();
+}
+
+function drawFleetLinks() {
+  const root = qs("fleet-map");
+  const svg = root ? root.querySelector(".fleet-links") : null;
+  // Nothing to measure while the map is hidden or stacked in one column.
+  if (!svg || !svg.getClientRects().length) return;
+  const base = root.getBoundingClientRect();
+  const pills = root.querySelectorAll(".fleet-network");
+  svg.querySelectorAll("path").forEach(path => {
+    const row = root.querySelector(`.fleet-nic[data-link="${path.dataset.link}"]`);
+    const box = row.closest(".fleet-machine").getBoundingClientRect();
+    const pill = pills[Number(path.dataset.network)].getBoundingClientRect();
+    const line = row.getBoundingClientRect();
+    const leftOfPill = box.left < pill.left;
+    const x1 = (leftOfPill ? box.right : box.left) - base.left;
+    const x2 = (leftOfPill ? pill.left : pill.right) - base.left;
+    const y1 = line.top + line.height / 2 - base.top;
+    const y2 = pill.top + pill.height / 2 - base.top;
+    const mid = (x1 + x2) / 2;
+    const d = `M${x1.toFixed(1)},${y1.toFixed(1)} C${mid.toFixed(1)},${y1.toFixed(1)} ${mid.toFixed(1)},${y2.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`;
+    if (path.getAttribute("d") !== d) path.setAttribute("d", d);
+  });
+}
+
 function renderOverview() {
+  renderFleet();
   const system = currentSystem();
   const irqRows = state.snapshot?.irq?.rows || [];
   const soft = state.snapshot?.softirq?.sample?.rates || {};
@@ -2566,8 +2708,10 @@ async function loadSelectedData() {
   const historyAge = startedAt - state.historyAt + LIVE_RENDER_INTERVAL_MS / 2;
   const historyDue = historyKey !== state.historyKey || historyAge >= historyIntervalMs(bounds.to - bounds.from);
   const detailsDue = host !== state.detailsHost || startedAt - state.detailsAt >= DETAILS_REFRESH_MS || !state.topology?.available;
+  // The machine map exists only on Overview and only when there is more than one machine.
+  const fleetDue = state.view === "overview" && state.systems.length > 1;
   // Current values every time, history and details when due; compact=1 omits history the dashboard does not draw.
-  const [irq, softirq, network, viz, io, ifaceHistory, interfaces, topology] = await Promise.all([
+  const [irq, softirq, network, viz, io, ifaceHistory, interfaces, topology, fleet] = await Promise.all([
     fetchJson(`/api/irq/current?sut_id=${sut}&limit=2000`),
     fetchJson(`/api/softirq/current?sut_id=${sut}`),
     fetchJson(`/api/network/current?sut_id=${sut}`),
@@ -2576,10 +2720,13 @@ async function loadSelectedData() {
     historyDue && iface !== "ALL" ? fetchJson(`/api/network/${encodeURIComponent(iface)}?sut_id=${sut}`).catch(() => null) : null,
     detailsDue ? fetchJson(`/api/interfaces?sut_id=${sut}`) : null,
     detailsDue ? fetchJson(`/api/systems/${sut}/visualization/topology`) : null,
+    fleetDue ? fetchJson("/api/fleet").catch(() => null) : null,
   ]);
   // A newer request, or another SUT or interface chosen meanwhile, owns the screen.
   if (seq !== state.loadSeq || host !== state.host || iface !== state.selectedIface) return;
   state.snapshot = { irq, softirq, network };
+  if (state.systems.length <= 1) state.fleet = null;
+  else if (fleet) state.fleet = fleet;
   if (historyDue) {
     state.viz = viz;
     state.cpuUtilTimestamp = Number(viz?.timestamp || state.cpuUtilTimestamp || 0);
@@ -2617,6 +2764,24 @@ async function loadInterfaceHistory() {
 async function refreshSelectedHistory() {
   if (!state.host) return;
   await loadSelectedData();
+}
+
+// One path for the SUT switcher and the machine map.
+async function selectSut(sutId) {
+  if (!sutId || sutId === state.host || !state.systems.some(item => item.id === sutId)) return;
+  state.host = sutId;
+  state.selectedIface = "ALL";
+  state.selectedCpu = "";
+  state.selectedSessionId = "";
+  state.expandedSessionId = "";
+  state.sessionDetail = null;
+  state.sessionFiles = [];
+  persistSelections();
+  // The map marks the new selection at once; the details follow when they are loaded.
+  renderFleet();
+  await loadSelectedData();
+  if (state.view === "diagnostics") await loadSessions();
+  render();
 }
 
 async function refreshAll() {
@@ -2662,21 +2827,7 @@ function bindGlobalActions() {
     storage.set("irqlens:irqAggregate", state.irqAggregate);
     renderIrq();
   };
-  qs("sut-switcher").onchange = async event => {
-    const sutId = event.target.value;
-    if (!sutId || sutId === state.host) return;
-    state.host = sutId;
-    state.selectedIface = "ALL";
-    state.selectedCpu = "";
-    state.selectedSessionId = "";
-    state.expandedSessionId = "";
-    state.sessionDetail = null;
-    state.sessionFiles = [];
-    persistSelections();
-    await loadSelectedData();
-    if (state.view === "diagnostics") await loadSessions();
-    render();
-  };
+  qs("sut-switcher").onchange = event => selectSut(event.target.value);
   qs("live-toggle").onclick = () => {
     state.paused = !state.paused;
     renderContextBar();
@@ -2816,7 +2967,10 @@ async function boot() {
     // A SUT that stopped reporting sends no events; polling lets it turn STALE or OFFLINE.
     scheduleTelemetryRefresh(0);
   }, 5000);
-  window.addEventListener("resize", resizeCharts);
+  window.addEventListener("resize", () => {
+    resizeCharts();
+    drawFleetLinks();
+  });
 }
 
 boot();

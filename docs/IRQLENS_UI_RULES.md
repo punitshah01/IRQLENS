@@ -34,6 +34,13 @@ The default user flow is: start IRQLENS, select a SUT, monitor and investigate C
 - Do not display "Local Host" when a real hostname is available.
 - Prefer display order: hostname, then system name, then system id.
 
+## Machine map
+
+- Overview shows the machine map only when two or more machines report; with one machine Overview is unchanged.
+- One box per machine, one pill per shared network, one line per link with its speed and current use.
+- Selecting a box selects that machine, the same as the SUT switcher. The details of the selected machine stay below the map.
+- The map is updated in place and is fetched only while Overview is open.
+
 ## CPU visualization
 
 - CPU matrix/heatmap is the primary CPU visualization.

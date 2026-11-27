@@ -4,6 +4,7 @@ All notable documentation and implementation highlights are tracked here.
 
 ## Unreleased
 ### Added
+- Machine map on Overview when two or more machines report: one box per machine, one pill per IPv4 network they share, and a line per link with its speed, current traffic, utilization, and drops. Selecting a box switches the dashboard to that machine. `GET /api/fleet` returns the same data. Agent 1.3.0 adds `--role client|server`.
 - Storage & PCIe view: per-device IOPS, throughput, await and queue depth from `/proc/diskstats`, block-device and NVMe metadata, PCIe card enumeration with link-downgrade and AER flags; `GET /api/systems/{sut_id}/io`.
 - `/proc/net/softnet_stat` deltas (processed, dropped, time_squeeze, cpu_collision), per CPU and total.
 - NIC-to-IRQ mapping from `/sys/class/net/<iface>/device/msi_irqs/` with label matching as fallback; NVMe IRQs classified as storage.

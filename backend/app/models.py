@@ -234,6 +234,7 @@ class SystemRecord(BaseModel):
     ip_addresses: List[str] = Field(default_factory=list)
     mode: Literal["local", "remote"] = "remote"
     sampling_interval_seconds: Optional[float] = None
+    role: Literal["", "server", "client"] = ""
 
 
 class CPUTopologyEntry(BaseModel):
@@ -277,6 +278,7 @@ class AgentRegistrationRequest(BaseModel):
     interfaces: List[str] = Field(default_factory=list)
     ip_addresses: List[str] = Field(default_factory=list)
     cpu_topology: List[CPUTopologyEntry] = Field(default_factory=list)
+    role: Literal["", "server", "client"] = ""
 
 
 class AgentHeartbeatRequest(BaseModel):

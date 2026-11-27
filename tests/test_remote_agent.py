@@ -277,6 +277,67 @@ def test_agent_register_heartbeat_and_routing():
         assert net.json().get("host") == "sut-01"
 
 
+def _report_machine(client: TestClient, sut_id: str, role: str, nics: list) -> None:
+    # nics: (name, address with prefix, link speed in Mbit/s, received bytes per second, drops per second)
+    registration = {**_sample_registration(sut_id), "hostname": f"{sut_id}-host", "role": role}
+    telemetry = _sample_telemetry(sut_id)
+    telemetry["system"]["hostname"] = f"{sut_id}-host"
+    telemetry["cpu_utilization"] = {"0": 10.0, "1": 90.0}
+    telemetry["interfaces"] = [
+        {**telemetry["interfaces"][0], "name": name, "ipv4": [address], "speed_mbps": speed} for name, address, speed, _, _ in nics
+    ]
+    telemetry["network_samples"] = [
+        {**telemetry["network_samples"][0], "interface": name, "rx_bps": received, "tx_bps": 0.0, "rx_drop_ps": drops}
+        for name, _, _, received, drops in nics
+    ]
+    assert client.post("/api/agent/register", json=registration).status_code == 200
+    assert client.post("/api/agent/telemetry", json=telemetry).status_code == 200
+
+
+def test_fleet_links_machines_that_share_a_subnet():
+    from backend.app.main import STORE
+
+    ids = ["fleet-server", "fleet-client", "fleet-alone"]
+    with TestClient(app) as client:
+        try:
+            _report_machine(client, "fleet-server", "server", [
+                ("ens3", "192.0.2.13/25", 400000, 0.0, 0.0), ("ens12", "198.51.100.11/24", 1000, 0.0, 0.0),
+                ("docker0", "172.17.0.1/16", None, 0.0, 0.0), ("lo", "127.0.0.1/8", None, 0.0, 0.0),
+            ])
+            _report_machine(client, "fleet-client", "", [
+                ("ens7", "192.0.2.35/25", 200000, 5e9, 3.0), ("eno1", "198.51.100.43/24", 1000, 0.0, 0.0),
+                ("docker0", "172.17.0.1/16", None, 0.0, 0.0), ("lo", "127.0.0.1/8", None, 0.0, 0.0),
+            ])
+            _report_machine(client, "fleet-alone", "", [("ens1", "203.0.113.5/24", 10000, 0.0, 0.0)])
+            fleet = client.get("/api/fleet").json()
+            machines = {machine["id"]: machine for machine in fleet["machines"]}
+            assert [machines[sut]["role"] for sut in ids] == ["server", "client", "client"]
+            # Another machine was added as the server, so the one IRQLENS runs on is a client.
+            assert machines.get("local", {"role": "client"})["role"] == "client"
+            client_box = machines["fleet-client"]
+            assert (client_box["hostname"], client_box["status"]) == ("fleet-client-host", "ONLINE")
+            assert (client_box["cpu_util_avg"], client_box["cpu_util_max"], client_box["irq_rate"]) == (50.0, 90.0, 50.0)
+
+            cidrs = [network["cidr"] for network in fleet["networks"]]
+            # Not links: loopback, a bridge with the same address on every machine, a subnet with one machine.
+            assert not {"127.0.0.0/8", "172.17.0.0/16", "203.0.113.0/24"} & set(cidrs)
+            # Fastest network first.
+            assert cidrs.index("192.0.2.0/25") < cidrs.index("198.51.100.0/24")
+            members = {member["machine"]: member for member in fleet["networks"][cidrs.index("192.0.2.0/25")]["members"]}
+            assert sorted(members) == ["fleet-client", "fleet-server"]
+            assert (members["fleet-server"]["nic"], members["fleet-server"]["speed_mbps"]) == ("ens3", 400000)
+            link = members["fleet-client"]
+            assert (link["nic"], link["address"], link["state"], link["speed_mbps"]) == ("ens7", "192.0.2.35", "up", 200000)
+            # 5 GB/s is 40 Gbit/s: a fifth of a 200G link.
+            assert (link["rx_bps"], link["utilization_pct"], link["drops_ps"]) == (5e9, 20.0, 3.0)
+        finally:
+            for sut in ids:
+                STORE.delete_system(sut)
+        machines = {machine["id"]: machine for machine in client.get("/api/fleet").json()["machines"]}
+        assert not set(ids) & set(machines)
+        assert machines.get("local", {"role": "server"})["role"] == "server"
+
+
 def test_agent_validation_telemetry_round_trip():
     sut = "io-sut"
     registration = _sample_registration(sut)

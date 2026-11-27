@@ -24,6 +24,18 @@ Supporting data:
 - Chart zoom state persists in frontend memory until reset
 - `Reset Zoom` clears zoom state and reapplies full ranges
 
+## Machine Map
+Shown on Overview when `GET /api/fleet` lists two or more machines. Machines whose status is `OFFLINE` are left out, as is the server's own host when it is not a Linux machine.
+
+- Box: one machine, with average and maximum CPU utilization and total IRQ/s from its newest sample. Clients are drawn on the left, servers on the right. A machine is a client unless it reported `role: server`; the machine the server runs on is the server unless another machine did.
+- Pill: one IPv4 network (`192.0.2.0/25`) on which at least two machines have an address. Loopback and link-local addresses are skipped. An address that more than one machine has is a host-only bridge (`docker0`) and is skipped too.
+- Line: one interface on that network. Label: link speed from `/sys/class/net/<iface>/speed`, RX and TX in bit/s (the stored rates are bytes per second, times 8), and `utilization_pct = max(rx, tx) * 8 / link speed`.
+- Line width grows from 2 px (idle) to 10 px (100% of the link). Blue: at least 1 Mbit/s. Red: drops or errors in the newest sample, or `operstate` is `down`. Dashed: the machine is not `ONLINE`; its numbers are replaced by the time of its last update.
+- Selecting a box selects that machine, exactly as the SUT dropdown does.
+- Windows narrower than 900 px stack the boxes and leave the lines out.
+
+The map cannot tell a direct cable from a switch: both are two interfaces on one network.
+
 ## IRQ Heatmap
 - X-axis: CPU IDs, NUMA nodes, or sockets (selector; grouping uses the SUT topology)
 - Y-axis: Top 25 active IRQs by default (rate > 0); selector for 25 / 50 / 100 / All

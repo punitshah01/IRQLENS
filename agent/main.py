@@ -23,7 +23,7 @@ from backend.app.collectors import (  # noqa: E402
     SoftnetCollector, StorageCollector, SystemCollector, collect_cpu_topology,
 )
 
-AGENT_VERSION = "1.2.0"
+AGENT_VERSION = "1.3.0"
 MAX_IRQ_ROWS = 1024
 PCIE_INTERVAL_SECONDS = 10.0
 
@@ -153,7 +153,7 @@ def _cpu_utilization_percent(
 
 def run_agent(
     server: str, sut_id: str, name: str, token: str, telemetry_interval: float, heartbeat_interval: float,
-    include_virtual_disks: bool = False,
+    include_virtual_disks: bool = False, role: str = "",
 ) -> int:
     irq_collector = IRQCollector()
     soft_collector = SoftIRQCollector()
@@ -198,6 +198,7 @@ def run_agent(
                 "interfaces": interfaces,
                 "ip_addresses": _ip_addrs(),
                 "cpu_topology": topology_cache,
+                "role": role,
             }
             _post_json(server.rstrip("/") + "/api/agent/register", reg, token)
             break
@@ -306,6 +307,7 @@ def main() -> int:
     ap.add_argument("--telemetry-interval", type=float, default=float(os.getenv("IRQLENS_AGENT_TELEMETRY_INTERVAL", "1.0")))
     ap.add_argument("--heartbeat-interval", type=float, default=float(os.getenv("IRQLENS_AGENT_HEARTBEAT_INTERVAL", "5.0")))
     ap.add_argument("--include-virtual-disks", action="store_true", help="Also report loop, ram, dm-*, md and zram block devices")
+    ap.add_argument("--role", choices=["client", "server"], default="client", help="Side of the machine map this machine is drawn on")
     args = ap.parse_args()
 
     if os.name == "nt":
@@ -320,6 +322,7 @@ def main() -> int:
         telemetry_interval=max(0.1, args.telemetry_interval),
         heartbeat_interval=max(1.0, args.heartbeat_interval),
         include_virtual_disks=args.include_virtual_disks,
+        role=args.role,
     )
 
 

@@ -10,6 +10,8 @@ import hashlib
 import hmac
 from pathlib import Path
 import asyncio
+from collections import Counter
+from ipaddress import ip_interface
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -245,10 +247,10 @@ async def access_control(request: Request, call_next):
     return response
 
 
-def _refresh_system_statuses() -> None:
+def _refresh_system_statuses() -> List[SystemRecord]:
     now = time.time()
     systems = STORE.list_systems()
-    for system in systems:
+    for index, system in enumerate(systems):
         age = now - float(system.last_seen)
         status = system.status
         if age > settings.stale_threshold * 3:
@@ -258,7 +260,9 @@ def _refresh_system_statuses() -> None:
         elif status in ("CONNECTING", "ERROR", "OFFLINE", "STALE"):
             status = "ONLINE"
         if status != system.status:
-            STORE.upsert_system(system.model_copy(update={"status": status, "updated_at": now}))
+            systems[index] = system.model_copy(update={"status": status, "updated_at": now})
+            STORE.upsert_system(systems[index])
+    return systems
 
 
 def _register_local_system_snapshot() -> None:
@@ -731,8 +735,71 @@ def hosts() -> dict:
 @app.get("/api/systems")
 def systems() -> dict:
     _register_local_system_snapshot()
-    _refresh_system_statuses()
-    return {"systems": [item.model_dump() for item in STORE.list_systems()]}
+    return {"systems": [item.model_dump() for item in _refresh_system_statuses()]}
+
+
+def _fleet_payload() -> Dict[str, Any]:
+    _register_local_system_snapshot()
+    systems = [system for system in _refresh_system_statuses() if system.status != "OFFLINE"]
+    current = STORE.machine_summaries([system.id for system in systems])
+    remote_server = any(system.role == "server" for system in systems if system.mode != "local")
+    machines: List[Dict[str, Any]] = []
+    by_network: Dict[str, List[Dict[str, Any]]] = {}
+    for system in systems:
+        summary = current[system.id]
+        if system.mode == "local" and not summary["interfaces"]:
+            # This server is not running on Linux, so it has nothing to show.
+            continue
+        utilization = summary["cpu_utilization"]
+        machines.append({
+            "id": system.id,
+            "hostname": system.hostname or system.name or system.id,
+            # The machine IRQLENS runs on is the server unless another machine was added as one.
+            "role": system.role or ("server" if system.mode == "local" and not remote_server else "client"),
+            "status": system.status,
+            "last_seen": system.last_seen,
+            "cpu_count": system.cpu_count,
+            "cpu_util_avg": sum(utilization) / len(utilization) if utilization else None,
+            "cpu_util_max": max(utilization) if utilization else None,
+            "irq_rate": summary["irq_rate"],
+        })
+        for item in summary["interfaces"]:
+            traffic = summary["traffic"].get(item.name, {})
+            rx_bps, tx_bps = traffic.get("rx_bps", 0.0), traffic.get("tx_bps", 0.0)
+            for address in item.ipv4:
+                try:
+                    parsed = ip_interface(address)
+                except ValueError:
+                    continue
+                if parsed.is_loopback or parsed.is_link_local:
+                    continue
+                by_network.setdefault(str(parsed.network), []).append({
+                    "machine": system.id,
+                    "nic": item.name,
+                    "address": str(parsed.ip),
+                    "state": item.state,
+                    "speed_mbps": item.speed_mbps,
+                    # Rates are bytes per second, link speed is megabits per second.
+                    "rx_bps": rx_bps,
+                    "tx_bps": tx_bps,
+                    "utilization_pct": min(100.0, max(rx_bps, tx_bps) * 8 / (item.speed_mbps * 1e4)) if item.speed_mbps else None,
+                    "drops_ps": traffic.get("drops_ps", 0.0),
+                    "errors_ps": traffic.get("errors_ps", 0.0),
+                })
+    networks = []
+    for cidr, members in by_network.items():
+        # The same address on two machines is a host-only bridge (docker0, virbr0), not a network they share.
+        seen = Counter(member["address"] for member in members)
+        members = [member for member in members if seen[member["address"]] == 1]
+        if len({member["machine"] for member in members}) >= 2:
+            networks.append({"cidr": cidr, "members": members})
+    networks.sort(key=lambda network: (-max(member["speed_mbps"] or 0 for member in network["members"]), network["cidr"]))
+    return {"timestamp": time.time(), "machines": machines, "networks": networks}
+
+
+@app.get("/api/fleet")
+def fleet() -> dict:
+    return _fleet_payload()
 
 
 @app.get("/api/systems/{sut_id}/visualization")
@@ -1157,6 +1224,7 @@ async def agent_register(payload: AgentRegistrationRequest, request: Request) ->
         ip_addresses=payload.ip_addresses,
         mode="remote",
         sampling_interval_seconds=payload.telemetry_interval,
+        role=payload.role,
     )
     STORE.upsert_system(row)
     if payload.cpu_topology:
