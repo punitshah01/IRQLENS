@@ -5,6 +5,8 @@ All notable documentation and implementation highlights are tracked here.
 ## Unreleased
 ### Added
 - Machine map on Overview when two or more machines report: one box per machine, one pill per IPv4 network they share, and a line per link with its speed, current traffic, utilization, and drops. Selecting a box switches the dashboard to that machine. `GET /api/fleet` returns the same data. Agent 1.3.0 adds `--role client|server`.
+- Machines over SSH: `python3 run_irqlens.py --client root@<host>` (repeatable; `--server` for a machine drawn as a server) monitors more machines with nothing installed on them. The server logs in with its user's SSH key, sends the collectors over the connection, and reads telemetry back; the process on the machine ends with the connection. Captures work for these machines, their samples are put on the server's clock, and a failed connection is shown on the map with the reason and retried.
+- **+ Add machine…** in the SUT dropdown and **Remove** on the map, `POST /api/machines`, `DELETE /api/machines/{id}`: offered and accepted only on a server started with `--token`, or from a browser on the server host itself. `GET /api/systems` adds `ssh_machines` and `can_manage_machines`.
 - Storage & PCIe view: per-device IOPS, throughput, await and queue depth from `/proc/diskstats`, block-device and NVMe metadata, PCIe card enumeration with link-downgrade and AER flags; `GET /api/systems/{sut_id}/io`.
 - `/proc/net/softnet_stat` deltas (processed, dropped, time_squeeze, cpu_collision), per CPU and total.
 - NIC-to-IRQ mapping from `/sys/class/net/<iface>/device/msi_irqs/` with label matching as fallback; NVMe IRQs classified as storage.
@@ -57,6 +59,9 @@ All notable documentation and implementation highlights are tracked here.
 - Raw command outputs are named after their command (`026_ethtool_-S_ens3np0.txt` instead of `command_026.txt`). Captures made earlier keep their file names.
 - Command output is kept up to 1,048,576 characters per stream instead of 65,536, which cut `ethtool -S` on a 126-queue NIC (110,858 characters) and marked the capture incomplete.
 - Device queries that an interface does not support (`ethtool -S lo`, `ethtool -g docker0`: no output and `Operation not supported` or `no stats available`) are listed as `unsupported_commands` in the capture quality instead of as failed checks. On a server with `lo` and `docker0` they were 11 of 12 failed checks. **Check Evidence** applies this to existing captures.
+- The same queries no longer mark a remote machine's command job as failed, which made every capture of a remote machine with `lo` or `docker0` incomplete. Jobs recorded earlier keep their status.
+- The agent and the collectors need only the Python standard library (no `pydantic`).
+- A first visit opens the server's own machine when the server connects to the others over SSH; otherwise a remote SUT first, as before.
 - Agent version 1.2.0 sends softnet, storage, and PCIe telemetry and up to 1024 IRQ rows.
 - The launcher skips `pip install` when dependencies are already importable.
 - With `--host 127.0.0.1` the launcher states that the URL works on the server host only and prints the SSH port-forward command.

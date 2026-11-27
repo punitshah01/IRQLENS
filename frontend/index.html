@@ -485,6 +485,29 @@
   </div>
 
   <div id="cpu-hover-tooltip" class="cpu-hover-tooltip hidden"></div>
+  <dialog id="machine-dialog" class="dialog">
+    <form id="machine-form">
+      <h3 class="card-title">Add machine</h3>
+      <div class="card-subtitle">IRQLENS connects over SSH with the key of the user it runs as. Nothing is installed on the machine.</div>
+      <label class="dialog-field" for="machine-target">
+        <span class="overline">Machine</span>
+        <input id="machine-target" class="text-input" placeholder="root@192.0.2.35" autocomplete="off" spellcheck="false" required />
+      </label>
+      <label class="dialog-field" for="machine-role">
+        <span class="overline">Shown as</span>
+        <select id="machine-role" class="select">
+          <option value="client">Client</option>
+          <option value="server">Server</option>
+        </select>
+      </label>
+      <div id="machine-error" class="dialog-error" role="alert"></div>
+      <div class="button-row">
+        <button type="submit" id="machine-submit" class="action-button primary">Add</button>
+        <button type="button" id="machine-cancel" class="action-button ghost">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
   <div id="toast-root" class="toast-root" role="status" aria-live="polite"></div>
 
   <script src="/frontend/static/echarts.min.js"></script>

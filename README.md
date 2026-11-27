@@ -13,6 +13,7 @@ Linux IRQ, SoftIRQ, CPU, network, and system performance monitoring and diagnost
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Start IRQLENS Server](#start-irqlens-server)
+- [Monitor More Machines over SSH](#monitor-more-machines-over-ssh)
 - [Install IRQLENS Agent on SUT](#install-irqlens-agent-on-sut)
 - [Dashboard Pages](#dashboard-pages)
 - [Visualizations](#visualizations)
@@ -40,6 +41,7 @@ IRQLENS is a Linux observability tool focused on interrupt and network behavior.
 
 It supports:
 - Local Linux monitoring (server-side collectors read local /proc and /sys)
+- Remote Linux machines over SSH, with nothing installed on them (`--client root@host`)
 - Remote Linux SUT monitoring through the IRQLENS agent
 - Multi-SUT registration and selection
 - A machine map when two or more machines report: which machines share a network, at what link speed, and how busy each link is
@@ -102,6 +104,7 @@ What runs where:
 - IRQLENS server: `backend/app/main.py` FastAPI app, telemetry sampler, diagnostics APIs, and WebSocket endpoint
 - Database: SQLite at `IRQLENS_DB_PATH` (default `backend/data/irqlens.db` when started from `run_irqlens.py`)
 - Remote SUT agent: `agent/main.py` reads SUT-local Linux sources and POSTs telemetry to server
+- Machines added over SSH: the server starts `python3` on the machine through `ssh`, sends it the same collectors, and reads the telemetry back over that connection
 
 ## Local and Remote Modes
 ### Local mode
@@ -121,6 +124,13 @@ SUT Agent
       |
 Remote Linux SUT
 ```
+
+### SSH mode
+```text
+IRQLENS Server  --- ssh --->  python3 on the machine (collectors sent over the connection)
+```
+
+The server connects; nothing is installed, written, or left running on the machine. See [Monitor More Machines over SSH](#monitor-more-machines-over-ssh).
 
 Why /proc and /sys must be read on the SUT:
 - IRQ counters, SoftIRQ counters, interface counters, and CPU topology are kernel-local runtime views.
@@ -223,9 +233,9 @@ On Windows the server and dashboard run, but local telemetry is empty because `/
 1. Clone the repository.
 2. Start IRQLENS server: `python3 run_irqlens.py` (add `--port <n>` for a port other than 10000).
 3. Open the URL it prints: `http://<server-ip>:10000`.
-4. Remote SUTs only: on each Linux SUT, start the IRQLENS agent with the server URL.
+4. More machines: add `--client root@<host>` for each one when starting the server (SSH key login, nothing to install), or start the IRQLENS agent on the machine with the server URL.
 5. Verify the SUT appears as `ONLINE` in the header SUT dropdown or `GET /api/systems`.
-6. Pick the SUT in the header dropdown. The UI restores the last selection, otherwise prefers a remote SUT and falls back to the local system.
+6. Pick the SUT in the header dropdown. The UI restores the last selection; otherwise it opens the server's own machine when the server connects to the others over SSH, else a remote SUT, else the local system.
 7. Confirm live updates (`WebSocket: connected`).
 8. Review IRQ, SoftIRQ, CPU, Network, and Storage & PCIe views.
 9. Start a capture in Collect Logs (or from a script, see [CLI](#cli-trigger-captures-from-benchmark-scripts)) and download the Excel workbook or ZIP.
@@ -252,7 +262,7 @@ With `--host 127.0.0.1`, or when a firewall blocks the port, forward it over SSH
 ssh -L 10000:127.0.0.1:10000 <user>@<sut>
 ```
 
-Launcher options: `--host` (default `0.0.0.0`), `--port` (default 10000), `--token`, `--interval` (local sampling interval in seconds). `--remote` is still accepted and has no effect.
+Launcher options: `--host` (default `0.0.0.0`), `--port` (default 10000), `--token`, `--interval` (local sampling interval in seconds), `--client` and `--server` (machines to monitor over SSH, see below). `--remote` is still accepted and has no effect.
 
 Starting the backend directly (no launcher) binds whatever uvicorn is told and is unauthenticated unless a token variable is set:
 
@@ -266,6 +276,37 @@ Runtime details:
 - DB location: `IRQLENS_DB_PATH` (default from `run_irqlens.py`: `backend/data/irqlens.db`)
 - Session/log output root: `IRQLENS_OUTPUT_DIR` (default `./captures`)
 - Log level: `IRQLENS_LOG_LEVEL` (default `INFO`)
+
+## Monitor More Machines over SSH
+Start the server on one machine and name the others. Each `--client` is one more machine on the dashboard and on the Overview map:
+
+```bash
+# on the server under test
+python3 run_irqlens.py --client root@192.0.2.35 --client root@192.0.2.36
+```
+
+Addresses are `[user@]host[:port]`; without a user, `ssh` decides (`~/.ssh/config`, else the current user). `--server <address>` adds a machine that the map draws as a server; the machine IRQLENS runs on is then drawn as a client.
+
+What it needs:
+- Key login from the user IRQLENS runs as to that address: `ssh root@192.0.2.35 true` must work without a password prompt. If not, run `ssh-copy-id root@192.0.2.35` once.
+- `python3` 3.9 or newer on the machine. Nothing else: no IRQLENS checkout, no packages.
+
+What happens:
+- The server runs `ssh ... python3 -u -c '<loader>'` and sends the collectors over that connection. They run from memory, read `/proc` and `/sys`, and write one JSON line per sample back. Nothing is installed or written on the machine, and the process ends when the connection closes, so stopping the server (or removing the machine) leaves nothing behind. It costs about 4% of one core and 30 MB on a 192-CPU client.
+- Captures in Collect Logs work for these machines; the capture's commands travel over the same connection.
+- The machine is listed by the host name it reports and stored under the address you gave.
+- Its samples are put on the server's clock (a constant shift, measured when the connection starts), so a machine whose clock is minutes off still lines up with the others and with capture windows.
+- A lost connection is retried after 5, 10, 30, then every 60 seconds. Meanwhile the map shows the machine with what `ssh` reported (`Permission denied (publickey)`, `Connection refused`, `python3: command not found`) and, where there is one, the command that fixes it.
+- The first connection to a machine adds its host key to `~/.ssh/known_hosts` (`StrictHostKeyChecking=accept-new`); a machine whose key later changes is refused. Prefer the management address of a machine so that monitoring traffic stays off the link under test.
+- The list is not saved: a restart monitors the machines named on that command line.
+
+From the browser: the SUT dropdown ends with **+ Add machine…**, and a machine's box on the map has **Remove**, when the server lets that browser do it:
+- always when the server was started with `--token` (whoever signed in may), and
+- without a token, only in a browser on the server host itself, which includes one reaching it through `ssh -L`.
+
+Any other browser sees the machines but cannot add or remove them, because adding one makes the server open an SSH connection with its own key. Removing a machine keeps its captures; a machine without captures disappears from the SUT dropdown as well.
+
+SSH or the agent: use SSH when the server can log in to the machine. Use the [agent](#install-irqlens-agent-on-sut) when only the machine can reach the server, or when it should keep reporting on its own.
 
 ## Install IRQLENS Agent on SUT
 Agent implementation path: `agent/main.py`. Add `--token <token>` when the server was started with one.
@@ -291,7 +332,9 @@ Agent configuration options:
 - `--include-virtual-disks` to also report `loop*`, `ram*`, `dm-*`, `md*`, and `zram*` block devices
 - `--role client|server` (default `client`): the side of the Overview [machine map](#dashboard-pages) this machine is drawn on
 
-The agent needs only the Python standard library plus `pydantic` (it imports the collectors from `backend/app/collectors`). Storage, PCIe, and softnet telemetry require agent 1.2.0 or newer; older agents keep working without those views.
+The agent needs only the Python standard library and this repository's checkout (it imports the collectors from `backend/app/collectors`); it has no third-party dependencies. Storage, PCIe, and softnet telemetry require agent 1.2.0 or newer; older agents keep working without those views.
+
+The agent stamps samples with its machine's clock. Keep that clock in step with the server's (NTP or chrony): samples from a clock that is minutes off fall outside the dashboard's time ranges and capture windows. Machines added over SSH do not have this requirement.
 
 Authentication:
 - `IRQLENS_TOKEN` (or `run_irqlens.py --token`) is the single shared token for the dashboard, API, downloads, WebSocket, and agents.
@@ -315,7 +358,7 @@ Current IRQ/SoftIRQ/network KPIs, IRQ and network trends, CPU/NUMA matrix, and f
 
 When two or more machines report, a **Machines** card sits above those details: one box per machine (clients left, servers right) with its CPU utilization and IRQ rate, and one pill per IPv4 network that at least two of them share. Each line from a network interface to its network shows the link speed (`400G`), current RX/TX in bit/s, and the share of the link in use; the line gets thicker with traffic, turns red on drops, errors, or a link that is down, and is dashed for a machine that stopped reporting. Selecting a box is the same as choosing that machine in the SUT dropdown. With one machine the card is not shown.
 
-The machine IRQLENS runs on is drawn as the server unless another machine reports `--role server`. Networks are inferred from interface addresses, so a switch between two machines is not drawn separately, and an address that several machines have in common (`docker0` on `172.17.0.1/16`) is ignored.
+The machine IRQLENS runs on is drawn as the server unless another machine was added with `--server` or reports `--role server`. A machine added over SSH that is not connected stays on the map with the reason. Networks are inferred from interface addresses, so a switch between two machines is not drawn separately, and an address that several machines have in common (`docker0` on `172.17.0.1/16`) is ignored.
 
 ### CPU
 Topology-based CPU matrix with IRQ, SoftIRQ, and utilization metrics, per-CPU detail, and utilization history.
@@ -332,7 +375,7 @@ KPI strip (total IOPS, read/write MB/s, max await, PCIe link warnings, AER error
 ### Collect Logs
 Named timed captures, category selection, recent capture history, remote-command job status, file downloads, Excel workbook, ZIP archives, and HTML reports.
 
-Header controls: the SUT dropdown switches between registered SUTs, `irqbalance: active|inactive|unknown` shows the daemon state on the selected SUT, and **Pause Live Updates** freezes the monitoring views until resumed. Charts redraw at most once per second regardless of the sampling interval. An open dashboard makes the server answer one refresh per second (about 14% of one core on a 256-CPU SUT, on top of about 5% for sampling). A hidden tab does not poll, and a paused dashboard only checks the SUT status.
+Header controls: the SUT dropdown switches between registered SUTs (and, where the server allows it, ends with **+ Add machine…**), `irqbalance: active|inactive|unknown` shows the daemon state on the selected SUT, and **Pause Live Updates** freezes the monitoring views until resumed. Charts redraw at most once per second regardless of the sampling interval. An open dashboard makes the server answer one refresh per second (about 14% of one core on a 256-CPU SUT, on top of about 5% for sampling). A hidden tab does not poll, and a paused dashboard only checks the SUT status.
 
 There are no separate Systems, Sessions, Settings, Admin, Logs, or Compare pages. System listing and comparison APIs remain available.
 
@@ -589,12 +632,15 @@ Current implemented controls:
 - `/health` is an intentionally unauthenticated, minimal liveness endpoint.
 - Command execution is restricted to allowlisted diagnostics in `DiagnosticCommandCollector`
 - No arbitrary shell execution API exists
+- Machines over SSH: the server runs `ssh` with an argument list (no shell), key login only (`BatchMode=yes`, so no password is ever asked for or stored), no agent, X11, or port forwarding, and one fixed remote command. The address is validated (`[user@]host[:port]`) and passed after `--`, so it cannot be read as an `ssh` option. The remote side runs only the collectors the server sends: `/proc` and `/sys` reads plus the allowlisted diagnostic commands of a capture.
+- Adding or removing such a machine is refused (`403`) unless a token is configured or the request comes from the server host itself: a loopback peer address, a `Host` header naming `127.0.0.1`, `localhost`, or `[::1]`, and none of `X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP`, `Forwarded`, `Via`. The `Host` rule stops a page on another site that resolves its own name to `127.0.0.1`; the header rule stops requests relayed by a reverse proxy on the same host.
 - File download endpoint validates requested paths are under configured output root and answers with `X-Content-Type-Options: nosniff`
 
 Important operational warning:
 - Authentication is disabled when no token is configured, which is the default. Run it that way only on networks where every host that can reach the port is trusted; otherwise set a token. Restart the server after changing token configuration.
 - HTTP Basic and bearer tokens require HTTPS/WSS outside loopback. Use TLS termination, network ACLs, and access restrictions. This is shared-token authentication, not per-user roles or per-SUT credentials.
 - A reverse proxy must forward Authorization and WebSocket upgrades and preserve the external scheme/host with trusted proxy configuration.
+- Behind a reverse proxy on the same host, set a token. A proxy that neither keeps the external `Host` header nor adds `X-Forwarded-For` (nginx `proxy_pass` with default settings) makes every request look like one from the server host, which would let any visitor add machines.
 
 TLS/WSS note:
 - Native HTTPS/WSS termination is not configured in this repository.
@@ -614,6 +660,7 @@ Default flow:
 ```text
 Browser  --->  IRQLENS Server :10000 (HTTP + WS)
 Agent    --->  IRQLENS Server :10000 (HTTP POST)
+IRQLENS Server  --->  machine :22 (SSH, for machines added with --client / --server)
 ```
 
 The launcher listens on all interfaces by default; with `--host 127.0.0.1` neither flow works from another host.
@@ -629,6 +676,7 @@ OpenAPI and docs:
 Major API groups:
 - Health/system routing: `/api/health`, `/api/system`, `/api/systems*`
 - Machine map: `/api/fleet`
+- Machines over SSH: `POST /api/machines` (`{"target": "root@192.0.2.35", "role": "client"}`), `DELETE /api/machines/{id}`; `GET /api/systems` lists them under `ssh_machines` and reports `can_manage_machines` for the caller
 - Telemetry reads: `/api/irq/*`, `/api/softirq/current`, `/api/network/*`, `/api/interfaces`
 - Visualization: `/api/systems/{sut_id}/visualization*`, `/api/visualization/compare`
 - Storage, PCIe, softnet: `/api/systems/{sut_id}/io`
@@ -717,6 +765,7 @@ From `backend/app/config.py`. Set environment variables in the launching shell; 
 | `IRQLENS_API_TOKEN` | Dashboard/API-only override of the shared token | empty | No |
 | `IRQLENS_AGENT_HEARTBEAT_INTERVAL` | Suggested heartbeat interval returned to agent | `5` | No |
 | `IRQLENS_AGENT_STALE_THRESHOLD` | Stale/offline threshold basis | `15` | No |
+| `IRQLENS_MACHINES` | Machines to monitor over SSH, comma-separated `client=[user@]host[:port]` or `server=...`; set by the launcher's `--client` and `--server` | empty | No |
 
 ## Testing
 Backend tests (storage is automatically isolated in a temporary directory):
@@ -777,6 +826,14 @@ PASS/WARN/FAIL semantics:
 - Timeout on `http://<sut>:10000`: a firewall between you and the SUT blocks that port. Start the server on a port that is open (`--port <n>`), or forward the port over SSH (`ssh -L 10000:127.0.0.1:10000 <user>@<sut>`) and open `http://127.0.0.1:10000`.
 - "127.0.0.1 refused to connect": `127.0.0.1` in your browser is your own machine, not the SUT. Use the URL the launcher printed, or the SSH forward above.
 
+### A machine added over SSH does not connect
+The machine's box on the Overview map shows what `ssh` reported; the server log has the same line.
+- `Permission denied (publickey...)`: the key of the user IRQLENS runs as is not accepted. On the server: `ssh-copy-id <user>@<host>`.
+- `Host key verification failed`: the machine was reinstalled or the address now belongs to another machine. After checking, on the server: `ssh-keygen -R <host>`.
+- `python3: command not found`, or a message that Python 3.9 is needed: install `python3` on the machine.
+- `Connection timed out` / `Connection refused`: the address or port is wrong, or a firewall is in the way. Try `ssh <user>@<host> true` on the server.
+- No **+ Add machine…** in the SUT dropdown: the server has no token and your browser is not on the server host. Name the machine on the command line (`--client`), open the dashboard through `ssh -L`, or start the server with `--token`.
+
 ### Agent does not connect
 Check:
 - Server was not started with `--host 127.0.0.1` (this host only)
@@ -791,6 +848,9 @@ Check:
 - Agent process health on SUT
 - Heartbeat POST cadence
 - Server stale threshold config (`IRQLENS_AGENT_STALE_THRESHOLD`)
+
+### Charts of an agent's SUT are empty while its current values are shown
+The SUT's clock differs from the server's by more than the selected range (compare `date -u` on both). Synchronize it, or add the machine over SSH (`--client`), which corrects for the difference.
 
 ### No IRQ data
 Check on SUT:

@@ -5,6 +5,7 @@ import argparse
 import socket
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,14 @@ from pathlib import Path
 
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 REQUIRED_MODULES = "fastapi, uvicorn, pydantic, websockets, openpyxl"
+# The server checks the address again; this catches a typing mistake before anything starts.
+MACHINE = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_.-]{0,63}@)?[A-Za-z0-9][A-Za-z0-9._-]{0,252}(?::\d{1,5})?")
+
+
+def _machine(value: str) -> str:
+    if not MACHINE.fullmatch(value):
+        raise argparse.ArgumentTypeError(f"'{value}' is not a machine address; use [user@]host[:port], for example root@192.0.2.35")
+    return value
 
 
 def _venv_python(backend_dir: Path) -> Path:
@@ -73,6 +82,10 @@ def main() -> int:
     ap.add_argument("--remote", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--token", default="", help="Require this token from every browser, script, and agent (default: IRQLENS_TOKEN; unset = no sign-in)")
     ap.add_argument("--interval", type=float, default=0.0, help="Local sampling interval in seconds")
+    ap.add_argument("--client", action="append", default=[], type=_machine, metavar="[USER@]HOST[:PORT]",
+                    help="Also monitor this machine, over SSH with this user's key; nothing is installed on it. Repeat for more machines")
+    ap.add_argument("--server", action="append", default=[], type=_machine, metavar="[USER@]HOST[:PORT]",
+                    help="The same, for a machine the map shows as a server")
     args = ap.parse_args()
 
     root = Path(__file__).resolve().parent
@@ -107,6 +120,9 @@ def main() -> int:
     env["IRQLENS_PORT"] = str(args.port)
     if args.interval > 0:
         env["IRQLENS_COLLECTION_INTERVAL"] = str(args.interval)
+    machines = [f"client={target}" for target in args.client] + [f"server={target}" for target in args.server]
+    if machines:
+        env["IRQLENS_MACHINES"] = ",".join(machines)
 
     token = args.token or env.get("IRQLENS_TOKEN", "")
     if token:
@@ -143,6 +159,8 @@ def main() -> int:
         print(f"  - {name}: {status}")
     if args.remote:
         print("Note: --remote is no longer needed; all interfaces are served by default.")
+    if machines:
+        print(f"Machines over SSH: {', '.join(args.client + args.server)} (key login as this user; nothing is installed on them)")
     hint = "Paste the URL above into your browser."
     if local:
         print("This host only: listening on loopback.")

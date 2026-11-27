@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 import base64
 import binascii
@@ -11,7 +12,7 @@ import hmac
 from pathlib import Path
 import asyncio
 from collections import Counter
-from ipaddress import ip_interface
+from ipaddress import ip_address, ip_interface
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -32,13 +33,17 @@ from .models import (
     AgentDiagnosticPollRequest,
     AgentDiagnosticResultsRequest,
     IRQSample,
+    MachineCreateRequest,
     SessionStartRequest,
     SessionStopRequest,
     SystemCreateRequest,
     SystemInfo,
     SystemRecord,
 )
-from .services import DiagnosticSessionService, HealthService, TelemetrySampler, detect_spikes, irq_balance_score
+from .services import (
+    DiagnosticSessionService, HealthService, RemoteMachines, TelemetrySampler, detect_spikes, irq_balance_score, parse_target,
+)
+from .services.capture_quality import unsupported_by_device
 from .services.exporter import sanitize
 from .services.visualization import cross_numa_mismatch
 from .store import STORE
@@ -80,6 +85,8 @@ app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
 SAMPLER = TelemetrySampler(settings=settings, store=STORE, ws_manager=WS)
 DIAGNOSTICS = DiagnosticSessionService(settings=settings, store=STORE)
 HEALTH = HealthService(settings=settings)
+# The server's event loop: connection threads hand their WebSocket messages to it.
+LOOP: Optional[asyncio.AbstractEventLoop] = None
 SESSION_AUTO_STOP_TASKS: Dict[str, asyncio.Task] = {}
 SESSION_REPORT_TASKS: Dict[str, asyncio.Task] = {}
 ALLOWED_CAPTURE_DURATIONS = {30, 60, 120, 300, 600, 900, 1800}
@@ -214,6 +221,26 @@ def _origin_allowed(connection: HTTPConnection) -> bool:
         return True
     same_origin = str(connection.base_url).rstrip("/").replace("ws://", "http://").replace("wss://", "https://")
     return origin == same_origin or origin in [value for value in settings.cors_origins if value != "*"]
+
+
+LOCAL_HOST_HEADER = re.compile(r"(127\.0\.0\.1|localhost|\[::1\])(:\d+)?", re.IGNORECASE)
+RELAY_HEADERS = ("x-forwarded-for", "x-forwarded-host", "x-real-ip", "forwarded", "via")
+
+
+def _can_manage_machines(connection: HTTPConnection) -> bool:
+    # Adding a machine makes this server open an SSH connection with its own key. With a token set, every caller
+    # that got this far holds it. Without one, only a browser on the server host itself may do it.
+    if settings.api_token or settings.agent_token:
+        return True
+    try:
+        local_peer = connection.client is not None and ip_address(connection.client.host).is_loopback
+    except ValueError:
+        return False
+    # A page on another site can reach 127.0.0.1 through a host name of its own, and a reverse proxy connects
+    # from loopback for everyone: the Host header and the proxy's headers tell those apart.
+    local_name = LOCAL_HOST_HEADER.fullmatch(connection.headers.get("host", "")) is not None
+    relayed = any(name in connection.headers for name in RELAY_HEADERS)
+    return local_peer and local_name and not relayed
 
 
 @app.middleware("http")
@@ -590,14 +617,25 @@ def _visualization_payload(
 
 @app.on_event("startup")
 async def startup() -> None:
+    global LOOP
+    LOOP = asyncio.get_running_loop()
     settings.ensure_dirs()
     await SAMPLER.start()
     _register_local_system_snapshot()
+    for entry in settings.machines:
+        role, _, target = entry.partition("=")
+        try:
+            REMOTE.add(parse_target(target, role))
+        except ValueError as error:
+            logger.error("machine %s ignored: %s", entry, error)
     logger.info("IRQLENS started interval=%s output=%s", settings.collection_interval, settings.output_dir)
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    global LOOP
+    await asyncio.to_thread(REMOTE.stop)
+    LOOP = None
     await SAMPLER.stop()
 
 
@@ -733,14 +771,21 @@ def hosts() -> dict:
 
 
 @app.get("/api/systems")
-def systems() -> dict:
+def systems(request: Request) -> dict:
     _register_local_system_snapshot()
-    return {"systems": [item.model_dump() for item in _refresh_system_statuses()]}
+    return {
+        "systems": [item.model_dump() for item in _refresh_system_statuses()],
+        # Machines this server connects to over SSH, and whether this caller may add or remove them.
+        "ssh_machines": REMOTE.describe(),
+        "can_manage_machines": _can_manage_machines(request),
+    }
 
 
 def _fleet_payload() -> Dict[str, Any]:
     _register_local_system_snapshot()
-    systems = [system for system in _refresh_system_statuses() if system.status != "OFFLINE"]
+    connections = {item["id"]: item for item in REMOTE.describe()}
+    # A machine this server connects to stays on the map while it is unreachable.
+    systems = [system for system in _refresh_system_statuses() if system.status != "OFFLINE" or system.id in connections]
     current = STORE.machine_summaries([system.id for system in systems])
     remote_server = any(system.role == "server" for system in systems if system.mode != "local")
     machines: List[Dict[str, Any]] = []
@@ -762,6 +807,7 @@ def _fleet_payload() -> Dict[str, Any]:
             "cpu_util_avg": sum(utilization) / len(utilization) if utilization else None,
             "cpu_util_max": max(utilization) if utilization else None,
             "irq_rate": summary["irq_rate"],
+            "connection": connections.pop(system.id, None),
         })
         for item in summary["interfaces"]:
             traffic = summary["traffic"].get(item.name, {})
@@ -794,12 +840,45 @@ def _fleet_payload() -> Dict[str, Any]:
         if len({member["machine"] for member in members}) >= 2:
             networks.append({"cidr": cidr, "members": members})
     networks.sort(key=lambda network: (-max(member["speed_mbps"] or 0 for member in network["members"]), network["cidr"]))
+    # Machines that have not reported yet: nothing is known about them but the address.
+    for connection in connections.values():
+        machines.append({
+            "id": connection["id"], "hostname": connection["id"], "role": connection["role"],
+            "status": "ERROR" if connection["state"] == "error" else "CONNECTING", "last_seen": 0.0, "cpu_count": 0,
+            "cpu_util_avg": None, "cpu_util_max": None, "irq_rate": None, "connection": connection,
+        })
     return {"timestamp": time.time(), "machines": machines, "networks": networks}
 
 
 @app.get("/api/fleet")
 def fleet() -> dict:
     return _fleet_payload()
+
+
+@app.post("/api/machines")
+def add_machine(req: MachineCreateRequest, request: Request) -> dict:
+    if not _can_manage_machines(request):
+        raise HTTPException(status_code=403, detail="Machines can be added from a browser on the IRQLENS server itself, or on a server started with --token.")
+    try:
+        machine = REMOTE.add(parse_target(req.target, req.role))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    return {"machine": machine.describe()}
+
+
+@app.delete("/api/machines/{machine_id}")
+def remove_machine(machine_id: str, request: Request) -> dict:
+    if not _can_manage_machines(request):
+        raise HTTPException(status_code=403, detail="Machines can be removed from a browser on the IRQLENS server itself, or on a server started with --token.")
+    if not REMOTE.remove(machine_id):
+        raise HTTPException(status_code=404, detail="machine not found")
+    system = STORE.get_system(machine_id)
+    if system and any(session.sut_id == machine_id for session in STORE.list_sessions()):
+        # Its captures stay reachable under the SUT switcher.
+        STORE.upsert_system(system.model_copy(update={"status": "OFFLINE", "last_seen": 0.0}))
+    else:
+        STORE.delete_system(machine_id)
+    return {"ok": True}
 
 
 @app.get("/api/systems/{sut_id}/visualization")
@@ -1194,10 +1273,8 @@ async def start_session(req: SessionStartRequest) -> dict:
     return {"session": session.model_dump(), "files": [item.model_dump() for item in files]}
 
 
-@app.post("/api/agent/register")
-async def agent_register(payload: AgentRegistrationRequest, request: Request) -> dict:
-    if not _agent_authorized(request):
-        raise HTTPException(status_code=401, detail="unauthorized agent")
+# Agents that post over HTTP and machines connected over SSH are stored through the same three functions.
+def _ingest_registration(payload: AgentRegistrationRequest) -> float:
     now = time.time()
     existing = STORE.get_system(payload.sut_id)
     created = existing.created_at if existing else now
@@ -1229,6 +1306,14 @@ async def agent_register(payload: AgentRegistrationRequest, request: Request) ->
     STORE.upsert_system(row)
     if payload.cpu_topology:
         STORE.add_cpu_topology(payload.sut_id, payload.cpu_topology, timestamp=now)
+    return now
+
+
+@app.post("/api/agent/register")
+async def agent_register(payload: AgentRegistrationRequest, request: Request) -> dict:
+    if not _agent_authorized(request):
+        raise HTTPException(status_code=401, detail="unauthorized agent")
+    now = _ingest_registration(payload)
     await WS.broadcast({"type": "system_registered", "sut_id": payload.sut_id, "timestamp": now})
     return {"ok": True, "sut_id": payload.sut_id, "heartbeat_interval": settings.heartbeat_interval, "stale_threshold": settings.stale_threshold}
 
@@ -1242,45 +1327,53 @@ async def agent_heartbeat(payload: AgentHeartbeatRequest, request: Request) -> d
     return {"ok": True}
 
 
+def _claim_diagnostics(sut_id: str) -> Optional[Dict[str, Any]]:
+    job = STORE.claim_diagnostics(sut_id)
+    if job:
+        job["command_timeout_seconds"] = min(30.0, settings.command_timeout_seconds)
+    return job
+
+
 @app.post("/api/agent/diagnostics/poll")
 def agent_diagnostics_poll(payload: AgentDiagnosticPollRequest) -> dict:
     if not STORE.get_system(payload.sut_id):
         raise HTTPException(status_code=404, detail="system not registered")
-    job = STORE.claim_diagnostics(payload.sut_id)
-    if job:
-        job["command_timeout_seconds"] = min(30.0, settings.command_timeout_seconds)
-    return {"job": job}
+    return {"job": _claim_diagnostics(payload.sut_id)}
 
 
-@app.post("/api/agent/diagnostics/{job_id}/results")
-async def agent_diagnostics_results(job_id: str, payload: AgentDiagnosticResultsRequest) -> dict:
+def _record_diagnostics(job_id: str, payload: AgentDiagnosticResultsRequest) -> Optional[str]:
+    # Returns the capture whose files changed; None when this upload had been recorded before.
     job = STORE.diagnostic_job(job_id)
     if not job or job["sut_id"] != payload.sut_id:
         raise HTTPException(status_code=404, detail="diagnostic job not found")
     if not secrets.compare_digest(job["lease_token"], payload.lease_token):
         raise HTTPException(status_code=409, detail="diagnostic job lease expired")
     if job["status"] in {"completed", "failed"}:
-        return {"ok": True}
+        return None
     if job["status"] != "running":
         raise HTTPException(status_code=409, detail="diagnostic job not claimed")
     error = payload.error
     if not payload.results and not error:
         error = "Agent returned no diagnostic results."
-    if any(not result.success for result in payload.results) and not error:
+    # A query the interface does not support (ethtool on lo) is not a failed job; capture quality lists it.
+    if any(not result.success and not unsupported_by_device(result.model_dump()) for result in payload.results) and not error:
         error = "One or more commands failed or were unavailable; see command output."
     try:
-        await asyncio.to_thread(DIAGNOSTICS.record_remote_diagnostics, job, payload.results, error)
+        DIAGNOSTICS.record_remote_diagnostics(job, payload.results, error)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
-    await WS.broadcast({"type": "session_diagnostics_ready", "session_id": job["session_id"], "timestamp": time.time()})
+    return job["session_id"]
+
+
+@app.post("/api/agent/diagnostics/{job_id}/results")
+async def agent_diagnostics_results(job_id: str, payload: AgentDiagnosticResultsRequest) -> dict:
+    session_id = await asyncio.to_thread(_record_diagnostics, job_id, payload)
+    if session_id:
+        await WS.broadcast({"type": "session_diagnostics_ready", "session_id": session_id, "timestamp": time.time()})
     return {"ok": True}
 
 
-@app.post("/api/agent/telemetry")
-async def agent_telemetry(payload: AgentTelemetryPayload, request: Request) -> dict:
-    if not _agent_authorized(request):
-        raise HTTPException(status_code=401, detail="unauthorized agent")
-
+def _ingest_telemetry(payload: AgentTelemetryPayload) -> None:
     sut_id = payload.sut_id
     system_info = payload.system.model_copy(update={"timestamp": payload.timestamp})
     irq_rows = [row.model_copy(update={"sut_ip": sut_id, "sut_id": sut_id}) for row in payload.irq_rows]
@@ -1327,15 +1420,87 @@ async def agent_telemetry(payload: AgentTelemetryPayload, request: Request) -> d
         )
         STORE.upsert_system(updated)
 
+
+@app.post("/api/agent/telemetry")
+async def agent_telemetry(payload: AgentTelemetryPayload, request: Request) -> dict:
+    if not _agent_authorized(request):
+        raise HTTPException(status_code=401, detail="unauthorized agent")
+    _ingest_telemetry(payload)
     await WS.broadcast(
         {
             "type": "telemetry",
-            "sut_id": sut_id,
+            "sut_id": payload.sut_id,
             "timestamp": payload.timestamp,
             "cpu_utilization": payload.cpu_utilization,
         }
     )
     return {"ok": True}
+
+
+def _broadcast_from_thread(message: Dict[str, Any]) -> None:
+    if LOOP is None:
+        return
+    send = WS.broadcast(message)
+    try:
+        asyncio.run_coroutine_threadsafe(send, LOOP)
+    except RuntimeError:
+        # The server is shutting down.
+        send.close()
+
+
+# Seconds to add to the timestamps of a machine connected over SSH so that they read on this server's clock.
+CLOCK_SHIFTS: Dict[str, float] = {}
+
+
+def _on_server_clock(machine_id: str, message: Dict[str, Any]) -> None:
+    # A machine's clock can be minutes off this server's; its samples would then miss every chart and capture window.
+    if not isinstance(message.get("timestamp"), (int, float)):
+        return
+    observed = time.time() - message["timestamp"]
+    shift = CLOCK_SHIFTS.get(machine_id)
+    # The smallest difference seen is the one least stretched by delivery; a clock that was set back starts over.
+    if shift is None or observed < shift or observed - shift > 30.0:
+        shift = CLOCK_SHIFTS[machine_id] = observed
+    rows = [message, message.get("system"), message.get("softirq")]
+    for key in ("irq_rows", "network_samples", "interfaces"):
+        rows.extend(message.get(key) or [])
+    for row in rows:
+        if isinstance(row, dict) and isinstance(row.get("timestamp"), (int, float)):
+            row["timestamp"] += shift
+
+
+def _remote_message(machine_id: str, message: Dict[str, Any]) -> None:
+    # The id is the address this server connected to, whatever the machine calls itself.
+    message = {**message, "sut_id": machine_id}
+    kind = message.get("type")
+    if kind == "register":
+        CLOCK_SHIFTS.pop(machine_id, None)
+        now = _ingest_registration(AgentRegistrationRequest.model_validate(message))
+        _broadcast_from_thread({"type": "system_registered", "sut_id": machine_id, "timestamp": now})
+    elif kind == "telemetry":
+        _on_server_clock(machine_id, message)
+        payload = AgentTelemetryPayload.model_validate(message)
+        _ingest_telemetry(payload)
+        _broadcast_from_thread({
+            "type": "telemetry", "sut_id": machine_id, "timestamp": payload.timestamp, "cpu_utilization": payload.cpu_utilization,
+        })
+    elif kind == "diagnostics_result":
+        try:
+            session_id = _record_diagnostics(str(message.get("job_id", "")), AgentDiagnosticResultsRequest.model_validate(message))
+        except (HTTPException, ValueError) as error:
+            # One capture's commands could not be stored; monitoring goes on.
+            logger.warning("diagnostics from %s were not recorded: %s", machine_id, getattr(error, "detail", error))
+            return
+        if session_id:
+            _broadcast_from_thread({"type": "session_diagnostics_ready", "session_id": session_id, "timestamp": time.time()})
+
+
+def _next_remote_job(machine_id: str) -> Optional[Dict[str, Any]]:
+    job = _claim_diagnostics(machine_id)
+    return {"type": "diagnostics", "job": job} if job else None
+
+
+REMOTE = RemoteMachines(on_message=_remote_message, next_job=_next_remote_job, telemetry_interval=settings.collection_interval)
 
 
 @app.post("/api/sessions/{session_id}/stop")

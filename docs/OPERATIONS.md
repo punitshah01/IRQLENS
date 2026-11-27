@@ -27,6 +27,17 @@ Started this way the server is unauthenticated unless `IRQLENS_TOKEN` is set.
 ### Stop
 - Press `Ctrl+C` in the server terminal.
 
+### More machines over SSH
+```bash
+# one server and two clients, nothing installed on the clients
+python3 run_irqlens.py --client root@192.0.2.35 --client root@192.0.2.36
+```
+
+- Needs key login from the user running IRQLENS (`ssh root@192.0.2.35 true` without a prompt) and `python3` 3.9+ on each machine.
+- Stopping the server ends the collector on every machine. To check a machine: `pgrep -af 'python3 -u -c import sys;exec'` prints nothing.
+- Connection problems are in the machine's box on the Overview map and in the server log (`irqlens.remote`).
+- A browser on the server host, or any signed-in browser on a server started with `--token`, can add machines from the SUT dropdown and remove them on the map. The list is not saved across restarts.
+
 ## 2. Start and Stop Agent
 
 ### Start on Linux SUT
@@ -54,6 +65,7 @@ curl -s http://127.0.0.1:10000/api/systems
 
 ## 4. Logs
 - Server logs: stdout/stderr of uvicorn process
+- Machines over SSH: logger `irqlens.remote` in the server log (connected, reason for a failure, next attempt)
 - Agent logs: stdout/stderr of `agent/main.py`
 - Browser failures: inspect browser developer tools; there is no dedicated Logs page.
 
@@ -109,6 +121,8 @@ Manual cleanup options:
 
 ## 10. Troubleshooting Quick Ops
 - SUT stale/offline: check agent process, token, and network route
+- Machine over SSH not connected: read the reason in its box on the Overview map, then try `ssh <user>@<host> true` as the user running IRQLENS
+- Charts empty for an agent's SUT while current values show: its clock is off; synchronize it or add the machine with `--client`
 - No data: verify `/proc` and `/sys` readability on SUT
 - Validation: run `tools/validate_sut_visualization.py` with appropriate mode
 
@@ -121,9 +135,10 @@ Manual cleanup options:
 - The validator accepts `--token`, `IRQLENS_API_TOKEN`, `IRQLENS_AGENT_TOKEN`, or `IRQLENS_TOKEN`; the agent accepts `--token`, `IRQLENS_AGENT_TOKEN`, or `IRQLENS_TOKEN`.
 - Use TLS outside loopback and preserve Authorization and WebSocket upgrades through any proxy. Only `/health` remains public when authentication is configured.
 - No token configured disables authentication. Restart after changing credentials.
+- Adding or removing a machine over SSH is accepted only with a token configured, or from the server host itself (loopback peer, local `Host` name, no proxy headers). Behind a reverse proxy on the same host, configure a token.
 
 ## 12. Remote Commands
-- Upgrade agents to 1.1.0 for command capture and to 1.2.0 for the `storage` category (`lsblk`, `nvme`). Jobs use outbound polling; no inbound agent port is required.
+- Upgrade agents to 1.1.0 for command capture and to 1.2.0 for the `storage` category (`lsblk`, `nvme`). Jobs use outbound polling; no inbound agent port is required. Machines over SSH receive jobs over their connection.
 - Capture details show queued/running/completed/failed jobs. Keep the agent running until jobs finish.
 - A failed job retains command stdout/stderr and exit codes. Check missing tools, privileges, timeout, and output-limit messages.
 - ZIP/report downloads include data currently available. Generate/download again after late results arrive; report status is cleared when results change.

@@ -12,6 +12,8 @@ const LIVE_RENDER_INTERVAL_MS = 1000;
 const DETAILS_REFRESH_MS = 30000;
 const IRQ_TOP_N_OPTIONS = ["25", "50", "100", "all"];
 const IRQ_AGGREGATE_OPTIONS = ["cpu", "numa", "socket"];
+// The entry of the SUT dropdown that opens the form instead of selecting a machine.
+const ADD_MACHINE = "+add";
 const TIME_RANGES = [
   { key: "30", label: "30s", seconds: 30 },
   { key: "60", label: "1m", seconds: 60 },
@@ -62,7 +64,10 @@ const state = {
   view: initialViewFromUrl(),
   host: storage.get("irqlens:host", ""),
   systems: [],
+  sshMachines: [],
+  canManageMachines: false,
   fleet: null,
+  fleetRequest: null,
   health: null,
   snapshot: null,
   viz: null,
@@ -381,12 +386,14 @@ function renderSutSwitcher() {
   const select = qs("sut-switcher");
   if (!select) return;
   // Rebuilding on every tick would close an open dropdown.
-  const signature = JSON.stringify([state.host, state.systems.map(item => [item.id, item.hostname, item.name, item.status])]);
+  const signature = JSON.stringify([state.host, state.canManageMachines, state.systems.map(item => [item.id, item.hostname, item.name, item.status])]);
   if (signature === state.switcherSignature) return;
   state.switcherSignature = signature;
-  select.innerHTML = state.systems.length
+  select.innerHTML = (state.systems.length
     ? state.systems.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.hostname || item.name || item.id)} [${escapeHtml(item.status)}]</option>`).join("")
-    : `<option value="">No SUT registered</option>`;
+    : `<option value="">No SUT registered</option>`)
+    // Offered only where the server accepts it: with a token, or in a browser on the server host.
+    + (state.canManageMachines ? `<option value="${ADD_MACHINE}">+ Add machine\u2026</option>` : "");
   select.value = state.host || "";
 }
 
@@ -577,14 +584,17 @@ function renderFleet() {
   if (!card) return;
   const machines = state.fleet?.machines || [];
   const networks = state.fleet?.networks || [];
-  card.classList.toggle("hidden", machines.length < 2);
-  if (machines.length < 2) return;
+  // One machine that reports needs no map; one that cannot be reached has to say why somewhere.
+  const shown = machines.length >= 2 || machines.some(machine => machine.connection && machine.connection.state !== "online");
+  card.classList.toggle("hidden", !shown);
+  if (!shown) return;
   const root = qs("fleet-map");
   const links = networks.flatMap((network, networkIndex) => network.members.map(member => ({ member, networkIndex })));
   // Built once per shape and updated in place, so a box never changes under the pointer.
   const shape = JSON.stringify([
-    machines.map(machine => [machine.id, machine.hostname, machine.role]),
+    machines.map(machine => [machine.id, machine.hostname, machine.role, Boolean(machine.connection)]),
     networks.map(network => [network.cidr, network.members.map(member => [member.machine, member.nic, member.address])]),
+    state.canManageMachines,
   ]);
   if (root.dataset.shape !== shape) {
     root.dataset.shape = shape;
@@ -593,9 +603,11 @@ function renderFleet() {
         <div class="fleet-head">
           <span class="fleet-role">${machine.role === "server" ? "Server" : "Client"}</span>
           <span class="fleet-name">${escapeHtml(machine.hostname)}</span>
+          ${machine.connection && state.canManageMachines ? `<button class="fleet-remove" data-remove-machine="${escapeHtml(machine.id)}">Remove</button>` : ""}
           <span class="dot"></span>
         </div>
         <div class="fleet-stats"></div>
+        <div class="fleet-problem"></div>
         ${links.map((link, index) => (link.member.machine !== machine.id ? "" : `
           <div class="fleet-nic" data-link="${index}">
             <div class="fleet-nic-head">
@@ -616,7 +628,7 @@ function renderFleet() {
         <div class="mono">${escapeHtml(network.cidr)}</div>
         <div class="muted">${new Set(network.members.map(member => member.machine)).size} machines</div>
       </div>
-    `).join("") : `<div class="fleet-note">No shared IPv4 network found.</div>`;
+    `).join("") : `<div class="fleet-note"></div>`;
     const columns = clients && servers ? [clients, pills, servers] : [clients || servers, pills];
     root.classList.toggle("one-sided", columns.length === 2);
     root.innerHTML = `
@@ -624,8 +636,10 @@ function renderFleet() {
       ${columns.map(html => `<div class="fleet-column">${html}</div>`).join("")}
     `;
     root.onclick = event => {
+      const remove = event.target.closest("[data-remove-machine]");
       const node = event.target.closest(".fleet-machine");
-      if (node) selectSut(node.dataset.machine);
+      if (remove) removeMachine(remove.dataset.removeMachine);
+      else if (node) selectSut(node.dataset.machine);
     };
     root.onkeydown = event => {
       if ((event.key === "Enter" || event.key === " ") && event.target.classList.contains("fleet-machine")) {
@@ -639,20 +653,29 @@ function renderFleet() {
     if (node[key] !== value) node[key] = value;
   };
   const byId = new Map(machines.map(machine => [machine.id, machine]));
+  // A machine this server connects to has no current numbers the moment its connection is not up.
+  const connected = machine => !machine.connection || machine.connection.state === "online";
+  const isLive = machine => machine.status === "ONLINE" && connected(machine);
   root.querySelectorAll(".fleet-machine").forEach(node => {
     const machine = byId.get(node.dataset.machine);
-    const live = machine.status === "ONLINE";
+    const live = isLive(machine);
+    const reported = state.systems.some(item => item.id === machine.id);
     const cpu = machine.cpu_util_avg == null ? "n/a" : `${Number(machine.cpu_util_avg).toFixed(0)}% avg, ${Number(machine.cpu_util_max).toFixed(0)}% max`;
     const irq = machine.irq_rate == null ? "n/a" : `${fmtCount(machine.irq_rate)}/s`;
-    set(node, "className", `fleet-machine${machine.id === state.host ? " selected" : ""}${live ? "" : " stale"}`);
-    set(node.querySelector(".dot"), "className", `dot ${statusTone(machine.status)}`);
-    set(node.querySelector(".fleet-stats"), "textContent", live
-      ? `CPU ${cpu} • IRQ ${irq}`
-      : `${machine.status} • last update ${fmtAgo(machine.last_seen)}`);
+    let stats = `${machine.status} • last update ${fmtAgo(machine.last_seen)}`;
+    if (live) stats = `CPU ${cpu} • IRQ ${irq}`;
+    else if (!connected(machine)) stats = machine.connection.state === "connecting" ? "Connecting over SSH…" : "Not connected";
+    const problem = connected(machine) ? "" : [machine.connection.message, machine.connection.hint].filter(Boolean).join(" ");
+    set(node, "className", `fleet-machine${machine.id === state.host ? " selected" : ""}${live ? "" : " stale"}${reported ? "" : " unreachable"}`);
+    set(node.querySelector(".dot"), "className", `dot ${machine.status === "CONNECTING" ? "info" : statusTone(machine.status)}`);
+    set(node.querySelector(".fleet-stats"), "textContent", stats);
+    set(node.querySelector(".fleet-problem"), "textContent", problem);
   });
+  const note = root.querySelector(".fleet-note");
+  if (note) set(note, "textContent", machines.filter(isLive).length >= 2 ? "No shared IPv4 network found." : "");
   links.forEach(({ member }, index) => {
     const row = root.querySelector(`.fleet-nic[data-link="${index}"]`);
-    const live = byId.get(member.machine).status === "ONLINE";
+    const live = isLive(byId.get(member.machine));
     const down = member.state === "down";
     const drops = Number(member.drops_ps || 0);
     const errors = Number(member.errors_ps || 0);
@@ -2673,9 +2696,13 @@ async function loadHealth() {
 async function loadSystems() {
   const data = await fetchJson("/api/systems");
   state.systems = data.systems || [];
+  state.sshMachines = data.ssh_machines || [];
+  state.canManageMachines = Boolean(data.can_manage_machines);
   if (!state.host || !state.systems.some(item => item.id === state.host)) {
-    const remote = state.systems.find(item => item.mode === "remote") || state.systems[0];
-    state.host = remote ? remote.id : "";
+    // No choice made yet: the machine this server runs on when it is the one connecting to the others, else a remote one.
+    const own = state.sshMachines.length ? state.systems.find(item => item.mode === "local" && (item.interfaces || []).length) : null;
+    const first = own || state.systems.find(item => item.mode === "remote") || state.systems[0];
+    state.host = first ? first.id : "";
   }
   persistSelections();
 }
@@ -2683,6 +2710,25 @@ async function loadSystems() {
 // History is what a refresh costs the SUT most: refetched every 1 s up to 2.5 min ranges, 2 s at 5 min, 15 s at 1 h.
 function historyIntervalMs(windowSeconds) {
   return Math.min(15000, Math.max(LIVE_RENDER_INTERVAL_MS, (windowSeconds * 1000) / 150));
+}
+
+// The machine map exists only on Overview, and only with a second machine: one reporting or one being connected.
+// A refresh does not wait for it: one request more than a browser sends at once would cost every refresh a second round trip.
+function loadFleet() {
+  if (state.systems.length <= 1 && !state.sshMachines.length) {
+    state.fleet = null;
+    return Promise.resolve();
+  }
+  if (state.view !== "overview") return Promise.resolve();
+  if (!state.fleetRequest) {
+    state.fleetRequest = fetchJson("/api/fleet").then(fleet => {
+      state.fleet = fleet;
+      if (state.view === "overview" && !pointerIsDown()) renderFleet();
+    }, () => null).finally(() => {
+      state.fleetRequest = null;
+    });
+  }
+  return state.fleetRequest;
 }
 
 async function loadSelectedData() {
@@ -2708,10 +2754,8 @@ async function loadSelectedData() {
   const historyAge = startedAt - state.historyAt + LIVE_RENDER_INTERVAL_MS / 2;
   const historyDue = historyKey !== state.historyKey || historyAge >= historyIntervalMs(bounds.to - bounds.from);
   const detailsDue = host !== state.detailsHost || startedAt - state.detailsAt >= DETAILS_REFRESH_MS || !state.topology?.available;
-  // The machine map exists only on Overview and only when there is more than one machine.
-  const fleetDue = state.view === "overview" && state.systems.length > 1;
   // Current values every time, history and details when due; compact=1 omits history the dashboard does not draw.
-  const [irq, softirq, network, viz, io, ifaceHistory, interfaces, topology, fleet] = await Promise.all([
+  const requests = Promise.all([
     fetchJson(`/api/irq/current?sut_id=${sut}&limit=2000`),
     fetchJson(`/api/softirq/current?sut_id=${sut}`),
     fetchJson(`/api/network/current?sut_id=${sut}`),
@@ -2720,13 +2764,13 @@ async function loadSelectedData() {
     historyDue && iface !== "ALL" ? fetchJson(`/api/network/${encodeURIComponent(iface)}?sut_id=${sut}`).catch(() => null) : null,
     detailsDue ? fetchJson(`/api/interfaces?sut_id=${sut}`) : null,
     detailsDue ? fetchJson(`/api/systems/${sut}/visualization/topology`) : null,
-    fleetDue ? fetchJson("/api/fleet").catch(() => null) : null,
   ]);
+  // Sent last, so that it is the map that waits when the browser has no connection to spare.
+  loadFleet();
+  const [irq, softirq, network, viz, io, ifaceHistory, interfaces, topology] = await requests;
   // A newer request, or another SUT or interface chosen meanwhile, owns the screen.
   if (seq !== state.loadSeq || host !== state.host || iface !== state.selectedIface) return;
   state.snapshot = { irq, softirq, network };
-  if (state.systems.length <= 1) state.fleet = null;
-  else if (fleet) state.fleet = fleet;
   if (historyDue) {
     state.viz = viz;
     state.cpuUtilTimestamp = Number(viz?.timestamp || state.cpuUtilTimestamp || 0);
@@ -2784,6 +2828,59 @@ async function selectSut(sutId) {
   render();
 }
 
+function bindMachineActions() {
+  const dialog = qs("machine-dialog");
+  qs("sut-switcher").onchange = event => {
+    if (event.target.value !== ADD_MACHINE) {
+      selectSut(event.target.value);
+      return;
+    }
+    event.target.value = state.host || "";
+    qs("machine-error").textContent = "";
+    dialog.showModal();
+  };
+  qs("machine-cancel").onclick = () => dialog.close();
+  qs("machine-form").onsubmit = async event => {
+    event.preventDefault();
+    const target = qs("machine-target").value.trim();
+    qs("machine-submit").disabled = true;
+    const response = await fetch(api("/api/machines"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target, role: qs("machine-role").value }),
+    }).catch(() => null);
+    qs("machine-submit").disabled = false;
+    if (!response || !response.ok) {
+      const detail = response ? await response.json().then(body => body.detail, () => "") : "";
+      qs("machine-error").textContent = typeof detail === "string" && detail ? detail : "The machine could not be added.";
+      return;
+    }
+    dialog.close();
+    qs("machine-form").reset();
+    // Overview is where the new machine shows up, first as connecting.
+    state.view = "overview";
+    storage.set("irqlens:view", state.view);
+    await loadSystems();
+    await loadSelectedData();
+    await loadFleet();
+    render();
+  };
+}
+
+async function removeMachine(machineId) {
+  if (!window.confirm(`Stop monitoring ${machineId}? Its captures are kept.`)) return;
+  const response = await fetch(api(`/api/machines/${encodeURIComponent(machineId)}`), { method: "DELETE" }).catch(() => null);
+  if (!response || !response.ok) {
+    showToast(`${machineId} could not be removed${response ? ` (HTTP ${response.status})` : ""}.`, "bad");
+    return;
+  }
+  // loadSystems moves the selection when the removed machine was the selected one.
+  await loadSystems();
+  await loadSelectedData();
+  await loadFleet();
+  render();
+}
+
 async function refreshAll() {
   state.loading.global = true;
   try {
@@ -2827,7 +2924,7 @@ function bindGlobalActions() {
     storage.set("irqlens:irqAggregate", state.irqAggregate);
     renderIrq();
   };
-  qs("sut-switcher").onchange = event => selectSut(event.target.value);
+  bindMachineActions();
   qs("live-toggle").onclick = () => {
     state.paused = !state.paused;
     renderContextBar();

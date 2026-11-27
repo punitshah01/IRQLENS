@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List
 
@@ -62,6 +62,8 @@ class Settings:
     heartbeat_interval: int
     stale_threshold: int
     api_token: str = ""
+    # Machines to monitor over SSH, as role=[user@]host[:port]; the launcher's --client and --server.
+    machines: List[str] = field(default_factory=list)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -110,6 +112,7 @@ class Settings:
             heartbeat_interval=max(1, heartbeat_interval),
             stale_threshold=max(3, stale_threshold),
             api_token=_env("IRQLENS_API_TOKEN", "") or token,
+            machines=_env_list("IRQLENS_MACHINES", ""),
         )
 
     def ensure_dirs(self) -> None:

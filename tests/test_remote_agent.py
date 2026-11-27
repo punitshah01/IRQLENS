@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
@@ -26,13 +27,14 @@ def test_validation_client_sends_token(monkeypatch):
 def test_single_token_and_clone_and_run_defaults(monkeypatch):
     from backend.app.config import REPO_ROOT, Settings
 
-    for name in ("IRQLENS_HOST", "IRQLENS_OUTPUT_DIR", "IRQLENS_RETENTION_MINUTES", "IRQLENS_API_TOKEN", "IRQLENS_AGENT_TOKEN", "IRQLENS_TOKEN"):
+    for name in ("IRQLENS_HOST", "IRQLENS_OUTPUT_DIR", "IRQLENS_RETENTION_MINUTES", "IRQLENS_API_TOKEN", "IRQLENS_AGENT_TOKEN", "IRQLENS_TOKEN", "IRQLENS_MACHINES"):
         monkeypatch.delenv(name, raising=False)
     defaults = Settings.from_env()
     assert defaults.bind_host == "127.0.0.1" and defaults.bind_port == 10000
     assert defaults.output_dir == (REPO_ROOT / "captures").resolve()
     assert defaults.retention_minutes == 30.0
     assert defaults.api_token == "" and defaults.agent_token == ""
+    assert defaults.machines == []
     for removed in ("metric_retention", "retention_days", "max_sessions", "max_storage_mb", "allowed_ingest_ips"):
         assert not hasattr(defaults, removed)
 
@@ -44,6 +46,8 @@ def test_single_token_and_clone_and_run_defaults(monkeypatch):
     monkeypatch.setenv("IRQLENS_AGENT_TOKEN", "agents-only")
     assert Settings.from_env().agent_token == "agents-only"
     assert Settings.from_env().api_token == "shared"
+    monkeypatch.setenv("IRQLENS_MACHINES", "client=root@192.0.2.35, server=db-host:2222")
+    assert Settings.from_env().machines == ["client=root@192.0.2.35", "server=db-host:2222"]
 
 
 def test_launcher_serves_all_interfaces_without_sign_in_by_default(monkeypatch, capsys):
@@ -68,7 +72,7 @@ def test_launcher_serves_all_interfaces_without_sign_in_by_default(monkeypatch, 
     monkeypatch.setattr(run_irqlens, "_dependencies_installed", lambda venv_py: True)
     monkeypatch.setattr(run_irqlens, "_detect_host_ip", lambda: "192.0.2.10")
     monkeypatch.setattr(run_irqlens.subprocess, "Popen", FakeServer)
-    for name in ("IRQLENS_TOKEN", "IRQLENS_API_TOKEN", "IRQLENS_AGENT_TOKEN"):
+    for name in ("IRQLENS_TOKEN", "IRQLENS_API_TOKEN", "IRQLENS_AGENT_TOKEN", "IRQLENS_MACHINES"):
         monkeypatch.delenv(name, raising=False)
 
     def launch(*args):
@@ -97,6 +101,18 @@ def test_launcher_serves_all_interfaces_without_sign_in_by_default(monkeypatch, 
     out, command, env = launch("--host", "127.0.0.1")
     assert command[-4:] == ["--host", "127.0.0.1", "--port", "10000"]
     assert "ssh -L 10000:127.0.0.1:10000" in out and "this host only" in out and "Paste the URL" not in out
+    assert "IRQLENS_MACHINES" not in env and "Machines over SSH" not in out
+
+    # Machines to monitor over SSH are named on the command line and reach the server as one setting.
+    out, command, env = launch("--client", "root@192.0.2.35", "--client", "192.0.2.36:2222", "--server", "admin@db-host")
+    assert env["IRQLENS_MACHINES"] == "client=root@192.0.2.35,client=192.0.2.36:2222,server=admin@db-host"
+    assert "Machines over SSH: root@192.0.2.35, 192.0.2.36:2222, admin@db-host" in out
+    for bad in ("-oProxyCommand=id", "root@", "host name", "host;id"):
+        monkeypatch.setattr(sys, "argv", ["run_irqlens.py", f"--client={bad}"])
+        with pytest.raises(SystemExit):
+            run_irqlens.main()
+        assert "is not a machine address" in capsys.readouterr().err
+    assert len(started) == 6
 
 
 def test_diagnostic_jobs_persist_and_reclaim(tmp_path, monkeypatch):
@@ -479,3 +495,29 @@ def test_remote_diagnostics_round_trip(monkeypatch):
     download = client.get("/api/files", params={"path": raw["path"]}, headers=dashboard_headers)
     assert "default via 192.0.2.1" in download.text
     assert client.delete(f"/api/sessions/{session_id}", headers=dashboard_headers).status_code == 200
+
+
+def test_unsupported_device_queries_do_not_fail_a_remote_job():
+    from backend.app.main import DIAGNOSTICS
+
+    sut = "unsupported-sut"
+    lo_query = {"timestamp": time.time(), "category": "ethtool", "command": "ethtool -S lo", "interface": "lo", "exit_code": 94,
+                "stdout": "", "stderr": "no stats available\n", "success": False, "duration_ms": 1.0}
+    good = {**lo_query, "command": "ethtool ens1", "interface": "ens1", "exit_code": 0, "stdout": "Speed: 10000Mb/s", "stderr": "", "success": True}
+    broken = {**lo_query, "command": "ethtool -S ens1", "interface": "ens1", "exit_code": 1, "stderr": "Cannot get stats: Input/output error"}
+    outcomes = []
+    with TestClient(app) as client:
+        assert client.post("/api/agent/register", json=_sample_registration(sut)).status_code == 200
+        for index, results in enumerate(([good, lo_query], [good, lo_query, broken])):
+            session_id = f"unsupported_{index}_{time.time_ns()}"
+            DIAGNOSTICS.start(session_id, ["ethtool"], "sut-host", "Linux", "test", sut)
+            DIAGNOSTICS.collect_snapshot(session_id, ["ethtool"], sut)
+            job = client.post("/api/agent/diagnostics/poll", json={"sut_id": sut}).json()["job"]
+            upload = {"sut_id": sut, "lease_token": job["lease_token"], "results": results, "error": ""}
+            assert client.post(f"/api/agent/diagnostics/{job['job_id']}/results", json=upload).status_code == 200
+            detail = client.get(f"/api/sessions/{session_id}").json()
+            unsupported = [item["command"] for item in detail["capture_quality"]["unsupported_commands"]]
+            outcomes.append((detail["remote_diagnostics"][0]["status"], unsupported))
+            assert client.delete(f"/api/sessions/{session_id}").status_code == 200
+    # An interface without that data is listed, not counted; a command that really failed still fails the job.
+    assert outcomes == [("completed", ["ethtool -S lo"]), ("failed", ["ethtool -S lo"])]

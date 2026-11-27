@@ -369,9 +369,13 @@ def _fleet(received=5e9, drops=0.0, client_status="ONLINE", extra_machines=()):
     }
 
 
+# A map request already on its way would bring the previous answer: let it finish, then load again.
+RELOAD_WITH_MAP = "async () => { await loadFleet(); await loadSelectedData(); await loadFleet(); render(); }"
+
+
 def _show_fleet(page, fleet):
     page.route("**/api/fleet", lambda route: route.fulfill(json=fleet))
-    page.evaluate("async () => { await loadSelectedData(); render(); }")
+    page.evaluate(RELOAD_WITH_MAP)
 
 
 def test_machine_map_shows_how_machines_are_connected(dashboard_page):
@@ -461,6 +465,126 @@ def test_machine_map_updates_in_place(dashboard_page):
     page.on("request", lambda request: requested.append(urlparse(request.url).path))
     page.evaluate("loadSelectedData()")
     assert "/api/irq/current" in requested and "/api/fleet" not in requested
+
+
+def test_first_visit_opens_the_machine_irqlens_runs_on_when_it_connects_to_the_others(dashboard_page):
+    page = dashboard_page
+    machines = [
+        {"id": "client-a", "hostname": "client-a", "mode": "remote", "status": "ONLINE", "last_seen": time.time(), "interfaces": ["eth0"]},
+        {"id": "local", "hostname": "server-host", "mode": "local", "status": "ONLINE", "last_seen": time.time(), "interfaces": ["lo", "eth0"]},
+    ]
+    listing = {"systems": machines, "ssh_machines": [], "can_manage_machines": False}
+    page.route("**/api/systems", lambda route: route.fulfill(json=listing))
+
+    def first_visit():
+        page.evaluate("localStorage.clear()")
+        page.reload()
+        page.wait_for_function("document.getElementById('sut-title').textContent.startsWith('SUT: ')")
+        return page.locator("#sut-title").inner_text()
+
+    # Machines that report on their own: a remote one comes first, as it always did.
+    assert first_visit() == "SUT: client-a"
+    listing["ssh_machines"] = [{"id": "client-a", "target": "root@client-a", "role": "client", "state": "online", "message": "", "hint": ""}]
+    assert first_visit() == "SUT: server-host"
+    # A server that is not a Linux machine has nothing of its own to show.
+    machines[1]["interfaces"] = []
+    assert first_visit() == "SUT: client-a"
+
+
+def test_machines_are_added_and_removed_only_where_the_server_allows_it(dashboard_page):
+    page = dashboard_page
+    switcher = page.locator("#sut-switcher")
+    add_entry = page.locator('#sut-switcher option[value="+add"]')
+    dialog = page.locator("#machine-dialog")
+    connection = {"id": "192.0.2.35", "target": "root@192.0.2.35", "role": "server", "state": "connecting", "message": "", "hint": ""}
+    pending = {"id": "192.0.2.35", "hostname": "192.0.2.35", "role": "server", "status": "CONNECTING", "last_seen": 0, "cpu_count": 0,
+               "cpu_util_avg": None, "cpu_util_max": None, "irq_rate": None, "connection": connection}
+
+    # A browser the server does not trust with this is offered neither the form nor Remove.
+    _show_fleet(page, {"machines": _fleet()["machines"] + [pending], "networks": []})
+    assert page.locator(".fleet-machine").count() == 3 and page.locator(".fleet-remove").count() == 0
+    assert add_entry.count() == 0
+
+    systems = {
+        "systems": [
+            {"id": "sut-test", "hostname": "test-host", "mode": "remote", "status": "ONLINE", "last_seen": time.time()},
+            {"id": "sut-two", "hostname": "second-host", "mode": "remote", "status": "STALE", "last_seen": time.time() - 60},
+        ],
+        "ssh_machines": [], "can_manage_machines": True,
+    }
+    fleet = _fleet()
+    calls = []
+
+    def machines_api(route):
+        request = route.request
+        if request.method == "POST":
+            calls.append(request.post_data_json)
+            if " " in request.post_data_json["target"]:
+                route.fulfill(status=400, json={"detail": "'bad host' is not a machine address."})
+                return
+            systems["ssh_machines"] = [connection]
+            fleet["machines"].append(pending)
+            route.fulfill(json={"machine": connection})
+        else:
+            calls.append(f"{request.method} {urlparse(request.url).path}")
+            systems["ssh_machines"] = []
+            fleet["machines"].remove(pending)
+            route.fulfill(json={"ok": True})
+
+    page.route("**/api/systems", lambda route: route.fulfill(json=systems))
+    page.route("**/api/fleet", lambda route: route.fulfill(json=fleet))
+    page.route("**/api/machines", machines_api)
+    page.route("**/api/machines/*", machines_api)
+    page.evaluate("loadSystems()")
+    page.evaluate(RELOAD_WITH_MAP)
+    # The form is the last entry of the SUT dropdown.
+    assert switcher.locator("option").all_inner_texts() == ["test-host [ONLINE]", "second-host [STALE]", "+ Add machine\u2026"]
+    assert not dialog.is_visible()
+    assert page.locator(".fleet-machine").count() == 2
+
+    page.get_by_role("button", name="CPU", exact=True).click()
+    switcher.select_option("+add")
+    assert dialog.is_visible()
+    # Opening the form selects nothing.
+    assert switcher.input_value() == "sut-test" and page.locator("#sut-title").inner_text() == "SUT: test-host"
+    page.locator("#machine-target").fill("bad host")
+    page.locator("#machine-submit").click()
+    page.wait_for_function("document.getElementById('machine-error').textContent.includes('not a machine address')")
+    assert dialog.is_visible()
+
+    page.locator("#machine-target").fill(" root@192.0.2.35 ")
+    page.locator("#machine-role").select_option("server")
+    page.locator("#machine-submit").click()
+    # The new machine is on Overview at once, as connecting; there is nothing to open before it reports.
+    box = page.locator('.fleet-machine[data-machine="192.0.2.35"]')
+    box.wait_for()
+    assert calls == [{"target": "bad host", "role": "client"}, {"target": "root@192.0.2.35", "role": "server"}]
+    assert not dialog.is_visible() and page.locator("#section-overview").is_visible()
+    assert "Connecting over SSH" in box.inner_text() and "unreachable" in box.get_attribute("class")
+    assert box.locator(".dot").get_attribute("class") == "dot info"
+    box.click()
+    assert page.locator("#sut-title").inner_text() == "SUT: test-host"
+    # Only a machine this server connects to can be removed here.
+    assert page.locator(".fleet-remove").count() == 1
+
+    connection.update(state="error", message="root@192.0.2.35: Permission denied (publickey).", hint="On the server run: ssh-copy-id root@192.0.2.35")
+    pending["status"] = "ERROR"
+    page.evaluate(RELOAD_WITH_MAP)
+    assert "Not connected" in box.inner_text()
+    assert box.locator(".fleet-problem").inner_text() == "root@192.0.2.35: Permission denied (publickey). On the server run: ssh-copy-id root@192.0.2.35"
+    assert box.locator(".dot").get_attribute("class") == "dot offline"
+
+    page.once("dialog", lambda prompt: prompt.accept())
+    box.locator(".fleet-remove").click()
+    box.wait_for(state="detached")
+    assert calls[-1] == "DELETE /api/machines/192.0.2.35"
+
+    # A single machine is shown as a map only while its connection needs attention.
+    _show_fleet(page, {"machines": [pending], "networks": []})
+    assert page.locator("#fleet-card").is_visible() and page.locator(".fleet-machine").count() == 1
+    connection.update(state="online", message="", hint="")
+    _show_fleet(page, {"machines": [{**pending, "status": "ONLINE"}], "networks": []})
+    assert not page.locator("#fleet-card").is_visible()
 
 
 def test_header_status_follows_sut_that_stopped_reporting(dashboard_page):

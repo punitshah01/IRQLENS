@@ -16,7 +16,7 @@ SUPPORTED_CATEGORIES = COMMAND_CATEGORIES | {"irq", "softirq", "system", "pcie"}
 UNSUPPORTED_MARKERS = ("operation not supported", "no stats available")
 
 
-def _unsupported_by_device(row: Dict[str, Any]) -> bool:
+def unsupported_by_device(row: Dict[str, Any]) -> bool:
     # No output at all: a command that reported something and then failed stays a failure.
     if not row.get("exit_code") or str(row.get("stdout") or "").strip():
         return False
@@ -171,7 +171,7 @@ def build_capture_quality(session: CollectionSession, files: List[ExportFile], j
         if row.get("success", False):
             continue
         command = str(row.get("command", f"Command {index + 1}"))
-        if _unsupported_by_device(row):
+        if unsupported_by_device(row):
             unsupported.append({"command": command, "reason": str(row.get("stderr") or "").strip()[:200]})
             continue
         checks.append({

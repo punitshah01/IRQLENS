@@ -5,7 +5,7 @@ IRQLENS is composed of four runtime parts:
 - Frontend dashboard (`frontend/index.html`)
 - FastAPI backend (`backend/app/main.py`)
 - SQLite store (`backend/app/store.py`)
-- Optional remote Linux SUT agent (`agent/main.py`)
+- Remote Linux machines, either connected by the server over SSH or running the agent (`agent/main.py`); both optional
 
 ## Component Responsibilities
 
@@ -38,6 +38,12 @@ This path provides local-host telemetry as system id `local`. Each tick is writt
 - Reads proc/sys sources with the same collector classes and computes rates.
 - Sends registration, heartbeat, and telemetry payloads via HTTP.
 - Includes optional CPU topology snapshots.
+
+## Machines over SSH
+- `RemoteMachines` (`backend/app/services/remote.py`) keeps one `ssh` child process and one thread per machine named with `--client`, `--server`, or the browser form.
+- The collectors and `agent/main.py` use only the standard library, so the server can send their sources over the connection and the machine runs them from memory; nothing is installed there.
+- The thread reads JSON lines and stores them through the same functions as the agent endpoints (`_ingest_registration`, `_ingest_telemetry`, `_record_diagnostics`), after shifting timestamps onto the server's clock.
+- Connections are not persisted: the machines of a run are the ones on its command line plus those added in the browser.
 
 ## Data Storage
 SQLite (WAL mode) tables include:
@@ -79,12 +85,14 @@ Linux proc/sys -> collectors/agent -> backend store -> visualization APIs -> bro
 ## Network Flow
 - Browser -> server: HTTP + WebSocket
 - Agent -> server: HTTP POST (register/heartbeat/telemetry)
+- Server -> machine: SSH (machines over SSH)
 
 ## Security Model (Current)
 - The launcher binds all interfaces without authentication by default; `--token` adds a shared token and `--host 127.0.0.1` limits it to the server host.
 - One token (`IRQLENS_TOKEN`) for dashboard, API, WebSocket, and agents, with optional per-surface overrides.
 - Diagnostic command execution constrained to allowlist.
 - File download path constrained to output directory.
+- SSH connections use the server user's own key and one fixed remote command; adding or removing a machine needs the token, or a request from the server host itself.
 
 ## Known Architecture Limits
 - No built-in TLS termination.

@@ -7,6 +7,8 @@ This document describes the implemented protocol between `agent/main.py` and `ba
 - Auth: Optional `Authorization: Bearer <token>`
 - Direction: Agent initiates all requests to server
 
+Machines the server connects to over SSH use the same payloads on a different transport; see [Stream Transport](#stream-transport).
+
 ## Endpoints
 - `POST /api/agent/register`
 - `POST /api/agent/heartbeat`
@@ -270,6 +272,28 @@ Example payload (abridged):
 }
 ```
 
+## Stream Transport
+Used for machines added with `--client`, `--server`, or `POST /api/machines`. The server starts the connection; there is no HTTP and no token on this path, because the SSH login is the authentication.
+
+Start:
+1. The server runs `ssh -T -o BatchMode=yes ... -- <host> "python3 -u -c '<loader>'"`. The loader is one fixed line: read a length, read that many bytes from stdin, execute them.
+2. The server writes the length and a bootstrap: the sources of `backend/app/collectors/*.py` and `agent/main.py` from its own checkout, an importer that serves them from memory, and a call to `run_stdio(sut_id, role, telemetry_interval)`. Python older than 3.9 exits with a message.
+
+Machine to server, one JSON object per line on stdout:
+- `{"type": "register", ...}`: the registration payload above, once.
+- `{"type": "telemetry", ...}`: the telemetry payload above, every interval.
+- `{"type": "diagnostics_result", "job_id": "...", "lease_token": "...", "results": [...], "error": ""}`: the result upload above.
+
+Server to machine, one JSON object per line on stdin:
+- `{"type": "diagnostics", "job": {...}}`: a claimed job, in the poll response format above. The server looks for one every two seconds.
+
+Rules:
+- The server stores everything under the id of the address it connected to (`host`, or `host:port` for a port other than 22), whatever `sut_id` the stream carries.
+- Timestamps are shifted onto the server's clock by the smallest difference seen between arrival time and sample time on this connection; a jump of more than 30 seconds starts over.
+- Lines on stdout that are not JSON objects are ignored (a greeting printed by the login shell). stderr is kept for the connection's error message.
+- Closing stdin ends the process on the machine. It also exits when it cannot write to stdout.
+- A connection that ends is retried after 5, 10, 30, then every 60 seconds; one that had been working is retried after 5.
+
 ## Reconnect Behavior
 Agent reconnect strategy (`agent/main.py`):
 - On startup, registration retries every 2 seconds until success.
@@ -294,3 +318,4 @@ Current in-repo agent version string:
 Compatibility status:
 - No explicit protocol negotiation endpoint is implemented.
 - Compatibility is currently based on payload-schema alignment between `agent/main.py` and backend pydantic models.
+- On the stream transport the server sends its own copy of the agent, so the two always match.

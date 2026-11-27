@@ -32,6 +32,7 @@ Shown on Overview when `GET /api/fleet` lists two or more machines. Machines who
 - Line: one interface on that network. Label: link speed from `/sys/class/net/<iface>/speed`, RX and TX in bit/s (the stored rates are bytes per second, times 8), and `utilization_pct = max(rx, tx) * 8 / link speed`.
 - Line width grows from 2 px (idle) to 10 px (100% of the link). Blue: at least 1 Mbit/s. Red: drops or errors in the newest sample, or `operstate` is `down`. Dashed: the machine is not `ONLINE`; its numbers are replaced by the time of its last update.
 - Selecting a box selects that machine, exactly as the SUT dropdown does.
+- A machine the server connects to over SSH is on the map from the moment it is added: `Connecting over SSH` until its first sample, and `Not connected` with the message from `ssh` when the connection fails. Such a machine is also shown when it is the only one, so that the reason is visible.
 - Windows narrower than 900 px stack the boxes and leave the lines out.
 
 The map cannot tell a direct cable from a switch: both are two interfaces on one network.

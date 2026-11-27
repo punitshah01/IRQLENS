@@ -12,7 +12,7 @@ import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -151,55 +151,131 @@ def _cpu_utilization_percent(
     return utilization
 
 
+# One machine's collectors and the payloads built from them; sending them is the caller's part.
+class Telemetry:
+    def __init__(self, sut_id: str, telemetry_interval: float, include_virtual_disks: bool = False) -> None:
+        self.sut_id = sut_id
+        self.telemetry_interval = telemetry_interval
+        self.irq_collector = IRQCollector()
+        self.soft_collector = SoftIRQCollector()
+        self.net_collector = NetworkCollector()
+        self.sys_collector = SystemCollector()
+        self.softnet_collector = SoftnetCollector()
+        self.storage_collector = StorageCollector(include_virtual=include_virtual_disks)
+        self.pcie_collector = PCIeCollector()
+        self.last_sample_monotonic: Optional[float] = None
+        self.pcie_collected_at = 0.0
+        self.topology_cache: List[dict] = []
+        self.topology_updated_at = 0.0
+        self.previous_cpu_stat: Dict[str, tuple[int, int]] = _read_cpu_stat_counters()
+
+    def registration(self, name: str, role: str, token_hint: str) -> dict:
+        ts = time.time()
+        system = self.sys_collector.collect(ts)
+        self.topology_cache = collect_cpu_topology(str(system.get("cpu_model", "")))
+        self.topology_updated_at = ts
+        addresses = _ip_addrs()
+        return {
+            "sut_id": self.sut_id,
+            "name": name,
+            "address": addresses[0] if addresses else "0.0.0.0",
+            "port": 8443,
+            "token_hint": token_hint,
+            "agent_version": AGENT_VERSION,
+            "telemetry_interval": self.telemetry_interval,
+            "hostname": system["hostname"],
+            "os_distribution": system["os_distribution"],
+            "os_version": system["os_version"],
+            "kernel": system["kernel"],
+            "architecture": platform.machine() or "unknown",
+            "cpu_count": int(system["cpu_count"]),
+            "cpu_model": system["cpu_model"],
+            "memory_total_kb": int(system["memory_total_kb"]),
+            "numa_nodes": int(system["numa_nodes"]),
+            "uptime_seconds": float(system["uptime_seconds"]),
+            "interfaces": self.net_collector.discover_interfaces(),
+            "ip_addresses": addresses,
+            "cpu_topology": self.topology_cache,
+            "role": role,
+        }
+
+    def sample(self) -> dict:
+        now = time.monotonic()
+        elapsed = self.telemetry_interval if self.last_sample_monotonic is None else max(1e-3, now - self.last_sample_monotonic)
+        self.last_sample_monotonic = now
+        ts = time.time()
+        sut_id = self.sut_id
+
+        system = self.sys_collector.collect(ts)
+        system["architecture"] = platform.machine() or "unknown"
+
+        # Refresh topology periodically to handle CPU online/offline changes.
+        if (ts - self.topology_updated_at) >= 60.0 or not self.topology_cache:
+            self.topology_cache = collect_cpu_topology(str(system.get("cpu_model", "")))
+            self.topology_updated_at = ts
+
+        current_cpu_stat = _read_cpu_stat_counters()
+        cpu_utilization = _cpu_utilization_percent(self.previous_cpu_stat, current_cpu_stat)
+        self.previous_cpu_stat = current_cpu_stat
+
+        irq_rows = self.irq_collector.sample_rows(sut_id, ts, elapsed)[:MAX_IRQ_ROWS]
+        softnet = self.softnet_collector.collect(elapsed)
+        storage = self.storage_collector.collect(elapsed)
+        # PCIe state changes rarely; the server keeps the last snapshot between sends.
+        pcie: List[dict] = []
+        if ts - self.pcie_collected_at >= PCIE_INTERVAL_SECONDS:
+            pcie = self.pcie_collector.collect()
+            self.pcie_collected_at = ts
+
+        soft_totals, soft_per_cpu = self.soft_collector.parse()
+        soft_rates, soft_cpu_rates = self.soft_collector.rates(soft_totals, soft_per_cpu, elapsed)
+
+        net_rows_raw, net_global, iface_infos = self.net_collector.collect(elapsed, ts)
+        net_rows = [{"sut_ip": sut_id, "sut_id": sut_id, **row} for row in net_rows_raw]
+
+        irq_summary = {
+            "total_irq_per_sec": sum(float(x.get("total_rate", 0.0)) for x in irq_rows),
+            "total_softirq_per_sec": sum(float(v) for v in soft_rates.values()),
+            "active_irq_lines": len(irq_rows),
+            "network_related_irqs": len([x for x in irq_rows if x.get("source_class") == "network"]),
+        }
+
+        return {
+            "type": "telemetry",
+            "sut_id": sut_id,
+            "timestamp": ts,
+            "system": system,
+            "irq_rows": irq_rows,
+            "softirq": {
+                "timestamp": ts,
+                "sut_ip": sut_id,
+                "sut_id": sut_id,
+                "totals": soft_totals,
+                "rates": soft_rates,
+                "per_cpu_rates": soft_cpu_rates,
+            },
+            "network_samples": net_rows,
+            "interfaces": iface_infos,
+            "irq_summary": irq_summary,
+            "network_global": net_global,
+            "cpu_topology": self.topology_cache,
+            "cpu_utilization": cpu_utilization,
+            "softnet": softnet if softnet["available"] else {},
+            "storage": storage,
+            "pcie": pcie,
+        }
+
+
 def run_agent(
     server: str, sut_id: str, name: str, token: str, telemetry_interval: float, heartbeat_interval: float,
     include_virtual_disks: bool = False, role: str = "",
 ) -> int:
-    irq_collector = IRQCollector()
-    soft_collector = SoftIRQCollector()
-    net_collector = NetworkCollector()
-    sys_collector = SystemCollector()
-    softnet_collector = SoftnetCollector()
-    storage_collector = StorageCollector(include_virtual=include_virtual_disks)
-    pcie_collector = PCIeCollector()
-
-    last_sample_monotonic = None
+    source = Telemetry(sut_id, telemetry_interval, include_virtual_disks)
     last_heartbeat = 0.0
-    pcie_collected_at = 0.0
-    topology_cache: List[dict] = []
-    topology_updated_at = 0.0
-    previous_cpu_stat: Dict[str, tuple[int, int]] = _read_cpu_stat_counters()
 
     while True:
         try:
-            ts = time.time()
-            system = sys_collector.collect(ts)
-            topology_cache = collect_cpu_topology(str(system.get("cpu_model", "")))
-            topology_updated_at = ts
-            interfaces = net_collector.discover_interfaces()
-            reg = {
-                "sut_id": sut_id,
-                "name": name,
-                "address": _ip_addrs()[0] if _ip_addrs() else "0.0.0.0",
-                "port": 8443,
-                "token_hint": "configured" if token else "none",
-                "agent_version": AGENT_VERSION,
-                "telemetry_interval": telemetry_interval,
-                "hostname": system["hostname"],
-                "os_distribution": system["os_distribution"],
-                "os_version": system["os_version"],
-                "kernel": system["kernel"],
-                "architecture": platform.machine() or "unknown",
-                "cpu_count": int(system["cpu_count"]),
-                "cpu_model": system["cpu_model"],
-                "memory_total_kb": int(system["memory_total_kb"]),
-                "numa_nodes": int(system["numa_nodes"]),
-                "uptime_seconds": float(system["uptime_seconds"]),
-                "interfaces": interfaces,
-                "ip_addresses": _ip_addrs(),
-                "cpu_topology": topology_cache,
-                "role": role,
-            }
+            reg = source.registration(name, role, "configured" if token else "none")
             _post_json(server.rstrip("/") + "/api/agent/register", reg, token)
             break
         except Exception as exc:
@@ -210,69 +286,10 @@ def run_agent(
 
     while True:
         cycle_start = time.monotonic()
-        elapsed = telemetry_interval if last_sample_monotonic is None else max(1e-3, cycle_start - last_sample_monotonic)
-        last_sample_monotonic = cycle_start
-        ts = time.time()
 
         try:
-            system = sys_collector.collect(ts)
-            system["architecture"] = platform.machine() or "unknown"
-
-            # Refresh topology periodically to handle CPU online/offline changes.
-            if (ts - topology_updated_at) >= 60.0 or not topology_cache:
-                topology_cache = collect_cpu_topology(str(system.get("cpu_model", "")))
-                topology_updated_at = ts
-
-            current_cpu_stat = _read_cpu_stat_counters()
-            cpu_utilization = _cpu_utilization_percent(previous_cpu_stat, current_cpu_stat)
-            previous_cpu_stat = current_cpu_stat
-
-            irq_rows = irq_collector.sample_rows(sut_id, ts, elapsed)[:MAX_IRQ_ROWS]
-            softnet = softnet_collector.collect(elapsed)
-            storage = storage_collector.collect(elapsed)
-            # PCIe state changes rarely; the server keeps the last snapshot between sends.
-            pcie: List[dict] = []
-            if ts - pcie_collected_at >= PCIE_INTERVAL_SECONDS:
-                pcie = pcie_collector.collect()
-                pcie_collected_at = ts
-
-            soft_totals, soft_per_cpu = soft_collector.parse()
-            soft_rates, soft_cpu_rates = soft_collector.rates(soft_totals, soft_per_cpu, elapsed)
-
-            net_rows_raw, net_global, iface_infos = net_collector.collect(elapsed, ts)
-            net_rows = [{"sut_ip": sut_id, "sut_id": sut_id, **row} for row in net_rows_raw]
-
-            irq_summary = {
-                "total_irq_per_sec": sum(float(x.get("total_rate", 0.0)) for x in irq_rows),
-                "total_softirq_per_sec": sum(float(v) for v in soft_rates.values()),
-                "active_irq_lines": len(irq_rows),
-                "network_related_irqs": len([x for x in irq_rows if x.get("source_class") == "network"]),
-            }
-
-            payload = {
-                "type": "telemetry",
-                "sut_id": sut_id,
-                "timestamp": ts,
-                "system": system,
-                "irq_rows": irq_rows,
-                "softirq": {
-                    "timestamp": ts,
-                    "sut_ip": sut_id,
-                    "sut_id": sut_id,
-                    "totals": soft_totals,
-                    "rates": soft_rates,
-                    "per_cpu_rates": soft_cpu_rates,
-                },
-                "network_samples": net_rows,
-                "interfaces": iface_infos,
-                "irq_summary": irq_summary,
-                "network_global": net_global,
-                "cpu_topology": topology_cache,
-                "cpu_utilization": cpu_utilization,
-                "softnet": softnet if softnet["available"] else {},
-                "storage": storage,
-                "pcie": pcie,
-            }
+            payload = source.sample()
+            ts = payload["timestamp"]
 
             _post_json(server.rstrip("/") + "/api/agent/telemetry", payload, token)
 
@@ -280,7 +297,7 @@ def run_agent(
                 hb = {
                     "sut_id": sut_id,
                     "agent_version": AGENT_VERSION,
-                    "uptime_seconds": float(system["uptime_seconds"]),
+                    "uptime_seconds": float(payload["system"]["uptime_seconds"]),
                     "timestamp": ts,
                 }
                 _post_json(server.rstrip("/") + "/api/agent/heartbeat", hb, token)
@@ -296,6 +313,49 @@ def run_agent(
         elapsed_loop = time.monotonic() - cycle_start
         sleep_for = max(0.05, telemetry_interval - elapsed_loop)
         time.sleep(sleep_for)
+
+
+# For a server that started this process over SSH: the same payloads as JSON lines on stdout,
+# diagnostic jobs as JSON lines on stdin. It ends when stdin closes, so nothing stays behind.
+def run_stdio(sut_id: str, role: str = "client", telemetry_interval: float = 1.0, include_virtual_disks: bool = False) -> int:
+    out = sys.stdout
+    # Anything else that prints must not land inside the JSON stream.
+    sys.stdout = sys.stderr
+    write_lock = threading.Lock()
+    stop = threading.Event()
+
+    def send(message: dict) -> None:
+        line = json.dumps(message, separators=(",", ":")) + "\n"
+        try:
+            with write_lock:
+                out.write(line)
+                out.flush()
+        except (OSError, ValueError):
+            # The server is gone; there is nobody left to report to.
+            os._exit(0)
+
+    def read_jobs() -> None:
+        for line in sys.stdin:
+            try:
+                command = json.loads(line)
+                if command.get("type") == "diagnostics":
+                    job = command["job"]
+                    send({"type": "diagnostics_result", "job_id": job["job_id"], **_collect_diagnostic_job(sut_id, job)})
+            except Exception as exc:
+                print(f"[irqlens-agent] command ignored: {exc}")
+        stop.set()
+
+    threading.Thread(target=read_jobs, name="irqlens-jobs", daemon=True).start()
+    source = Telemetry(sut_id, telemetry_interval, include_virtual_disks)
+    send({"type": "register", **source.registration(_hostname(), role, "none")})
+    while not stop.is_set():
+        cycle_start = time.monotonic()
+        try:
+            send(source.sample())
+        except Exception as exc:
+            print(f"[irqlens-agent] error: {exc}")
+        stop.wait(max(0.05, telemetry_interval - (time.monotonic() - cycle_start)))
+    return 0
 
 
 def main() -> int:

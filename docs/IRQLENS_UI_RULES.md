@@ -40,6 +40,13 @@ The default user flow is: start IRQLENS, select a SUT, monitor and investigate C
 - One box per machine, one pill per shared network, one line per link with its speed and current use.
 - Selecting a box selects that machine, the same as the SUT switcher. The details of the selected machine stay below the map.
 - The map is updated in place and is fetched only while Overview is open.
+- A machine added over SSH that is not connected shows the reason in its box.
+
+## Adding machines
+
+- Machines are named on the command line (`--client`, `--server`). The browser form is the same thing for a browser the server trusts with it.
+- The form opens from the last entry of the SUT switcher (`+ Add machine`); **Remove** sits on the machine's box on the map. Neither is rendered for a browser that may not use it.
+- No list, table, or page of machines to manage, and no stored credentials: this is not a Management or Settings area.
 
 ## CPU visualization
 
@@ -61,7 +68,7 @@ The default user flow is: start IRQLENS, select a SUT, monitor and investigate C
 ## Header and controls
 
 - Keep the header minimal and SUT-focused.
-- The header carries the SUT switcher (every registered SUT with its status), the irqbalance state, the Pause/Resume Live Updates control, and the WebSocket state.
+- The header carries the SUT switcher (every registered SUT with its status, and the `+ Add machine` entry where allowed), the irqbalance state, the Pause/Resume Live Updates control, and the WebSocket state.
 - Avoid global controls that do not directly improve monitoring workflow.
 - Do not add global admin/management controls to the user-facing dashboard.
 

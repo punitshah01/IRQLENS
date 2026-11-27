@@ -1167,6 +1167,59 @@ button {
   opacity: 0.7;
 }
 
+.fleet-machine.unreachable {
+  cursor: default;
+}
+
+.fleet-problem {
+  margin-top: 6px;
+  color: var(--red);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.fleet-problem:empty {
+  display: none;
+}
+
+.fleet-remove {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+  text-decoration: underline;
+}
+
+.dialog {
+  width: min(440px, calc(100vw - 32px));
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 20px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.dialog::backdrop {
+  background: rgba(31, 36, 48, 0.35);
+}
+
+.dialog-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.dialog-error {
+  margin: 12px 0;
+  min-height: 18px;
+  color: var(--red);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 .fleet-head,
 .fleet-nic-head {
   display: flex;

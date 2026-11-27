@@ -50,6 +50,7 @@ Guidelines:
 - Return safe defaults instead of raising for non-critical missing data.
 - Isolate parsing logic for testability.
 - Add unit tests for parser and rate logic.
+- Use only the Python standard library and syntax that Python 3.9 accepts. Every file in `backend/app/collectors/`, and `agent/main.py`, is sent as source to machines monitored over SSH, which have nothing but Python; `tests/test_remote_machines.py` runs them that way.
 
 ## Adding Visualizations
 Frontend layout is in `frontend/index.html`; rendering and chart behavior are in `frontend/app.js`. Read `docs/IRQLENS_UI_RULES.md` before UI changes.
@@ -64,11 +65,12 @@ Protocol endpoints and payloads are defined by:
 - `agent/main.py`
 - `backend/app/models.py`
 - `backend/app/main.py`
+- `backend/app/services/remote.py` (the same payloads over an SSH connection)
 
 When changing protocol:
 - Keep server backward-compatibility strategy explicit.
 - Update `docs/AGENT_PROTOCOL.md` with examples.
-- Add/update API tests (`tests/test_remote_agent.py`, `tests/test_api.py`).
+- Add/update API tests (`tests/test_remote_agent.py`, `tests/test_remote_machines.py`, `tests/test_api.py`).
 
 ## Licensing
 The project remains unlicensed pending owner approval. Do not add a license or assume redistribution rights without an explicit owner decision. Dependencies retain their own licenses.

@@ -257,6 +257,12 @@ class SystemCreateRequest(BaseModel):
     token: str = ""
 
 
+class MachineCreateRequest(BaseModel):
+    # [user@]host[:port], as on the launcher's command line.
+    target: str = Field(min_length=1, max_length=400)
+    role: Literal["client", "server"] = "client"
+
+
 class AgentRegistrationRequest(BaseModel):
     sut_id: str
     name: str
