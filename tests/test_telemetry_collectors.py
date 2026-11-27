@@ -297,6 +297,39 @@ def test_irq_label_matching_without_sysfs(tmp_path):
     assert (row["nic"], row["source_class"], row["direction"], row["queue"], row["numa_node"]) == ("eth0", "network", "RX", "0", "N/A")
 
 
+def test_irq_rows_without_header_line(tmp_path):
+    # A 7.2 kernel on a 256-CPU host printed /proc/interrupts without the "CPU0 CPU1 ..." line.
+    from tools.validate_sut_visualization import _parse_interrupts
+
+    proc, sys_root = tmp_path / "proc", tmp_path / "sys"
+    first = (
+        "   4:          1          0   IR-IO-APIC    4-edge      ttyS0\n"
+        " 120:         10          0   IR-PCI-MSIX-0000:16:00.0    1-edge      nvme0q1\n"
+        " LOC:        100        100   Local timer interrupts\n"
+    )
+    second = (
+        "   4:          1          0   IR-IO-APIC    4-edge      ttyS0\n"
+        " 120:         30         10   IR-PCI-MSIX-0000:16:00.0    1-edge      nvme0q1\n"
+        " LOC:        200        300   Local timer interrupts\n"
+    )
+    write(proc / "interrupts", first)
+    write(sys_root / "devices" / "system" / "cpu" / "online", "0,2\n")
+    collector = IRQCollector(proc_root=str(proc), sys_root=str(sys_root))
+    assert collector.sample_rows("sut", 100.0, 1.0) == []
+    write(proc / "interrupts", second)
+    rows = {row["irq"]: row for row in collector.sample_rows("sut", 101.0, 2.0)}
+    assert collector.cpu_labels_seen == ["CPU0", "CPU2"]
+    assert set(rows) == {"120", "LOC"}
+    assert rows["120"]["cpu_rates"] == {"0": 10.0, "2": 5.0} and rows["120"]["total_rate"] == 15.0
+    assert rows["120"]["irq_name"] == "IR-PCI-MSIX-0000:16:00.0 1-edge nvme0q1" and rows["120"]["device"] == "nvme0q1"
+    assert rows["LOC"]["total_count"] == 500
+    assert "4" in collector.parse()[1]
+
+    by_position = IRQCollector(proc_root=str(proc), sys_root=str(tmp_path / "missing"))
+    assert by_position.parse()[0] == ["CPU0", "CPU1"]
+    assert _parse_interrupts(second) == (541, 2, {"4": 1, "120": 40, "LOC": 500}, 3)
+
+
 CPU_TO_NODE = {"0": 0, "1": 0, "2": 1, "3": 1}
 
 

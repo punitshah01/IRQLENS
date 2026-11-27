@@ -65,6 +65,28 @@ def _interface_from_label(label: str, interfaces: List[str]) -> str:
     return ""
 
 
+def _online_cpu_ids(sys_root: Path) -> List[str]:
+    # "0-3,8" -> ["0", "1", "2", "3", "8"]
+    ids: List[str] = []
+    for part in read_text_safe(str(sys_root / "devices" / "system" / "cpu" / "online")).strip().split(","):
+        first, _, last = part.partition("-")
+        if first.isdigit() and (last.isdigit() or not last):
+            ids.extend(str(cpu) for cpu in range(int(first), int(last or first) + 1))
+    return ids
+
+
+def _labels_without_header(first_line: str, sys_root: Path) -> List[str]:
+    columns = 0
+    for token in first_line.partition(":")[2].split():
+        if not token.isdigit():
+            break
+        columns += 1
+    online = _online_cpu_ids(sys_root)
+    # The kernel prints one count per online CPU; without that list the columns are numbered by position.
+    cpu_ids = online if 0 < len(online) <= columns else [str(cpu) for cpu in range(columns)]
+    return ["CPU" + cpu for cpu in cpu_ids]
+
+
 class IRQCollector:
     def __init__(self, proc_root: str = "/proc", sys_root: str = "/sys") -> None:
         self._proc = Path(proc_root)
@@ -88,9 +110,15 @@ class IRQCollector:
         if not lines:
             return [], {}
         cpu_labels = [x for x in lines[0].split() if x.startswith("CPU")]
+        body = lines[1:]
+        if not cpu_labels:
+            # Some kernels print no "CPU0 CPU1 ..." line (seen on 7.2 with 256 CPUs): every line is data.
+            cpu_labels, body = _labels_without_header(lines[0], self._sys), lines
+        if not cpu_labels:
+            return [], {}
         self._cpu_ids = [label[3:] for label in cpu_labels]
         rows: Dict[str, IRQRow] = {}
-        for line in lines[1:]:
+        for line in body:
             if ":" not in line:
                 continue
             left, right = line.split(":", 1)

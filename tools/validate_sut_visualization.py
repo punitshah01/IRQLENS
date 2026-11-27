@@ -38,10 +38,18 @@ def _parse_interrupts(text: str) -> Tuple[int, int, Dict[str, int], int]:
     header = lines[0].split()
     cpu_cols = [h for h in header if h.upper().startswith("CPU")]
     cpu_count = len(cpu_cols)
+    body = lines[1:]
+    if not cpu_count:
+        # Some kernels print no header line: count the numeric columns of the first data line.
+        for token in header[1:]:
+            if not token.isdigit():
+                break
+            cpu_count += 1
+        body = lines
     per_irq: Dict[str, int] = {}
     total = 0
     irq_lines = 0
-    for ln in lines[1:]:
+    for ln in body:
         parts = ln.split()
         if len(parts) < 2:
             continue
@@ -241,7 +249,7 @@ def run_validation(
             soft_total1, _ = _parse_softirqs(soft1)
             net_rows1, rx_total1, tx_total1 = _parse_netdev(net1)
 
-            passes.append(CheckResult("PASS", f"{cpu_count} CPUs detected from /proc/interrupts header"))
+            passes.append(CheckResult("PASS", f"{cpu_count} CPUs detected from /proc/interrupts"))
             passes.append(CheckResult("PASS", f"{irq_lines} IRQ lines parsed"))
             passes.append(CheckResult("PASS", f"{len(net_rows1)} interfaces parsed from /proc/net/dev"))
 
