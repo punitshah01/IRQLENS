@@ -27,7 +27,7 @@ python -m pytest tests -q --browser chromium
 Before opening a PR:
 - Run `python -m pytest tests -q --browser chromium` with development dependencies installed.
 - Tests automatically use temporary database/output directories and clear authentication defaults; security tests set their own credentials.
-- Backend-only installs explicitly skip browser tests. Linux CI installs Chromium with `--with-deps`; backend CI covers Linux/Windows and Python 3.9/3.13.
+- Backend-only installs explicitly skip browser tests. Linux CI installs Chromium with `--with-deps`; backend CI covers Linux/Windows and Python 3.9/3.13/3.14. Dependency pins in `backend/requirements.txt` must keep installing from wheels on all of them.
 - If touching telemetry/visualization behavior, add or update tests in `tests/`.
 - If touching docs, verify commands and paths are still correct.
 

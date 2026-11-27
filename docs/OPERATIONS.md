@@ -77,7 +77,7 @@ Operational notes:
 Suggested process:
 1. Stop server and agents.
 2. Pull repository updates.
-3. Reinstall/update dependencies: `pip install -r backend/requirements.txt`.
+3. Reinstall/update dependencies: `backend/.venv/bin/python -m pip install -r backend/requirements.txt` (the launcher installs only when a dependency is missing, so it does not pick up changed pins by itself).
 4. Restart server.
 5. Restart agents.
 6. Verify API health and SUT status.

@@ -90,7 +90,13 @@ def main() -> int:
 
     # Skipping pip when everything imports keeps restarts fast and works without network access.
     if not _dependencies_installed(venv_py):
-        subprocess.check_call([str(venv_py), "-m", "pip", "install", "-r", str(req)])
+        # Wheels only: without one for this interpreter pip would try to compile pydantic-core (needs Rust).
+        install = subprocess.run([str(venv_py), "-m", "pip", "install", "--only-binary=:all:", "-r", str(req)])
+        if install.returncode != 0:
+            version = subprocess.run([str(venv_py), "-V"], capture_output=True, text=True).stdout.strip()
+            print(f"Error: dependency install failed in backend/.venv ({version}); see the pip output above.")
+            print("IRQLENS needs prebuilt wheels: use Python 3.9-3.14 (delete backend/.venv after switching) and check access to PyPI.")
+            return 1
 
     host = args.host or ("0.0.0.0" if args.remote else "127.0.0.1")
     remote = args.remote or host not in LOOPBACK_HOSTS

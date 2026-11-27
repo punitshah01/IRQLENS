@@ -130,9 +130,9 @@ Why /proc and /sys must be read on the SUT:
 Repository-grounded requirements:
 
 ### Python
+- Supported: Python 3.9 to 3.14. CI runs the backend tests on 3.9, 3.13, and 3.14 (Linux and Windows).
+- The pinned dependencies install from prebuilt wheels only, so no compiler or Rust toolchain is needed. Python 3.15 and newer are not supported yet (no pydantic release ships wheels for both 3.9 and 3.15); the launcher stops with a message instead of trying to compile.
 - Repository does not declare a strict minor version in metadata.
-- Current code is compatible with Python 3.9+.
-- This workspace was executed with Python 3.13 (`.venv`), and the reported Linux startup failure was fixed for Python 3.9.
 
 ### Linux distributions
 - The code is Linux-oriented and reads Linux proc/sys paths.
@@ -718,7 +718,7 @@ python -m playwright install chromium
 python -m pytest tests -q --browser chromium
 ```
 
-On Linux CI, use `python -m playwright install --with-deps chromium`. Browser tests explicitly skip when their optional dependencies are absent. CI runs backend tests on Linux/Windows with Python 3.9 and 3.13 and browser tests on Linux.
+On Linux CI, use `python -m playwright install --with-deps chromium`. Browser tests explicitly skip when their optional dependencies are absent. CI runs backend tests on Linux/Windows with Python 3.9, 3.13, and 3.14 and browser tests on Linux.
 
 Without internet access for the browser download, run the browser tests against an installed Edge or Chrome:
 
