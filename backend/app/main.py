@@ -202,9 +202,14 @@ def _origin_allowed(connection: HTTPConnection) -> bool:
 
 @app.middleware("http")
 async def access_control(request: Request, call_next):
-    if request.url.path == "/health":
+    # Decide on the routed path: request.url is rebuilt from the client-controlled Host header.
+    path = request.scope["path"]
+    # No route uses backslashes; on Windows they turn a static-file path into a UNC lookup.
+    if "\\" in path:
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    if path == "/health":
         return await call_next(request)
-    agent_request = request.url.path.startswith("/api/agent/")
+    agent_request = path.startswith("/api/agent/")
     authorized = _agent_authorized(request) if agent_request else _api_authorized(request)
     if not authorized:
         return JSONResponse(
@@ -216,7 +221,7 @@ async def access_control(request: Request, call_next):
         return JSONResponse(status_code=403, content={"detail": "origin not allowed"})
     response = await call_next(request)
     token = settings.api_token or settings.agent_token
-    if token and request.url.path == "/" and request.headers.get("Authorization", "").startswith("Basic "):
+    if token and path == "/" and request.headers.get("Authorization", "").startswith("Basic "):
         session = f"{int(time.time()) + 43200}.{secrets.token_hex(16)}"
         signature = hmac.new(token.encode(), session.encode(), hashlib.sha256).hexdigest()
         response.set_cookie(
@@ -304,6 +309,10 @@ def _register_local_system_snapshot() -> None:
 
 def _safe_path_in_output(path_str: str) -> Path:
     base = settings.output_dir.resolve()
+    # Another drive or UNC share is outside by definition; refuse it before resolve() contacts that host.
+    drives = {Path(item).absolute().drive.lower() for item in (settings.output_dir, base)}
+    if Path(path_str).absolute().drive.lower() not in drives:
+        raise HTTPException(status_code=403, detail="file outside output directory")
     target = Path(path_str).resolve()
     if base == target or base in target.parents:
         return target

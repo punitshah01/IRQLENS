@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -36,6 +37,40 @@ def test_access_control_and_browser_auth(monkeypatch):
         assert socket.receive_json()["type"] == "connection"
     monkeypatch.setattr(settings, "api_token", "")
     assert client.get("/api/systems", auth=("irqlens", "test-agent-token")).status_code == 200
+
+
+def test_access_control_ignores_host_header(monkeypatch):
+    monkeypatch.setattr(settings, "agent_token", "test-agent-token")
+    monkeypatch.setattr(settings, "api_token", "test-api-token")
+    client = TestClient(app)
+    # Starlette rebuilds request.url from the Host header, so these make request.url.path read "/health".
+    for host in ["x/health?", "x/health#", "testserver/health?x=1"]:
+        assert client.get("/api/systems", headers={"Host": host}).status_code == 401
+        assert client.get("/", headers={"Host": host}).status_code == 401
+        assert client.delete("/api/sessions/missing", headers={"Host": host}).status_code == 401
+    agent_only = {"Host": "x/api/agent/?", "Authorization": "Bearer test-agent-token"}
+    assert client.get("/api/systems", headers=agent_only).status_code == 401
+    assert client.get("/health", headers={"Host": "x/api/systems?"}).status_code == 200
+
+
+def test_backslash_and_unc_paths_never_reach_the_filesystem(monkeypatch):
+    unc_lookups = []
+    realpath = os.path.realpath
+
+    def recording_realpath(path, *args, **kwargs):
+        text = os.fspath(path)
+        if os.name == "nt" and isinstance(text, str) and text[:2].replace("/", "\\") == "\\\\":
+            unc_lookups.append(text)
+            raise FileNotFoundError(text)
+        return realpath(path, *args, **kwargs)
+
+    monkeypatch.setattr(os.path, "realpath", recording_realpath)
+    client = TestClient(app, raise_server_exceptions=False)
+    assert client.get("/frontend/app.js").status_code == 200
+    assert client.get("/frontend/%5C%5Chost%5Cshare%5Cx").status_code == 404
+    for path in ["\\\\host\\share\\x", "//host/share/x"]:
+        assert client.get("/api/files", params={"path": path}).status_code == 403
+    assert unc_lookups == []
 
 
 def test_health_endpoint():

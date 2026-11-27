@@ -55,6 +55,10 @@ All notable documentation and implementation highlights are tracked here.
 - Kept project licensing explicitly pending owner approval.
 - README rewritten to reflect implemented server, agent, diagnostics, visualization, and operations behavior.
 
+### Security
+- The token check used the URL that Starlette rebuilds from the `Host` header, so a request with a crafted `Host` could reach every endpoint without the token. Access control now uses the routed request path.
+- Request paths containing a backslash and file paths on another drive or UNC share are refused before any filesystem lookup (on Windows they could make the server contact a named host).
+
 ### Removed
 - XML exports. Captures made earlier keep their XML files.
 - `collector/irq_collector.py`, `POST /api/irq/ingest`, `IRQLENS_ALLOWED_INGEST_IPS`, `IRQLENS_DISABLE_INGEST_ALLOWLIST`, and the launcher's `--collect-local`, `--nic`, `--sut-ip`, `--topn` options. Local collection is built into the server; remote hosts use `agent/main.py`.
