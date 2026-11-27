@@ -48,6 +48,7 @@ All notable documentation and implementation highlights are tracked here.
 - Charts redraw at most once per second. The IRQ heatmap shows the Top 25 active IRQs by default.
 - Agent version 1.2.0 sends softnet, storage, and PCIe telemetry and up to 1024 IRQ rows.
 - The launcher skips `pip install` when dependencies are already importable.
+- In local mode the launcher states that the URL works on the server host only and prints the SSH port-forward command and the `--remote` alternative for other machines.
 - Python 3.14 is supported and tested in CI: FastAPI 0.121.2, Starlette 0.49.3 (now pinned), uvicorn 0.38.0, and pydantic 2.12.5 replace pins whose `pydantic-core` had no Python 3.14 wheel. The launcher installs wheels only and reports an unsupported interpreter instead of starting a Rust build.
 - New captures export only selected time-series categories; repeated stop requests preserve the original capture window and report metadata is refreshed for downloads.
 - Escaped untrusted Overview telemetry text and exposed remote-command status in Collect Logs.

@@ -237,6 +237,13 @@ Local mode, the default: loopback only, no authentication.
 python3 run_irqlens.py
 ```
 
+`http://127.0.0.1:10000` then works only in a browser on the server host. To view a headless SUT from your own machine without opening the port, forward it over SSH and open the same URL locally:
+
+```bash
+# on your machine
+ssh -L 10000:127.0.0.1:10000 <user>@<sut>
+```
+
 Remote mode: binds `0.0.0.0:10000` and requires one token from every browser, script, and agent. Without `--token` or `IRQLENS_TOKEN`, a token is generated and printed at startup.
 
 ```bash
@@ -757,6 +764,9 @@ PASS/WARN/FAIL semantics:
 - `FAIL`: blocking failure; script exits non-zero
 
 ## Troubleshooting
+### Browser shows "127.0.0.1 refused to connect"
+The server runs in local mode on another host. `127.0.0.1` in your browser is your own machine, not the SUT. Forward the port (`ssh -L 10000:127.0.0.1:10000 <user>@<sut>`) or start the server with `--remote` and open `http://<sut>:10000`.
+
 ### Agent does not connect
 Check:
 - Server was started with `--remote`; the default local mode listens on loopback only

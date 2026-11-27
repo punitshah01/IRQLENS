@@ -46,6 +46,45 @@ def test_single_token_and_clone_and_run_defaults(monkeypatch):
     assert Settings.from_env().api_token == "shared"
 
 
+def test_launcher_says_how_to_reach_the_dashboard(monkeypatch, capsys):
+    import sys
+    from pathlib import Path
+
+    import run_irqlens
+
+    class FakeServer:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def wait(self):
+            return 0
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(run_irqlens, "_venv_python", lambda backend: Path(sys.executable))
+    monkeypatch.setattr(run_irqlens, "_dependencies_installed", lambda venv_py: True)
+    monkeypatch.setattr(run_irqlens, "_detect_host_ip", lambda: "192.0.2.10")
+    monkeypatch.setattr(run_irqlens.subprocess, "Popen", FakeServer)
+    for name in ("IRQLENS_TOKEN", "IRQLENS_API_TOKEN", "IRQLENS_AGENT_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+    monkeypatch.setattr(sys, "argv", ["run_irqlens.py"])
+    assert run_irqlens.main() == 0
+    local = capsys.readouterr().out
+    # A loopback URL is useless in the browser of the machine the user SSHed in from.
+    assert "ssh -L 10000:127.0.0.1:10000" in local and "--remote" in local
+    assert "this host only" in local and "Paste the URL" not in local
+    box = [line for line in local.splitlines() if line.lstrip().startswith(("┌", "│", "└"))]
+    assert len(box) == 8 and len({len(line) for line in box}) == 1
+
+    monkeypatch.setattr(sys, "argv", ["run_irqlens.py", "--remote"])
+    assert run_irqlens.main() == 0
+    remote = capsys.readouterr().out
+    assert "http://192.0.2.10:10000" in remote and "Generated token" in remote
+    assert "Paste the URL" in remote and "ssh -L" not in remote
+
+
 def test_diagnostic_jobs_persist_and_reclaim(tmp_path, monkeypatch):
     from backend.app.store import SqliteStore
 

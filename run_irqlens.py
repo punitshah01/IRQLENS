@@ -33,14 +33,14 @@ def _detect_host_ip() -> str:
         sock.close()
 
 
-def _print_banner(url: str) -> None:
+def _print_banner(url: str, hint: str) -> None:
     lines = [
         "  ┌──────────────────────────────────────────────┐",
         "  │  IRQLENS ready                               │",
         "  │                                              │",
-        f"  │  {url.ljust(42)}│",
+        f"  │  {url.ljust(44)}│",
         "  │                                              │",
-        "  │  Paste the URL above into your browser.      │",
+        f"  │  {hint.ljust(44)}│",
         "  │  Press Ctrl+C to stop.                       │",
         "  └──────────────────────────────────────────────┘",
     ]
@@ -151,9 +151,13 @@ def main() -> int:
             print(f"Generated token (IRQLENS_TOKEN): {token}")
         print("  Browser sign-in: user 'irqlens', password = token")
         print(f"  Agent: python3 agent/main.py --server {url} --token <token>")
+        hint = "Paste the URL above into your browser."
     else:
-        print("Local mode: loopback only, no authentication. Use --remote to accept agents and other hosts.")
-    _print_banner(url)
+        print("Local mode: loopback only, no authentication.")
+        print(f"  From another machine: ssh -L {args.port}:127.0.0.1:{args.port} <user>@<this-host>, then open {url} there.")
+        print("  Or restart with --remote to accept other hosts and agents (token required).")
+        hint = "Works in a browser on this host only."
+    _print_banner(url, hint)
     # Redirected output is block-buffered; flush so the token reaches the log before the server starts.
     sys.stdout.flush()
 
