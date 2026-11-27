@@ -326,7 +326,7 @@ KPI strip (total IOPS, read/write MB/s, max await, PCIe link warnings, AER error
 ### Collect Logs
 Named timed captures, category selection, recent capture history, remote-command job status, file downloads, Excel workbook, ZIP archives, and HTML reports.
 
-Header controls: the SUT dropdown switches between registered SUTs, `irqbalance: active|inactive|unknown` shows the daemon state on the selected SUT, and **Pause Live Updates** freezes the monitoring views until resumed. Charts redraw at most once per second regardless of the sampling interval.
+Header controls: the SUT dropdown switches between registered SUTs, `irqbalance: active|inactive|unknown` shows the daemon state on the selected SUT, and **Pause Live Updates** freezes the monitoring views until resumed. Charts redraw at most once per second regardless of the sampling interval. An open dashboard makes the server answer one refresh per second (about 14% of one core on a 256-CPU SUT, on top of about 5% for sampling). A hidden tab does not poll, and a paused dashboard only checks the SUT status.
 
 There are no separate Systems, Sessions, Settings, Admin, Logs, or Compare pages. System listing and comparison APIs remain available.
 

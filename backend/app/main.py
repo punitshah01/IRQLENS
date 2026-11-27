@@ -15,7 +15,8 @@ from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import HTTPConnection
 
@@ -48,10 +49,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger("irqlens.api")
 
+# Without this a browser may keep running a cached dashboard script after an update.
+REVALIDATE = {"Cache-Control": "no-cache"}
+
+
+class FrontendFiles(StaticFiles):
+    def file_response(self, *args: Any, **kwargs: Any) -> Response:
+        response = super().file_response(*args, **kwargs)
+        response.headers.update(REVALIDATE)
+        return response
+
+
 app = FastAPI(title="IRQLENS API", version="0.2.0")
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 FRONTEND_INDEX = Path(__file__).resolve().parents[2] / "frontend" / "index.html"
-app.mount("/frontend", StaticFiles(directory=str(FRONTEND_DIR)), name="frontend")
+app.mount("/frontend", FrontendFiles(directory=str(FRONTEND_DIR)), name="frontend")
 
 app.add_middleware(
     CORSMiddleware,
@@ -60,6 +72,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Telemetry JSON compresses 4 to 15 times; level 5 costs a few milliseconds per dashboard refresh.
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
 
 SAMPLER = TelemetrySampler(settings=settings, store=STORE, ws_manager=WS)
 DIAGNOSTICS = DiagnosticSessionService(settings=settings, store=STORE)
@@ -374,6 +388,7 @@ def _visualization_payload(
     top_n: int = 20,
     from_ts: Optional[float] = None,
     to_ts: Optional[float] = None,
+    compact: bool = False,
 ) -> Dict[str, Any]:
     now = time.time()
     if to_ts is None:
@@ -385,8 +400,8 @@ def _visualization_payload(
 
     irq_series = STORE.irq_rate_series(sut_id, from_ts, to_ts=to_ts)
     network_series = STORE.network_rate_series(sut_id, from_ts, to_ts=to_ts)
-    softirq_series = STORE.softirq_series(sut_id, from_ts, to_ts=to_ts)
-    cpu_util_series = STORE.cpu_utilization_series(sut_id, from_ts, to_ts=to_ts)
+    softirq_series = STORE.softirq_series(sut_id, from_ts, to_ts=to_ts, per_cpu=False)
+    cpu_util_series = STORE.cpu_utilization_series(sut_id, from_ts, to_ts=to_ts, per_cpu=not compact)
 
     latest_ts = STORE.latest_irq_timestamp_at(sut_id, to_ts=to_ts)
     latest_irq_rows = STORE.irq_at_timestamp(sut_id, latest_ts, limit=5000) if latest_ts is not None else []
@@ -487,7 +502,7 @@ def _visualization_payload(
         "irq_balance": balance,
     }
 
-    return {
+    payload = {
         "sut_id": sut_id,
         "window_seconds": int(max(1, to_ts - from_ts)),
         "from_ts": float(from_ts),
@@ -562,6 +577,11 @@ def _visualization_payload(
         "anomalies": anomaly_events,
         "health": health,
     }
+    if compact:
+        # The dashboard draws neither per-CPU cells nor softirq history: most of the response on many-core systems.
+        del payload["irq_heatmap"]["values"], payload["cpu_heatmap"]["values"]
+        del payload["series"]["softirq_classes"], payload["series"]["softirq_total"]
+    return payload
 
 
 @app.on_event("startup")
@@ -579,7 +599,7 @@ async def shutdown() -> None:
 
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(str(FRONTEND_INDEX), media_type="text/html")
+    return FileResponse(str(FRONTEND_INDEX), media_type="text/html", headers=REVALIDATE)
 
 
 @app.get("/api/health")
@@ -722,10 +742,13 @@ def system_visualization(
     top_n: int = 25,
     from_ts: Optional[float] = None,
     to_ts: Optional[float] = None,
+    compact: bool = False,
 ) -> dict:
     if not STORE.get_system(sut_id) and sut_id != "local":
         raise HTTPException(status_code=404, detail="system not found")
-    return _visualization_payload(sut_id=sut_id, window_seconds=window_seconds, top_n=top_n, from_ts=from_ts, to_ts=to_ts)
+    return _visualization_payload(
+        sut_id=sut_id, window_seconds=window_seconds, top_n=top_n, from_ts=from_ts, to_ts=to_ts, compact=compact,
+    )
 
 
 @app.get("/api/systems/{sut_id}/io")

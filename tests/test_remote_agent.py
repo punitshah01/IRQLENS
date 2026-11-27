@@ -330,6 +330,55 @@ def test_agent_validation_telemetry_round_trip():
         assert [item["irq"] for item in viz["irq_heatmap"]["irqs"]] == ["16"]
 
 
+def test_dashboard_responses_are_compact_compressed_and_revalidated():
+    sut = "compact-sut"
+    cpus = [str(cpu) for cpu in range(64)]
+    telemetry = _sample_telemetry(sut)
+    telemetry["cpu_utilization"] = {cpu: float(cpu) for cpu in cpus}
+    telemetry["irq_rows"][0]["cpu_rates"] = {cpu: 1.0 for cpu in cpus}
+    telemetry["softirq"]["per_cpu_rates"] = {cpu: 2.0 for cpu in cpus}
+    with TestClient(app) as client:
+        assert client.post("/api/agent/register", json=_sample_registration(sut)).status_code == 200
+        assert client.post("/api/agent/telemetry", json=telemetry).status_code == 200
+        url = f"/api/systems/{sut}/visualization?window_seconds=60"
+        full = client.get(url)
+        compact = client.get(url + "&compact=1")
+        plain = client.get(url, headers={"Accept-Encoding": "identity"})
+        index = client.get("/")
+        script = client.get("/frontend/app.js")
+        unchanged = client.get("/frontend/app.js", headers={"If-None-Match": script.headers["etag"]})
+
+    # The default response keeps every per-CPU field.
+    data = full.json()
+    assert data["series"]["cpu_utilization"][0]["cpus"]["63"] == 63.0
+    assert len(data["irq_heatmap"]["values"]) == 64 and len(data["cpu_heatmap"]["values"]) == 64
+    assert data["series"]["softirq_classes"]["NET_RX"][0][1] == 5.0
+
+    # compact=1 drops the per-CPU history and cells and the softirq history, nothing else.
+    lean = compact.json()
+    point = lean["series"]["cpu_utilization"][0]
+    assert sorted(point) == ["avg", "max", "timestamp"] and point["avg"] == 31.5 and point["max"] == 63.0
+    assert "values" not in lean["irq_heatmap"] and "values" not in lean["cpu_heatmap"]
+    assert lean["cpu_utilization"] == data["cpu_utilization"] and len(lean["cpu_utilization"]) == 64
+    for key in ("irq_heatmap", "cpu_heatmap"):
+        assert lean[key] == {name: value for name, value in data[key].items() if name != "values"}
+    assert sorted(lean["series"]) == ["cpu_utilization", "irq", "network"]
+    assert lean["series"]["irq"] == data["series"]["irq"] and lean["series"]["network"] == data["series"]["network"]
+    for key in ("stats", "top_irq_sources", "irq_distribution", "network_interfaces", "health", "irqbalance"):
+        assert lean[key] == data[key]
+    assert data["stats"]["softirq"]["current"] == 5.0
+    assert len(compact.content) < len(full.content) / 2
+
+    assert full.headers["content-encoding"] == "gzip" and "Accept-Encoding" in full.headers["vary"]
+    assert "content-encoding" not in plain.headers and plain.json()["series"] == data["series"]
+
+    # A reload must ask the server again instead of running a cached dashboard.
+    assert index.headers["cache-control"] == "no-cache"
+    assert script.headers["cache-control"] == "no-cache" and script.headers["content-encoding"] == "gzip"
+    assert "refreshSelectedHistory" in script.text
+    assert unchanged.status_code == 304 and unchanged.headers["cache-control"] == "no-cache"
+
+
 def test_remote_diagnostics_round_trip(monkeypatch):
     from backend.app.main import DIAGNOSTICS, settings
     from backend.app.models import DiagnosticCommandResult

@@ -735,6 +735,8 @@ button {
   background: var(--surface);
   box-shadow: 0 16px 40px rgba(31, 36, 48, 0.24);
   padding: 12px;
+  /* It follows the pointer; it must never catch the click meant for the cell underneath. */
+  pointer-events: none;
 }
 
 .cpu-cell.active {

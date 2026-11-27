@@ -9,6 +9,8 @@ Primary visualization payloads:
 - `GET /api/systems/{sut_id}/io` (storage, PCIe, softnet, irqbalance)
 - `GET /api/visualization/compare`
 
+`compact=1` on the visualization endpoint omits `series.cpu_utilization[].cpus`, `series.softirq_classes`, `series.softirq_total`, `irq_heatmap.values`, and `cpu_heatmap.values`. The dashboard uses it: on a 256-CPU SUT those fields are close to 90% of the response before compression. Responses are gzip-compressed for clients that send `Accept-Encoding: gzip`.
+
 Supporting data:
 - `GET /api/irq/current`
 - `GET /api/softirq/current`
@@ -52,6 +54,8 @@ Source fields:
 
 ## Redraw Rate
 - Charts and tables redraw at most once per 1000 ms regardless of the backend sampling interval.
+- Current values (KPIs, CPU and IRQ matrices, tables) are refetched on every refresh. Trend history is refetched once per 1/150 of the selected range: every second up to 2.5 minutes, every 2 s for 5 minutes, every 15 s for an hour. CPU topology and interface details are refetched every 30 s.
+- A hidden browser tab does not poll; it refreshes when shown again.
 - Pause Live Updates stops reloading and redrawing monitoring views until resumed.
 
 ## CPU Heatmap

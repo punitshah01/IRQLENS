@@ -8,6 +8,8 @@ const NAV_LABELS = {
   diagnostics: "Collect Logs",
 };
 const LIVE_RENDER_INTERVAL_MS = 1000;
+// CPU topology and interface details rarely change.
+const DETAILS_REFRESH_MS = 30000;
 const IRQ_TOP_N_OPTIONS = ["25", "50", "100", "all"];
 const IRQ_AGGREGATE_OPTIONS = ["cpu", "numa", "socket"];
 const TIME_RANGES = [
@@ -88,7 +90,14 @@ const state = {
   paused: false,
   lastLiveRenderAt: 0,
   lastRefreshAt: 0,
+  loadSeq: 0,
+  historyKey: "",
+  historyAt: 0,
+  detailsHost: "",
+  detailsAt: 0,
+  pointerDownAt: 0,
   switcherSignature: "",
+  ifaceSignature: null,
   staleMs: 5000,
   lastDataAt: 0,
   ws: null,
@@ -235,30 +244,33 @@ function viewTitle(view) {
 }
 
 function renderNavigation() {
-  const monitorViews = ["overview", "cpu", "irq", "network", "storage"];
-  const operationViews = ["diagnostics"];
-  const renderButtons = views => views.map(view => {
-    const active = state.view === view ? "nav-button active" : "nav-button";
-    const label = NAV_LABELS[view] || view;
-    return `<button class="${active}" data-view="${view}">${label}</button>`;
-  }).join("");
-  el["primary-nav"].innerHTML = `
-    <div class="nav-stack">
-      <div class="nav-label">Monitor</div>
-      ${renderButtons(monitorViews)}
-      <div class="nav-label" style="margin-top:14px;">Operations</div>
-      ${renderButtons(operationViews)}
-    </div>
-  `;
-  [...document.querySelectorAll("[data-view]")].forEach(node => {
-    node.onclick = async () => {
-      state.view = node.dataset.view;
-      storage.set("irqlens:view", state.view);
-      if (state.view === "diagnostics") await loadSessions();
-      if (state.view === "network" && state.selectedIface !== "ALL") await loadInterfaceHistory();
-      render();
+  const nav = el["primary-nav"];
+  if (!nav.firstElementChild) {
+    const renderButtons = views => views.map(view => `<button class="nav-button" data-view="${view}">${NAV_LABELS[view] || view}</button>`).join("");
+    nav.innerHTML = `
+      <div class="nav-stack">
+        <div class="nav-label">Monitor</div>
+        ${renderButtons(["overview", "cpu", "irq", "network", "storage"])}
+        <div class="nav-label" style="margin-top:14px;">Operations</div>
+        ${renderButtons(["diagnostics"])}
+      </div>
+    `;
+    // Built once: a button that is replaced between press and release never gets its click.
+    nav.onclick = event => {
+      const button = event.target.closest("[data-view]");
+      if (button) showView(button.dataset.view);
     };
-  });
+  }
+  nav.querySelectorAll("[data-view]").forEach(node => node.classList.toggle("active", node.dataset.view === state.view));
+}
+
+function showView(view) {
+  state.view = view;
+  storage.set("irqlens:view", state.view);
+  // Draw at once from what is loaded; the capture list follows without holding up the click.
+  const sessions = view === "diagnostics" ? loadSessions() : null;
+  render();
+  if (sessions) sessions.then(render, render);
 }
 
 function renderTimeControls() {
@@ -272,6 +284,8 @@ function renderTimeControls() {
       state.timeRange = node.dataset.range;
       storage.set("irqlens:timeRange", state.timeRange);
       renderTimeControls();
+      // Loaded samples are re-cut to the new range at once; the full history follows.
+      render();
       await refreshSelectedHistory();
       render();
     };
@@ -587,7 +601,8 @@ function renderOverview() {
     filterRowsToRange(state.viz?.series?.network || []).map(item => [item.timestamp * 1000, Number(item.rx_bps || 0)]),
     filterRowsToRange(state.viz?.series?.network || []).map(item => [item.timestamp * 1000, Number(item.tx_bps || 0)]),
     "RX",
-    "TX"
+    "TX",
+    fmtAxisBytesRate
   );
   renderTopologyMap("overview-topology", { compact: true });
   qs("overview-findings").innerHTML = findings.map(item => `
@@ -598,12 +613,7 @@ function renderOverview() {
     </div>
   `).join("");
   [...qs("overview-findings").querySelectorAll("[data-target-view]")].forEach(node => {
-    node.onclick = async () => {
-      state.view = node.dataset.targetView;
-      storage.set("irqlens:view", state.view);
-      if (state.view === "network" && state.selectedIface !== "ALL") await loadInterfaceHistory();
-      render();
-    };
+    node.onclick = () => showView(node.dataset.targetView);
   });
 }
 
@@ -756,8 +766,13 @@ function topCpuForIrq(row) {
 function renderNetwork() {
   const interfaces = state.snapshot?.network?.interfaces || [];
   const selector = qs("network-interface-selector");
-  const options = [`<option value="ALL">All Interfaces</option>`].concat(interfaces.map(item => `<option value="${escapeHtml(item.interface)}">${escapeHtml(item.interface)}</option>`));
-  selector.innerHTML = options.join("");
+  // Like the SUT switcher: rebuilding the list on every tick would reset an open dropdown.
+  const signature = interfaces.map(item => item.interface).join("\n");
+  if (signature !== state.ifaceSignature) {
+    state.ifaceSignature = signature;
+    const options = [`<option value="ALL">All Interfaces</option>`].concat(interfaces.map(item => `<option value="${escapeHtml(item.interface)}">${escapeHtml(item.interface)}</option>`));
+    selector.innerHTML = options.join("");
+  }
   if (!interfaces.find(item => item.interface === state.selectedIface) && state.selectedIface !== "ALL") {
     state.selectedIface = "ALL";
   }
@@ -838,7 +853,7 @@ function renderNetworkTrend() {
   const txKey = usingInterface ? "tx_bps" : "tx_bps";
   const rx = rows.map(item => [Number(item.timestamp || 0) * 1000, Number(item[rxKey] || 0)]);
   const tx = rows.map(item => [Number(item.timestamp || 0) * 1000, Number(item[txKey] || 0)]);
-  renderDualTrendChart("networkTrend", "chart-network-trend", rx, tx, "RX", "TX");
+  renderDualTrendChart("networkTrend", "chart-network-trend", rx, tx, "RX", "TX", fmtAxisBytesRate);
 }
 
 function renderNetworkRelatedIrqs() {
@@ -1206,6 +1221,8 @@ function cpuTooltipHtml(cpuId, row, cpuMap) {
 function bindCpuCellInteractions(root, cpuMap, metricKey, interactive) {
   const tooltip = qs("cpu-hover-tooltip");
   const topoRows = state.topology?.rows || [];
+  // A redrawn cell never reports the pointer leaving it, so the matrix itself hides the tooltip.
+  if (tooltip) root.onmouseleave = () => tooltip.classList.add("hidden");
   [...root.querySelectorAll("[data-cpu]")].forEach(node => {
     const cpuId = node.dataset.cpu;
     const row = topoRows.find(item => String(item.cpu_id) === String(cpuId));
@@ -1772,7 +1789,8 @@ async function loadSessionDetail(sessionId) {
 function renderSessions() {
   const listRoot = qs("sessions-list");
   const detailRoot = qs("session-detail");
-  if (state.loading.sessions) {
+  // A list that is already on screen stays there while it is refreshed.
+  if (state.loading.sessions && !state.sessions.length) {
     listRoot.innerHTML = emptyState("Loading sessions", "Fetching diagnostic capture history.");
     detailRoot.innerHTML = emptyState("Select a capture", "Choose a capture to inspect summary, files, and download options.");
     return;
@@ -2218,22 +2236,32 @@ function renderCpuLiveUpdate() {
   }
 }
 
+function pointerIsDown() {
+  // A redraw between press and release swallows the click; capped because a release outside the window goes unreported.
+  return Date.now() - state.pointerDownAt < 1500;
+}
+
 function scheduleTelemetryRefresh(delayMs = LIVE_RENDER_INTERVAL_MS) {
   if (state.refreshTimer) return;
   // Charts redraw at most once per interval, however fast the backend samples.
   const wait = Math.max(delayMs, LIVE_RENDER_INTERVAL_MS - (Date.now() - state.lastRefreshAt));
   state.refreshTimer = setTimeout(async () => {
     state.refreshTimer = null;
-    if (state.refreshInFlight || !state.host) return;
+    // A tab nobody is looking at does not make the SUT build responses.
+    if (state.refreshInFlight || !state.host || document.hidden) return;
     state.refreshInFlight = true;
+    // Counted from the start, so one refresh per sample keeps a steady beat whatever the network delay.
+    state.lastRefreshAt = Date.now();
     try {
-      await loadSystems();
-      if (!state.paused) await loadSelectedData();
-      if (state.view === "diagnostics") {
-        await loadSessions();
-        if (state.selectedSessionId) await loadSessionDetail(state.selectedSessionId);
-      }
-      state.lastRefreshAt = Date.now();
+      // Requested together: a remote browser pays the network delay once per refresh, not once per request.
+      await Promise.all([
+        loadSystems(),
+        state.paused ? null : loadSelectedData(),
+        state.view === "diagnostics"
+          ? loadSessions().then(() => (state.selectedSessionId ? loadSessionDetail(state.selectedSessionId) : null))
+          : null,
+      ]);
+      if (pointerIsDown()) return;
       // While paused, monitoring views keep the frame the user froze; capture lists still update.
       if (state.paused && state.view !== "diagnostics") renderContextBar();
       else render();
@@ -2266,9 +2294,33 @@ function resizeCharts() {
 function baseChart() {
   return {
     backgroundColor: "transparent",
-    grid: { left: 54, right: 24, top: 26, bottom: 42 },
+    // containLabel sizes the plot around its axis labels, so wide values are not cut off.
+    grid: { left: 10, right: 28, top: 30, bottom: 8, containLabel: true },
     textStyle: { color: "#1f2430", fontFamily: "Aptos, Segoe UI Variable Display, sans-serif" },
   };
+}
+
+// Axis labels: 1,800,000 reads as 1.8M.
+function fmtAxisNumber(value) {
+  const n = Number(value || 0);
+  const abs = Math.abs(n);
+  const scaled = (divisor, unit) => `${Number((n / divisor).toFixed(1))}${unit}`;
+  if (abs >= 1e9) return scaled(1e9, "G");
+  if (abs >= 1e6) return scaled(1e6, "M");
+  if (abs >= 1e3) return scaled(1e3, "K");
+  return String(Number(n.toFixed(abs < 10 ? 2 : 1)));
+}
+
+function fmtAxisBytesRate(value) {
+  return `${fmtAxisNumber(value)}B/s`;
+}
+
+function timeAxis() {
+  return { type: "time", axisLabel: { color: "#6b7280", hideOverlap: true } };
+}
+
+function valueAxis(name, formatter = fmtAxisNumber) {
+  return { type: "value", name, axisLabel: { color: "#6b7280", formatter } };
 }
 
 function renderSimpleTrendChart(key, elementId, data, seriesName, yName, color) {
@@ -2278,13 +2330,13 @@ function renderSimpleTrendChart(key, elementId, data, seriesName, yName, color) 
     ...baseChart(),
     animation: false,
     tooltip: { trigger: "axis" },
-    xAxis: { type: "time", axisLabel: { color: "#6b7280" } },
-    yAxis: { type: "value", name: yName, axisLabel: { color: "#6b7280" } },
+    xAxis: timeAxis(),
+    yAxis: valueAxis(yName),
     series: [{ name: seriesName, type: "line", showSymbol: false, smooth: true, data, lineStyle: { width: 3, color }, areaStyle: { color: withAlpha(color, 0.12) } }],
   });
 }
 
-function renderDualTrendChart(key, elementId, first, second, firstName, secondName) {
+function renderDualTrendChart(key, elementId, first, second, firstName, secondName, formatter) {
   const chart = ensureChart(key, elementId);
   if (!chart) return;
   chart.setOption({
@@ -2292,8 +2344,8 @@ function renderDualTrendChart(key, elementId, first, second, firstName, secondNa
     animation: false,
     tooltip: { trigger: "axis" },
     legend: { top: 0, textStyle: { color: "#6b7280" } },
-    xAxis: { type: "time", axisLabel: { color: "#6b7280" } },
-    yAxis: { type: "value", axisLabel: { color: "#6b7280" } },
+    xAxis: timeAxis(),
+    yAxis: valueAxis("", formatter),
     series: [
       { name: firstName, type: "line", showSymbol: false, smooth: true, data: first, lineStyle: { width: 3, color: "#2368d1" }, areaStyle: { color: "rgba(35,104,209,0.12)" } },
       { name: secondName, type: "line", showSymbol: false, smooth: true, data: second, lineStyle: { width: 3, color: "#237a57" }, areaStyle: { color: "rgba(35,122,87,0.12)" } },
@@ -2304,16 +2356,18 @@ function renderDualTrendChart(key, elementId, first, second, firstName, secondNa
 function renderMultiSeriesChart(key, elementId, series, yName, secondAxisName = "") {
   const chart = ensureChart(key, elementId);
   if (!chart) return;
-  const axis = name => ({ type: "value", name, axisLabel: { color: "#6b7280" } });
+  // replaceMerge swaps only the series: a full reset every second would undo legend toggles and paging.
   chart.setOption({
     ...baseChart(),
-    grid: { left: 54, right: secondAxisName ? 54 : 24, top: 40, bottom: 42 },
+    // Room for the axis names below the legend row.
+    grid: { ...baseChart().grid, top: 58 },
     animation: false,
     tooltip: { trigger: "axis" },
     legend: { type: "scroll", top: 0, textStyle: { color: "#6b7280" } },
-    xAxis: { type: "time", axisLabel: { color: "#6b7280" } },
-    yAxis: secondAxisName ? [axis(yName), { ...axis(secondAxisName), splitLine: { show: false } }] : [axis(yName)],
+    xAxis: timeAxis(),
+    yAxis: secondAxisName ? [valueAxis(yName), { ...valueAxis(secondAxisName), splitLine: { show: false } }] : [valueAxis(yName)],
     series: series.map(item => ({
+      id: item.name,
       name: item.name,
       type: "line",
       showSymbol: false,
@@ -2321,7 +2375,7 @@ function renderMultiSeriesChart(key, elementId, series, yName, secondAxisName = 
       yAxisIndex: item.axis || 0,
       lineStyle: { width: 2, type: item.dashed ? "dashed" : "solid" },
     })),
-  }, true);
+  }, { replaceMerge: ["series"] });
 }
 
 function renderTopIrqChart(rows) {
@@ -2331,8 +2385,9 @@ function renderTopIrqChart(rows) {
     ...baseChart(),
     animation: false,
     tooltip: { trigger: "item" },
-    xAxis: { type: "value", axisLabel: { color: "#6b7280" } },
-    yAxis: { type: "category", data: rows.map(row => row.irq_name || row.irq), axisLabel: { color: "#6b7280" } },
+    xAxis: { type: "value", axisLabel: { color: "#6b7280", formatter: fmtAxisNumber, hideOverlap: true } },
+    // Full source names do not fit beside the bars; the table below has them.
+    yAxis: { type: "category", data: rows.map(row => `${row.irq} • ${row.nic || row.source_class || "other"}`), axisLabel: { color: "#6b7280", fontSize: 11, interval: 0 } },
     series: [{ type: "bar", data: rows.map(row => Number(row.total_rate || 0)), itemStyle: { color: "#2368d1", borderRadius: 8 } }],
   });
 }
@@ -2347,12 +2402,7 @@ function renderIrqHeatmap(rows) {
   }
 
   const maxRate = Math.max(1, ...rows.flatMap(row => Object.values(row.cpu_rates || {}).map(v => Number(v || 0))));
-  const labelStep = cpus.length <= 24 ? 1 : Math.ceil(cpus.length / 18);
-  const showCpuLabel = (idx) => idx === 0 || idx === cpus.length - 1 || idx % labelStep === 0;
-  const topRows = rows;
   const columnLabel = heatmapColumnLabel();
-  // A handful of NUMA/socket columns get wide cells; per-CPU columns stay compact.
-  const cellWidth = cpus.length <= 16 ? 48 : 14;
 
   const levelFor = (rate) => {
     const ratio = Math.max(0, Math.min(1, Number(rate || 0) / maxRate));
@@ -2364,43 +2414,58 @@ function renderIrqHeatmap(rows) {
     return 0;
   };
 
-  const header = cpus.map((cpu, idx) => `
-    <div class="irq-cpu-label" title="${columnLabel} ${escapeHtml(cpu)}">${showCpuLabel(idx) ? escapeHtml(cpu) : ""}</div>
-  `).join("");
-
-  const body = topRows.map(row => {
-    const rowTitle = `${row.irq_name || row.irq}`;
-    const rowLabel = `${escapeHtml(row.irq)} • ${escapeHtml(row.nic || row.source_class || "other")}`;
-    const cells = cpus.map(cpu => {
-      const rate = Number((row.cpu_rates || {})[cpu] || 0);
-      const level = levelFor(rate);
-      return `
-        <div
-          class="irq-heat-cell"
-          data-level="${level}"
-          style="width:${cellWidth}px;"
-          title="${columnLabel} ${escapeHtml(cpu)}\nIRQ source: ${escapeHtml(rowTitle)}\nIRQ rate: ${fmtCount(rate)}/s\nTotal: ${fmtCount(row.total_count || 0)}"
-        ></div>
-      `;
-    }).join("");
-    return `
-      <div class="irq-row-label" title="${escapeHtml(rowTitle)}">${rowLabel}</div>
-      ${cells}
-    `;
-  }).join("");
-
-  root.innerHTML = `
-    <div class="irq-matrix-shell">
-      <div class="legend"><span>Low</span><div class="legend-bar"></div><span>High</span><span class="muted">Current IRQ/s per (IRQ source, ${columnLabel}) • ${topRows.length} active IRQ(s)</span></div>
-      <div class="irq-matrix-scroll">
-        <div class="irq-matrix-grid" style="grid-template-columns: minmax(220px, 220px) repeat(${cpus.length}, minmax(${cellWidth}px, ${cellWidth}px));">
-          <div class="irq-header-label">IRQ Source</div>
-          ${header}
-          ${body}
-        </div>
+  // Built once per shape and recolored in place: a rebuild every second would reset the scroll position.
+  let grid = root.querySelector(".irq-matrix-grid");
+  if (!grid) {
+    root.innerHTML = `
+      <div class="irq-matrix-shell">
+        <div class="legend"><span>Low</span><div class="legend-bar"></div><span>High</span><span class="muted"></span></div>
+        <div class="irq-matrix-scroll"><div class="irq-matrix-grid"></div></div>
       </div>
-    </div>
-  `;
+    `;
+    grid = root.querySelector(".irq-matrix-grid");
+  }
+  const shape = [columnLabel, rows.length, ...cpus].join("|");
+  if (grid.dataset.shape !== shape) {
+    grid.dataset.shape = shape;
+    const labelStep = cpus.length <= 24 ? 1 : Math.ceil(cpus.length / 18);
+    const showCpuLabel = (idx) => idx === 0 || idx === cpus.length - 1 || idx % labelStep === 0;
+    // A handful of NUMA/socket columns get wide cells; per-CPU columns stay compact.
+    const cellWidth = cpus.length <= 16 ? 48 : 14;
+    const header = cpus.map((cpu, idx) => `<div class="irq-cpu-label" title="${columnLabel} ${escapeHtml(cpu)}">${showCpuLabel(idx) ? escapeHtml(cpu) : ""}</div>`).join("");
+    const rowHtml = `<div class="irq-row-label"></div>${`<div class="irq-heat-cell" style="width:${cellWidth}px;"></div>`.repeat(cpus.length)}`;
+    grid.style.gridTemplateColumns = `minmax(220px, 220px) repeat(${cpus.length}, minmax(${cellWidth}px, ${cellWidth}px))`;
+    grid.innerHTML = `<div class="irq-header-label">IRQ Source</div>${header}${rowHtml.repeat(rows.length)}`;
+  }
+  root.querySelector(".legend .muted").textContent = `Current IRQ/s per (IRQ source, ${columnLabel}) • ${rows.length} active IRQ(s)`;
+
+  const set = (node, key, value) => {
+    if (node[key] !== value) node[key] = value;
+  };
+  const labels = grid.querySelectorAll(".irq-row-label");
+  const cells = grid.querySelectorAll(".irq-heat-cell");
+  rows.forEach((row, rowIndex) => {
+    set(labels[rowIndex], "textContent", `${row.irq} • ${row.nic || row.source_class || "other"}`);
+    set(labels[rowIndex], "title", `${row.irq_name || row.irq}`);
+    cpus.forEach((cpu, cpuIndex) => {
+      const cell = cells[rowIndex * cpus.length + cpuIndex];
+      const level = String(levelFor((row.cpu_rates || {})[cpu]));
+      if (cell.dataset.level !== level) cell.dataset.level = level;
+    });
+  });
+
+  // Tooltip for the hovered cell only: rewriting thousands of titles per refresh made Edge deliver responses seconds late.
+  const describe = cell => {
+    const index = Array.prototype.indexOf.call(cells, cell);
+    if (index < 0) return;
+    const row = rows[Math.floor(index / cpus.length)];
+    const cpu = cpus[index % cpus.length];
+    const rate = Number((row.cpu_rates || {})[cpu] || 0);
+    cell.title = `${columnLabel} ${cpu}\nIRQ source: ${row.irq_name || row.irq}\nIRQ rate: ${fmtCount(rate)}/s\nTotal: ${fmtCount(row.total_count || 0)}`;
+  };
+  grid.onmouseover = event => describe(event.target);
+  const hovered = grid.querySelector(".irq-heat-cell:hover");
+  if (hovered) describe(hovered);
 }
 
 function withAlpha(hex, alpha) {
@@ -2437,8 +2502,14 @@ async function loadSystems() {
   persistSelections();
 }
 
+// History is what a refresh costs the SUT most: refetched every 1 s up to 2.5 min ranges, 2 s at 5 min, 15 s at 1 h.
+function historyIntervalMs(windowSeconds) {
+  return Math.min(15000, Math.max(LIVE_RENDER_INTERVAL_MS, (windowSeconds * 1000) / 150));
+}
+
 async function loadSelectedData() {
-  if (!state.host) {
+  const host = state.host;
+  if (!host) {
     state.snapshot = null;
     state.viz = null;
     state.io = null;
@@ -2446,26 +2517,49 @@ async function loadSelectedData() {
     state.interfacesMeta = [];
     return;
   }
-  const [irq, softirq, network, interfaces] = await Promise.all([
-    fetchJson("/api/irq/current?sut_id=" + encodeURIComponent(state.host) + "&limit=2000"),
-    fetchJson("/api/softirq/current?sut_id=" + encodeURIComponent(state.host)),
-    fetchJson("/api/network/current?sut_id=" + encodeURIComponent(state.host)),
-    fetchJson("/api/interfaces?sut_id=" + encodeURIComponent(state.host)),
-  ]);
-  state.snapshot = { irq, softirq, network };
-  state.interfacesMeta = interfaces.interfaces || [];
+  const seq = ++state.loadSeq;
+  const iface = state.selectedIface;
+  const sut = encodeURIComponent(host);
   const bounds = timeBounds();
   const query = state.timeRange === "custom"
     ? `from_ts=${encodeURIComponent(bounds.from)}&to_ts=${encodeURIComponent(bounds.to)}`
     : `window_seconds=${encodeURIComponent(bounds.to - bounds.from)}`;
-  state.viz = await fetchJson(`/api/systems/${encodeURIComponent(state.host)}/visualization?${query}&top_n=25`);
-  state.io = await fetchJson(`/api/systems/${encodeURIComponent(state.host)}/io?${query}`).catch(() => null);
-  state.cpuUtilTimestamp = Number(state.viz?.timestamp || state.cpuUtilTimestamp || 0);
-  state.topology = await fetchJson(`/api/systems/${encodeURIComponent(state.host)}/visualization/topology`);
-  if (state.selectedIface !== "ALL") {
-    await loadInterfaceHistory();
-  } else {
-    state.interfaceHistory = null;
+  const startedAt = Date.now();
+  const historyKey = [host, query, iface].join("|");
+  // Half a refresh of slack, so timer jitter cannot push a due refetch to the following refresh.
+  const historyAge = startedAt - state.historyAt + LIVE_RENDER_INTERVAL_MS / 2;
+  const historyDue = historyKey !== state.historyKey || historyAge >= historyIntervalMs(bounds.to - bounds.from);
+  const detailsDue = host !== state.detailsHost || startedAt - state.detailsAt >= DETAILS_REFRESH_MS || !state.topology?.available;
+  // Current values every time, history and details when due; compact=1 omits history the dashboard does not draw.
+  const [irq, softirq, network, viz, io, ifaceHistory, interfaces, topology] = await Promise.all([
+    fetchJson(`/api/irq/current?sut_id=${sut}&limit=2000`),
+    fetchJson(`/api/softirq/current?sut_id=${sut}`),
+    fetchJson(`/api/network/current?sut_id=${sut}`),
+    historyDue ? fetchJson(`/api/systems/${sut}/visualization?${query}&top_n=25&compact=1`) : null,
+    fetchJson(`/api/systems/${sut}/io?${historyDue ? query : "window_seconds=30"}`).catch(() => null),
+    historyDue && iface !== "ALL" ? fetchJson(`/api/network/${encodeURIComponent(iface)}?sut_id=${sut}`).catch(() => null) : null,
+    detailsDue ? fetchJson(`/api/interfaces?sut_id=${sut}`) : null,
+    detailsDue ? fetchJson(`/api/systems/${sut}/visualization/topology`) : null,
+  ]);
+  // A newer request, or another SUT or interface chosen meanwhile, owns the screen.
+  if (seq !== state.loadSeq || host !== state.host || iface !== state.selectedIface) return;
+  state.snapshot = { irq, softirq, network };
+  if (historyDue) {
+    state.viz = viz;
+    state.cpuUtilTimestamp = Number(viz?.timestamp || state.cpuUtilTimestamp || 0);
+    state.interfaceHistory = ifaceHistory;
+    state.historyKey = historyKey;
+    state.historyAt = startedAt;
+  } else if (io?.storage && state.io?.storage) {
+    // This response only refreshed the current values; keep the series that is plotted.
+    io.storage.series = state.io.storage.series;
+  }
+  state.io = io;
+  if (detailsDue) {
+    state.interfacesMeta = interfaces.interfaces || [];
+    state.topology = topology;
+    state.detailsHost = host;
+    state.detailsAt = startedAt;
   }
   state.lastDataAt = nowSeconds();
 }
@@ -2492,9 +2586,7 @@ async function refreshSelectedHistory() {
 async function refreshAll() {
   state.loading.global = true;
   try {
-    await loadHealth();
-    await loadSystems();
-    await loadSelectedData();
+    await Promise.all([loadHealth(), loadSystems().then(() => loadSelectedData())]);
     if (state.view === "diagnostics") {
       await loadSessions();
       if (state.selectedSessionId) await loadSessionDetail(state.selectedSessionId);
@@ -2554,6 +2646,11 @@ function bindGlobalActions() {
     renderContextBar();
     if (!state.paused) scheduleTelemetryRefresh(0);
   };
+  document.addEventListener("pointerdown", () => { state.pointerDownAt = Date.now(); }, true);
+  ["pointerup", "pointercancel"].forEach(type => document.addEventListener(type, () => { state.pointerDownAt = 0; }, true));
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) scheduleTelemetryRefresh(0);
+  });
   document.addEventListener("click", event => {
     const node = event.target.closest ? event.target.closest("[data-download-url]") : null;
     if (!node) return;
@@ -2631,12 +2728,13 @@ function wireWebSocket() {
     if (isCurrentSutTelemetry) {
       if (state.paused) return;
       const updated = applyLiveCpuUtilization(payload);
-      if (updated && Date.now() - state.lastLiveRenderAt >= LIVE_RENDER_INTERVAL_MS) {
+      if (updated && !pointerIsDown() && Date.now() - state.lastLiveRenderAt >= LIVE_RENDER_INTERVAL_MS) {
         state.lastLiveRenderAt = Date.now();
         renderCpuLiveUpdate();
         renderContextBar();
       }
-      scheduleTelemetryRefresh();
+      // Fetch as soon as the sample exists; refreshes stay at most one per second.
+      scheduleTelemetryRefresh(0);
       return;
     }
 
@@ -2673,9 +2771,10 @@ async function boot() {
     }
   }, 1000);
   setInterval(async () => {
+    if (document.hidden) return;
     if (!state.paused && (!state.ws || state.ws.readyState !== WebSocket.OPEN)) {
       await refreshAll();
-      render();
+      if (!pointerIsDown()) render();
       return;
     }
     // A SUT that stopped reporting sends no events; polling lets it turn STALE or OFFLINE.

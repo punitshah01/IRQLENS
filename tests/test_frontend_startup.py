@@ -128,7 +128,7 @@ def test_frontend_escapes_telemetry_and_navigates(dashboard_page):
 def test_frontend_displays_remote_command_failures(dashboard_page):
     page = dashboard_page
     page.get_by_role("button", name="Collect Logs", exact=True).click()
-    page.locator("#section-diagnostics").wait_for(state="visible")
+    page.locator('[data-toggle-session="capture"]').wait_for()
     page.evaluate("async () => { await loadSessionDetail('capture'); renderSessions(); }")
     detail = page.locator("#session-detail")
     assert "Remote Commands" in detail.inner_text()
@@ -319,6 +319,27 @@ def test_live_redraw_is_throttled_to_one_second(dashboard_page):
     assert 1 <= draws <= 3
 
 
+def test_hidden_tab_does_not_poll_the_sut(dashboard_page):
+    page = dashboard_page
+    page.wait_for_function("!state.refreshInFlight")
+    polls = []
+    page.on("request", lambda request: polls.append(request.url) if "/api/" in request.url else None)
+    page.evaluate("""async () => {
+        Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+        for (let index = 0; index < 5; index += 1) {
+            state.lastRefreshAt = 0;
+            state.ws.onmessage({ data: JSON.stringify({ type: 'telemetry', sut_id: state.host, timestamp: Date.now() / 1000, cpu_utilization: { 0: 5 } }) });
+            await new Promise(resolve => setTimeout(resolve, 60));
+        }
+    }""")
+    assert polls == []
+    with page.expect_request(lambda request: "/api/irq/current" in request.url):
+        page.evaluate("""() => {
+            Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+            document.dispatchEvent(new Event('visibilitychange'));
+        }""")
+
+
 def test_irq_heatmap_top_n_and_numa_aggregation(dashboard_page):
     page = dashboard_page
     page.get_by_role("button", name="IRQ", exact=True).click()
@@ -351,6 +372,196 @@ def test_irq_heatmap_top_n_and_numa_aggregation(dashboard_page):
     assert [columns.nth(index).get_attribute("title") for index in range(columns.count())] == ["NUMA 0", "NUMA 1"]
     assert page.locator("#irq-table tr").first.locator(".tag.bad").inner_text() == "Handled on node 0, 1"
     assert page.locator("#irq-table .tag.bad").count() == 1
+
+
+def test_irq_matrix_keeps_scroll_position_and_cells_across_redraws(dashboard_page):
+    page = dashboard_page
+    page.get_by_role("button", name="IRQ", exact=True).click()
+    page.locator("#section-irq").wait_for(state="visible")
+    result = page.evaluate("""() => {
+        state.paused = true;
+        const cpus = [...Array(128).keys()];
+        state.topology = { available: true, rows: cpus.map(cpu => ({ cpu_id: cpu, numa_node: 0, socket_id: 0 })) };
+        const sample = hot => ({ irq: { rows: [0, 1, 2].map(index => ({
+            irq: String(100 + index), irq_name: `q${index}`, nic: 'eth0', total_rate: 300 - index, total_count: 7,
+            cpu_rates: Object.fromEntries(cpus.map(cpu => [cpu, cpu === hot ? 100 : 1])),
+        })) }, softirq: {}, network: { interfaces: [] } });
+        const scroller = () => document.querySelector('#chart-irq-heatmap .irq-matrix-scroll');
+        const cell = index => document.querySelectorAll('#chart-irq-heatmap .irq-heat-cell')[index];
+        state.snapshot = sample(5);
+        renderIrq();
+        const first = cell(0);
+        const before = [cell(5).dataset.level, cell(90).dataset.level];
+        scroller().scrollLeft = 400;
+        state.snapshot = sample(90);
+        renderIrq();
+        const untouched = cell(90).title;
+        cell(90).dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+        return {
+            scrollable: scroller().scrollWidth > scroller().clientWidth + 400,
+            scrollLeft: scroller().scrollLeft,
+            sameCell: cell(0) === first,
+            before,
+            after: [cell(5).dataset.level, cell(90).dataset.level],
+            untouched,
+            title: cell(90).title,
+        };
+    }""")
+    # Cells are recolored in place and get their tooltip on hover, not on every redraw.
+    assert result == {
+        "scrollable": True, "scrollLeft": 400, "sameCell": True,
+        "before": ["5", "1"], "after": ["1", "5"], "untouched": "",
+        "title": "CPU 90\nIRQ source: q0\nIRQ rate: 100.0/s\nTotal: 7.0",
+    }
+
+
+def test_clicks_survive_a_redraw_between_press_and_release(dashboard_page):
+    page = dashboard_page
+
+    def press(locator):
+        locator.scroll_into_view_if_needed()
+        box = locator.bounding_box()
+        page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        page.mouse.down()
+
+    # Navigation buttons are built once, so a redraw cannot replace the pressed one.
+    press(page.get_by_role("button", name="CPU", exact=True))
+    page.evaluate("render()")
+    page.mouse.up()
+    assert page.evaluate("state.view") == "cpu"
+    assert page.locator(".nav-button.active").inner_text() == "CPU"
+
+    # CPU cells are rebuilt by every refresh, so a refresh waits for the release.
+    page.evaluate("""() => {
+        state.topology = { available: true, rows: [0, 1, 2, 3].map(cpu => ({ cpu_id: cpu, numa_node: 0, socket_id: 0, core_id: cpu })) };
+        render();
+    }""")
+    press(page.locator('#cpu-topology [data-cpu="2"]'))
+    page.evaluate("""async () => {
+        state.lastRefreshAt = 0;
+        scheduleTelemetryRefresh(0);
+        state.ws.onmessage({ data: JSON.stringify({ type: 'telemetry', sut_id: state.host, timestamp: Date.now() / 1000, cpu_utilization: { 2: 50 } }) });
+        await new Promise(resolve => setTimeout(resolve, 500));
+    }""")
+    page.mouse.up()
+    assert page.evaluate("state.selectedCpu") == "2"
+    assert "active" in page.locator('#cpu-topology [data-cpu="2"]').get_attribute("class")
+
+    # A tooltip left over the matrix does not catch the click, and leaving the matrix hides it.
+    page.evaluate("""() => {
+        const tooltip = document.getElementById('cpu-hover-tooltip');
+        tooltip.classList.remove('hidden');
+        Object.assign(tooltip.style, { left: '0px', top: '0px', width: '100vw', height: '100vh', maxHeight: '100vh' });
+    }""")
+    page.locator('#cpu-topology [data-cpu="3"]').click(timeout=3000)
+    assert page.evaluate("state.selectedCpu") == "3"
+    page.mouse.move(5, 5)
+    assert "hidden" in page.locator("#cpu-hover-tooltip").get_attribute("class")
+
+
+def test_storage_chart_keeps_hidden_series_and_follows_devices(dashboard_page):
+    page = dashboard_page
+    page.get_by_role("button", name="Storage & PCIe", exact=True).click()
+    page.locator("#section-storage").wait_for(state="visible")
+    result = page.evaluate("""() => {
+        state.paused = true;
+        const chart = state.charts.storageIops;
+        chart.dispatchAction({ type: 'legendUnSelect', name: 'nvme0n1 read' });
+        renderStorage();
+        const hidden = chart.getOption().legend[0].selected['nvme0n1 read'];
+        state.io.storage.series = { sda: state.io.storage.series.nvme0n1 };
+        renderStorage();
+        return { hidden, names: chart.getOption().series.map(item => item.name) };
+    }""")
+    assert result == {"hidden": False, "names": ["sda read", "sda write"]}
+
+
+def test_interface_dropdown_is_rebuilt_only_when_interfaces_change(dashboard_page):
+    page = dashboard_page
+    page.get_by_role("button", name="Network", exact=True).click()
+    result = page.evaluate("""() => {
+        state.paused = true;
+        const option = () => document.querySelector('#network-interface-selector option');
+        const first = option();
+        render();
+        const kept = option() === first;
+        state.snapshot.network.interfaces.push({ interface: 'eth9', rx_bps: 0 });
+        render();
+        return { kept, values: [...document.querySelectorAll('#network-interface-selector option')].map(item => item.value).slice(-1) };
+    }""")
+    assert result == {"kept": True, "values": ["eth9"]}
+
+
+def test_refresh_fetches_history_and_details_only_when_due(dashboard_page):
+    page = dashboard_page
+    page.route("**/api/systems/sut-test/visualization/topology", lambda route: route.fulfill(
+        json={"available": True, "rows": [{"cpu_id": 0, "numa_node": 0, "socket_id": 0}]}))
+    assert page.evaluate("[30, 300, 900, 1800, 3600, 86400].map(historyIntervalMs)") == [1000, 2000, 6000, 12000, 15000, 15000]
+    page.evaluate("state.paused = true")
+    with page.expect_request(lambda request: "/visualization?window_seconds=3600&top_n=25&compact=1" in request.url):
+        page.locator('[data-range="3600"]').click()
+    page.wait_for_function("state.historyKey.includes('window_seconds=3600') && state.topology.available")
+
+    requested = []
+    page.on("request", lambda request: requested.append(request.url.split("irqlens.test")[1]))
+    page.evaluate("""async () => {
+        state.io.storage.series = { plotted: [] };
+        await loadSelectedData();
+        await loadSelectedData();
+    }""")
+    # Between history refreshes only the current values are fetched and the plotted series is kept.
+    assert sorted(path for path in requested if "/api/systems/sut-test/" in path) == ["/api/systems/sut-test/io?window_seconds=30"] * 2
+    assert len([path for path in requested if path.startswith("/api/irq/current")]) == 2
+    assert not [path for path in requested if path.startswith("/api/interfaces")]
+    assert page.evaluate("[Object.keys(state.io.storage.series), state.io.storage.totals.total_iops]") == [["plotted"], 1500]
+
+    requested.clear()
+    page.evaluate("async () => { state.historyAt = 0; state.detailsAt = 0; await loadSelectedData(); }")
+    assert sorted(path for path in requested if "/api/systems/sut-test/" in path) == [
+        "/api/systems/sut-test/io?window_seconds=3600",
+        "/api/systems/sut-test/visualization/topology",
+        "/api/systems/sut-test/visualization?window_seconds=3600&top_n=25&compact=1",
+    ]
+    assert [path for path in requested if path.startswith("/api/interfaces")] == ["/api/interfaces?sut_id=sut-test"]
+    assert page.evaluate("Object.keys(state.io.storage.series)") == ["nvme0n1"]
+
+
+def test_slow_response_for_a_previous_selection_is_ignored(dashboard_page):
+    page = dashboard_page
+    page.evaluate("""() => {
+        state.paused = true;
+        const original = fetchJson;
+        fetchJson = async path => {
+            const data = await original(path);
+            if (path.includes('/visualization?')) {
+                data.requested = path;
+                if (path.includes('window_seconds=30&')) await new Promise(resolve => setTimeout(resolve, 600));
+            }
+            return data;
+        };
+    }""")
+    page.locator('[data-range="30"]').click()
+    page.locator('[data-range="60"]').click()
+    page.wait_for_function("(state.viz.requested || '').includes('window_seconds=60&')")
+    page.wait_for_timeout(900)
+    assert "window_seconds=60&" in page.evaluate("state.viz.requested")
+
+
+def test_collect_logs_opens_before_the_capture_list_arrives(dashboard_page):
+    page = dashboard_page
+    session = {"session_id": "late", "sut_id": "sut-test", "hostname": "test-host", "status": "stopped",
+               "start_time": time.time() - 30, "end_time": time.time(), "categories": []}
+    held = []
+    released = []
+    page.route("**/api/sessions", lambda route: route.fulfill(json={"sessions": [session]}) if released else held.append(route))
+    with page.expect_request("**/api/sessions"):
+        page.get_by_role("button", name="Collect Logs", exact=True).click()
+    page.locator("#section-diagnostics").wait_for(state="visible")
+    assert "Loading sessions" in page.locator("#sessions-list").inner_text()
+    released.append(True)
+    for route in held:
+        route.fulfill(json={"sessions": [session]})
+    page.locator('[data-toggle-session="late"]').wait_for()
 
 
 def test_downloads_use_blob_and_report_http_errors(dashboard_page):

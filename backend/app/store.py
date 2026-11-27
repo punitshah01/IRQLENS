@@ -569,7 +569,9 @@ class SqliteStore:
                 continue
         return out
 
-    def cpu_utilization_series(self, sut_id: str, since_ts: float, to_ts: Optional[float] = None) -> List[Dict[str, Any]]:
+    def cpu_utilization_series(
+        self, sut_id: str, since_ts: float, to_ts: Optional[float] = None, per_cpu: bool = True,
+    ) -> List[Dict[str, Any]]:
         end_ts = float(time.time() if to_ts is None else to_ts)
         with self._conn() as conn:
             rows = conn.execute(
@@ -593,14 +595,14 @@ class SqliteStore:
                     continue
                 cpu_values[str(key)] = numeric
                 vals.append(numeric)
-            out.append(
-                {
-                    "timestamp": float(row["timestamp"]),
-                    "avg": float(sum(vals) / len(vals)) if vals else 0.0,
-                    "max": float(max(vals)) if vals else 0.0,
-                    "cpus": cpu_values,
-                }
-            )
+            point: Dict[str, Any] = {
+                "timestamp": float(row["timestamp"]),
+                "avg": float(sum(vals) / len(vals)) if vals else 0.0,
+                "max": float(max(vals)) if vals else 0.0,
+            }
+            if per_cpu:
+                point["cpus"] = cpu_values
+            out.append(point)
         return out
 
     def system_series(self, sut_id: str, since_ts: float, to_ts: Optional[float] = None) -> List[Dict[str, Any]]:
@@ -1024,7 +1026,9 @@ class SqliteStore:
             )
         return out
 
-    def softirq_series(self, sut_ip: str, since_ts: float, to_ts: Optional[float] = None) -> List[Dict[str, Any]]:
+    def softirq_series(
+        self, sut_ip: str, since_ts: float, to_ts: Optional[float] = None, per_cpu: bool = True,
+    ) -> List[Dict[str, Any]]:
         with self._conn() as conn:
             if to_ts is None:
                 rows = conn.execute(
@@ -1049,14 +1053,15 @@ class SqliteStore:
         out: List[Dict[str, Any]] = []
         for row in rows:
             rates = json.loads(row["rates_json"] or "{}")
-            per_cpu = json.loads(row["per_cpu_rates_json"] or "{}")
-            out.append(
-                {
-                    "timestamp": float(row["timestamp"]),
-                    "rates": {k: float(v) for k, v in rates.items()},
-                    "per_cpu_rates": {str(k): float(v) for k, v in per_cpu.items()},
-                }
-            )
+            sample: Dict[str, Any] = {
+                "timestamp": float(row["timestamp"]),
+                "rates": {k: float(v) for k, v in rates.items()},
+            }
+            if per_cpu:
+                # One value per CPU and sample: skipped for callers that only chart the class totals.
+                cpu_rates = json.loads(row["per_cpu_rates_json"] or "{}")
+                sample["per_cpu_rates"] = {str(k): float(v) for k, v in cpu_rates.items()}
+            out.append(sample)
         return out
 
     def latest_interfaces(self, sut_ip: str) -> List[InterfaceInfo]:

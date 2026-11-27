@@ -46,6 +46,12 @@ All notable documentation and implementation highlights are tracked here.
 - Download endpoints send exact `Content-Type` and `Content-Disposition`; the dashboard downloads through `fetch` + `Blob` and reports HTTP errors.
 - ECharts 5.5.1 is vendored under `frontend/static/`; the dashboard makes no external requests.
 - Charts redraw at most once per second. The IRQ heatmap shows the Top 25 active IRQs by default.
+- Dashboard refreshes are one round of parallel requests instead of a chain, responses are gzip-compressed, and the dashboard requests `compact=1` visualization data. Trend history is refetched every 1 to 15 s depending on the range, CPU topology and interface details every 30 s, and a hidden tab does not poll. On a 256-CPU SUT 210 ms away a refresh went from 1.6 s (30 s range) and 2.5-3.6 s (5 min range) to 0.3 s and 0.4 s; the 1 h range, which never finished a refresh within 8 s, refreshes in 0.25 s.
+- Views, time ranges, and Collect Logs open on the click from the data already loaded; newer data follows. A response for a previous SUT, range, or interface is discarded.
+- A redraw no longer swallows a click (navigation and CPU cells), resets the IRQ matrix scroll position, an open interface dropdown, or hidden series and paging in the storage chart legends. The IRQ matrix is recolored in place and the CPU tooltip no longer catches clicks.
+- Chart axes use compact labels (`1.8M`, `800KB/s`) that fit beside the plot, time labels no longer overlap, storage axis names sit below the legend, and the IRQ bar chart labels every bar.
+- `GET /api/systems/{sut_id}/visualization` accepts `compact=1`, which omits the per-CPU history and cells and the softirq history. The default response is unchanged.
+- The page and its scripts are served with `Cache-Control: no-cache`, so a reload after an update runs the new dashboard.
 - Agent version 1.2.0 sends softnet, storage, and PCIe telemetry and up to 1024 IRQ rows.
 - The launcher skips `pip install` when dependencies are already importable.
 - With `--host 127.0.0.1` the launcher states that the URL works on the server host only and prints the SSH port-forward command.

@@ -11,7 +11,7 @@ IRQLENS is composed of four runtime parts:
 
 ## Frontend
 - Renders all pages and visualizations with ECharts, vendored under `frontend/static/` (no CDN or other external request).
-- Polls/refreshes API data, redrawing at most once per second.
+- Polls/refreshes API data in one round of parallel requests, redrawing at most once per second; a hidden tab does not poll.
 - Opens one WebSocket connection to `/ws` for refresh-trigger events.
 - Implements client-side filters (IRQ/CPU/interface), custom range controls, zoom persistence, threshold filtering, and compare views.
 
