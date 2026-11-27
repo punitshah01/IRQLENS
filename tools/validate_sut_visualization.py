@@ -173,7 +173,7 @@ def _numa_nodes() -> List[str]:
 
 def _http_get_json(base: str, path: str, token: str = "") -> Optional[dict]:
     url = base.rstrip("/") + path
-    token = token or os.getenv("IRQLENS_API_TOKEN", "") or os.getenv("IRQLENS_AGENT_TOKEN", "")
+    token = token or os.getenv("IRQLENS_API_TOKEN", "") or os.getenv("IRQLENS_AGENT_TOKEN", "") or os.getenv("IRQLENS_TOKEN", "")
     request = urllib.request.Request(url)
     if token:
         request.add_header("Authorization", f"Bearer {token}")

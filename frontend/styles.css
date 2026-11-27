@@ -1021,6 +1021,47 @@ button {
   display: none !important;
 }
 
+.hero-actions {
+  align-items: center;
+}
+
+.sut-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sut-switch .select {
+  max-width: 280px;
+}
+
+.toast-root {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 3000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(420px, calc(100vw - 40px));
+}
+
+.toast {
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.toast.bad {
+  border-color: #efc0c0;
+  background: var(--red-soft);
+  color: var(--red);
+}
+
 @media (max-width: 1440px) {
   .kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .span-8, .span-7, .span-6, .span-5, .span-4, .span-3 { grid-column: span 12; }

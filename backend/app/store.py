@@ -2,29 +2,112 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
-from threading import Lock
-from typing import Any, Dict, List, Optional
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, List, Optional
 from uuid import uuid4
 
+from .collectors.storage import METRICS as STORAGE_METRICS
 from .config import settings
 from .models import CPUTopologyEntry, CollectionSession, ExportFile, InterfaceInfo, IRQSample, NetworkSample, SoftIRQSample, SystemInfo, SystemRecord
 
+# Every time-series table and the column that names its SUT.
+SERIES_TABLES = {
+    "irq_samples": "sut_ip",
+    "softirq_samples": "sut_ip",
+    "network_samples": "sut_ip",
+    "interface_samples": "sut_ip",
+    "system_samples": "sut_ip",
+    "cpu_topology_samples": "sut_id",
+    "cpu_utilization_samples": "sut_id",
+    "softnet_samples": "sut_id",
+    "storage_samples": "sut_id",
+    "pcie_samples": "sut_id",
+    "agent_heartbeats": "sut_id",
+}
+_JSON_TABLES = ("softnet_samples", "storage_samples", "pcie_samples")
+_RUNNING_SESSION_MAX_AGE = 7200.0
+
+
+class _Session:
+    def __init__(self, conn: sqlite3.Connection, owned: bool) -> None:
+        self._conn = conn
+        self._owned = owned
+
+    def __enter__(self) -> sqlite3.Connection:
+        return self._conn
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+        if self._owned:
+            try:
+                if exc_type is None:
+                    self._conn.commit()
+                else:
+                    self._conn.rollback()
+            finally:
+                self._conn.close()
+        return False
+
 
 class SqliteStore:
-    def __init__(self, db_path: str, retention_rows: int) -> None:
+    def __init__(self, db_path: str, retention_minutes: float = 30.0) -> None:
         self._db_path = db_path
-        self._retention_rows = retention_rows
-        self._lock = Lock()
+        self._retention_seconds = float(retention_minutes) * 60.0
+        self._lock = threading.RLock()
+        self._tx = threading.local()
         self._init_db()
 
-    def _conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
+    def _conn(self) -> _Session:
+        active = getattr(self._tx, "conn", None)
+        if active is not None:
+            return _Session(active, owned=False)
+        conn = sqlite3.connect(self._db_path, timeout=5.0)
         conn.row_factory = sqlite3.Row
-        return conn
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        return _Session(conn, owned=True)
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        # Every store call made inside the block shares one connection and one commit.
+        if getattr(self._tx, "conn", None) is not None:
+            yield
+            return
+        with self._lock, self._conn() as conn:
+            self._tx.conn = conn
+            try:
+                yield
+            finally:
+                self._tx.conn = None
+
+    def journal_mode(self) -> str:
+        with self._conn() as conn:
+            return str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+
+    def prune(self, sut_id: str, now_ts: Optional[float] = None) -> None:
+        cutoff = float(time.time() if now_ts is None else now_ts) - self._retention_seconds
+        with self._lock, self._conn() as conn:
+            running = conn.execute(
+                """
+                SELECT MIN(start_time) AS start FROM sessions
+                WHERE status = 'running' AND start_time > ? AND (sut_id = ? OR (sut_id = '' AND ? = 'local'))
+                """,
+                (time.time() - _RUNNING_SESSION_MAX_AGE, sut_id, sut_id),
+            ).fetchone()
+            if running and running["start"] is not None:
+                cutoff = min(cutoff, float(running["start"]))
+            for table, column in SERIES_TABLES.items():
+                # The newest tick survives so a SUT that went quiet keeps its last snapshot.
+                conn.execute(
+                    f"DELETE FROM {table} WHERE {column} = ? AND timestamp < ? "
+                    f"AND timestamp < (SELECT MAX(timestamp) FROM {table} WHERE {column} = ?)",
+                    (sut_id, cutoff, sut_id),
+                )
 
     def _init_db(self) -> None:
         with self._conn() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS irq_samples (
@@ -143,6 +226,19 @@ class SqliteStore:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_cpu_util_host_ts ON cpu_utilization_samples(sut_id, timestamp)")
+
+            for table in _JSON_TABLES:
+                conn.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {table} (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp REAL NOT NULL,
+                        sut_id TEXT NOT NULL,
+                        payload_json TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_sut_ts ON {table}(sut_id, timestamp)")
 
             conn.execute(
                 """
@@ -313,28 +409,12 @@ class SqliteStore:
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
-    def _trim_table(self, conn: sqlite3.Connection, table: str, host: str) -> None:
-        conn.execute(
-            f"""
-            DELETE FROM {table}
-            WHERE sut_ip = ? AND id NOT IN (
-                SELECT id FROM {table}
-                WHERE sut_ip = ?
-                ORDER BY id DESC
-                LIMIT ?
-            )
-            """,
-            (host, host, self._retention_rows),
-        )
-
     def add_irq_samples(self, samples: List[IRQSample]) -> None:
         if not samples:
             return
         with self._lock:
             with self._conn() as conn:
-                hosts = set()
                 for sample in samples:
-                    hosts.add(sample.sut_ip)
                     conn.execute(
                         """
                         INSERT INTO irq_samples(
@@ -361,8 +441,6 @@ class SqliteStore:
                             json.dumps(sample.cpu_rates, separators=(",", ":")),
                         ),
                     )
-                for host in hosts:
-                    self._trim_table(conn, "irq_samples", host)
 
     def add_softirq_sample(self, sample: SoftIRQSample) -> None:
         with self._lock:
@@ -380,16 +458,13 @@ class SqliteStore:
                         json.dumps(sample.per_cpu_rates, separators=(",", ":")),
                     ),
                 )
-                self._trim_table(conn, "softirq_samples", sample.sut_ip)
 
     def add_network_samples(self, samples: List[NetworkSample]) -> None:
         if not samples:
             return
         with self._lock:
             with self._conn() as conn:
-                hosts = set()
                 for sample in samples:
-                    hosts.add(sample.sut_ip)
                     conn.execute(
                         """
                         INSERT INTO network_samples(
@@ -422,8 +497,6 @@ class SqliteStore:
                             sample.tx_drop_ps,
                         ),
                     )
-                for host in hosts:
-                    self._trim_table(conn, "network_samples", host)
 
     def add_interfaces(self, sut_ip: str, interfaces: List[InterfaceInfo]) -> None:
         if not interfaces:
@@ -439,7 +512,6 @@ class SqliteStore:
                         """,
                         (ts, sut_ip, info.name, info.model_dump_json()),
                     )
-                self._trim_table(conn, "interface_samples", sut_ip)
 
     def add_system(self, sut_ip: str, system: SystemInfo) -> None:
         with self._lock:
@@ -451,22 +523,13 @@ class SqliteStore:
                     """,
                     (system.timestamp, sut_ip, system.model_dump_json()),
                 )
-                self._trim_table(conn, "system_samples", sut_ip)
 
     def add_cpu_topology(self, sut_id: str, topology: List[CPUTopologyEntry], timestamp: Optional[float] = None) -> None:
         if not topology:
             return
         ts = float(timestamp or time.time())
         payload = [item.model_dump() for item in topology]
-        with self._lock:
-            with self._conn() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO cpu_topology_samples(timestamp, sut_id, payload_json)
-                    VALUES(?, ?, ?)
-                    """,
-                    (ts, sut_id, json.dumps(payload, separators=(",", ":"))),
-                )
+        self._add_json("cpu_topology_samples", sut_id, ts, payload, dedupe=True)
 
     def add_cpu_utilization(self, sut_id: str, cpu_utilization: Dict[str, float], timestamp: Optional[float] = None) -> None:
         if not cpu_utilization:
@@ -1403,6 +1466,107 @@ class SqliteStore:
                     (timestamp, timestamp, agent_version, sut_id),
                 )
 
+    def _add_json(self, table: str, sut_id: str, timestamp: float, payload: Any, dedupe: bool = False) -> None:
+        text = json.dumps(payload, separators=(",", ":"))
+        with self._lock, self._conn() as conn:
+            if dedupe:
+                latest = conn.execute(
+                    f"SELECT id, payload_json FROM {table} WHERE sut_id = ? ORDER BY id DESC LIMIT 1", (sut_id,)
+                ).fetchone()
+                if latest and latest["payload_json"] == text:
+                    conn.execute(f"UPDATE {table} SET timestamp = ? WHERE id = ?", (timestamp, latest["id"]))
+                    return
+            conn.execute(f"INSERT INTO {table}(timestamp, sut_id, payload_json) VALUES(?, ?, ?)", (timestamp, sut_id, text))
+
+    def add_softnet(self, sut_id: str, payload: Dict[str, Any], timestamp: float) -> None:
+        self._add_json("softnet_samples", sut_id, float(timestamp), payload)
+
+    def add_storage(self, sut_id: str, devices: List[Dict[str, Any]], timestamp: float) -> None:
+        self._add_json("storage_samples", sut_id, float(timestamp), devices)
+
+    def add_pcie(self, sut_id: str, devices: List[Dict[str, Any]], timestamp: float) -> None:
+        self._add_json("pcie_samples", sut_id, float(timestamp), devices, dedupe=True)
+
+    def latest_json(self, table: str, sut_id: str, default: Any) -> Any:
+        if table not in _JSON_TABLES:
+            raise ValueError(f"unsupported table: {table}")
+        with self._conn() as conn:
+            row = conn.execute(
+                f"SELECT payload_json FROM {table} WHERE sut_id = ? ORDER BY id DESC LIMIT 1", (sut_id,)
+            ).fetchone()
+        return json.loads(row["payload_json"]) if row else default
+
+    def json_series(self, table: str, sut_id: str, since_ts: float, to_ts: Optional[float] = None) -> List[Dict[str, Any]]:
+        if table not in _JSON_TABLES:
+            raise ValueError(f"unsupported table: {table}")
+        end_ts = float(time.time() if to_ts is None else to_ts)
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT timestamp, payload_json FROM {table} WHERE sut_id = ? AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC",
+                (sut_id, float(since_ts), end_ts),
+            ).fetchall()
+        return [{"timestamp": float(row["timestamp"]), "data": json.loads(row["payload_json"])} for row in rows]
+
+    def storage_series(self, sut_id: str, since_ts: float, to_ts: Optional[float] = None) -> Dict[str, List[Dict[str, float]]]:
+        out: Dict[str, List[Dict[str, float]]] = {}
+        for sample in self.json_series("storage_samples", sut_id, since_ts, to_ts):
+            for device in sample["data"]:
+                point = {"timestamp": sample["timestamp"]}
+                for key in STORAGE_METRICS:
+                    try:
+                        point[key] = float(device.get(key) or 0.0)
+                    except (TypeError, ValueError):
+                        point[key] = 0.0
+                out.setdefault(str(device.get("device", "unknown")), []).append(point)
+        return out
+
+    def softnet_series(self, sut_id: str, since_ts: float, to_ts: Optional[float] = None) -> List[Dict[str, float]]:
+        out: List[Dict[str, float]] = []
+        for sample in self.json_series("softnet_samples", sut_id, since_ts, to_ts):
+            total = sample["data"].get("total", {}) if isinstance(sample["data"], dict) else {}
+            point = {"timestamp": sample["timestamp"]}
+            for key in ("processed", "dropped", "time_squeeze", "cpu_collision"):
+                point[key] = float(total.get(key) or 0)
+            out.append(point)
+        return out
+
+    def current_irq(self, sut_ip: str, limit: int = 2000) -> List[IRQSample]:
+        timestamp = self.latest_irq_timestamp(sut_ip)
+        return self.irq_at_timestamp(sut_ip, timestamp, limit=limit) if timestamp is not None else []
+
+    def irq_capture_summary(self, sut_id: str, since_ts: float, to_ts: Optional[float] = None) -> List[Dict[str, Any]]:
+        end_ts = float(time.time() if to_ts is None else to_ts)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT timestamp, irq, irq_name, nic, source_class, direction, numa_node, affinity_list, total_rate, cpu_rates_json
+                FROM irq_samples
+                WHERE sut_ip = ? AND timestamp >= ? AND timestamp <= ?
+                ORDER BY timestamp ASC
+                """,
+                (sut_id, float(since_ts), end_ts),
+            ).fetchall()
+        ticks = set()
+        summary: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            ticks.add(row["timestamp"])
+            item = summary.setdefault(str(row["irq"]), {"total": 0.0, "peak_rate": 0.0, "cpu": {}})
+            rate = float(row["total_rate"] or 0.0)
+            item["total"] += rate
+            item["peak_rate"] = max(item["peak_rate"], rate)
+            for key in ("irq", "irq_name", "nic", "source_class", "direction", "numa_node", "affinity_list"):
+                item[key] = row[key]
+            for cpu, value in json.loads(row["cpu_rates_json"] or "{}").items():
+                item["cpu"][str(cpu)] = item["cpu"].get(str(cpu), 0.0) + float(value)
+        count = max(1, len(ticks))
+        out = []
+        for item in summary.values():
+            cpu_totals = item.pop("cpu")
+            total = item.pop("total")
+            out.append({**item, "total_rate": total / count, "cpu_rates": {cpu: value / count for cpu, value in cpu_totals.items()}})
+        out.sort(key=lambda entry: entry["total_rate"], reverse=True)
+        return out
+
 
 settings.ensure_dirs()
-STORE = SqliteStore(str(settings.db_path), settings.metric_retention)
+STORE = SqliteStore(str(settings.db_path), settings.retention_minutes)

@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import time
+from pathlib import Path
 from typing import Dict, List
 
 from ..models import DiagnosticCommandResult
+
+COMMAND_CATEGORIES = frozenset({"network", "interfaces", "routes", "sockets", "ethtool", "storage"})
+
+
+def nvme_controllers(sys_root: str = "/sys") -> List[str]:
+    try:
+        names = [entry.name for entry in (Path(sys_root) / "class" / "nvme").iterdir()]
+    except OSError:
+        return []
+    return sorted(name for name in names if re.fullmatch(r"nvme\d+", name))
 
 
 class DiagnosticCommandCollector:
@@ -46,7 +58,15 @@ class DiagnosticCommandCollector:
                 add("ethtool", ["ethtool", "-k", iface])
                 add("ethtool", ["ethtool", "-S", iface])
                 add("ethtool", ["ethtool", "-g", iface])
+                add("ethtool", ["ethtool", "-l", iface])
+                add("ethtool", ["ethtool", "-x", iface])
                 add("ethtool", ["ethtool", "-c", iface])
+
+        add("storage", ["lsblk", "-J"])
+        add("storage", ["nvme", "list", "-o", "json"])
+        if "storage" in categories:
+            for controller in nvme_controllers():
+                add("storage", ["nvme", "smart-log", f"/dev/{controller}"])
 
         return cmds
 

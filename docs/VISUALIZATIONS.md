@@ -6,6 +6,7 @@ This document explains chart semantics, data sources, and calculations.
 Primary visualization payloads:
 - `GET /api/systems/{sut_id}/visualization`
 - `GET /api/systems/{sut_id}/visualization/topology`
+- `GET /api/systems/{sut_id}/io` (storage, PCIe, softnet, irqbalance)
 - `GET /api/visualization/compare`
 
 Supporting data:
@@ -22,15 +23,36 @@ Supporting data:
 - `Reset Zoom` clears zoom state and reapplies full ranges
 
 ## IRQ Heatmap
-- X-axis: CPU IDs
-- Y-axis: top IRQ rows
-- Cell value: IRQ/sec for `(irq, cpu)` pair
-- Tooltip includes IRQ id/name, CPU, IRQ/sec, total count, source, device
+- X-axis: CPU IDs, NUMA nodes, or sockets (selector; grouping uses the SUT topology)
+- Y-axis: Top 25 active IRQs by default (rate > 0); selector for 25 / 50 / 100 / All
+- Cell value: IRQ/sec for the `(irq, column)` pair
+- Tooltip includes IRQ source, column, IRQ/sec, total count
 
 Source fields:
-- `irq_heatmap.cpus`
-- `irq_heatmap.irqs`
-- `irq_heatmap.values`
+- rows of `GET /api/irq/current` (`cpu_rates`, `total_rate`), grouped in the browser
+- the visualization payload also carries `irq_heatmap.cpus`, `irq_heatmap.irqs`, `irq_heatmap.values` for the Top N active IRQs (`top_n`, default 25; `0` returns all)
+
+## Cross-NUMA IRQ Flag
+- Device node: `/sys/kernel/irq/<irq>/node`, else the owning device's `numa_node`.
+- Handler nodes: NUMA nodes of the CPUs that each handle more than 10% of the IRQ's rate.
+- `cross_numa_flag` is true when a handler node differs from the device node; `remote_share_pct` is the share handled off-node.
+- Shown as an Overview finding and in the Cross-NUMA column of the IRQ table. IRQs without a known device node are not flagged.
+
+## Storage Charts
+- IOPS per device: `read_iops`, `write_iops`
+- Throughput per device: `read_mb_s`, `write_mb_s` (MiB/s from 512-byte sectors)
+- Latency and queue depth: `avg_read_await_ms`, `avg_write_await_ms` (time per completed I/O in the interval) on the left axis, `queue_depth_in_flight` dashed on the right axis
+- `util_pct`: share of the interval the device had I/O in progress
+- Source: `/proc/diskstats` deltas, `storage.series` in `GET /api/systems/{sut_id}/io`
+
+## PCIe Cards
+- One row per NIC, NVMe/storage controller, GPU, or accelerator from `/sys/bus/pci/devices/*`
+- Link status shows current vs maximum speed and width; a red `Downgraded` badge marks `current < max` for either
+- AER shows correctable / non-fatal / fatal totals; amber when non-zero, red when the total increased since the previous sample
+
+## Redraw Rate
+- Charts and tables redraw at most once per 1000 ms regardless of the backend sampling interval.
+- Pause Live Updates stops reloading and redrawing monitoring views until resumed.
 
 ## CPU Heatmap
 - X-axis: CPU IDs

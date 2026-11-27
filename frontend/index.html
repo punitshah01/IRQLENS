@@ -33,6 +33,12 @@
               </div>
             </div>
             <div class="hero-actions">
+              <label class="sut-switch" for="sut-switcher">
+                <span class="overline">SUT</span>
+                <select id="sut-switcher" class="select"></select>
+              </label>
+              <span class="badge" id="irqbalance-pill">irqbalance: unknown</span>
+              <button id="live-toggle" class="action-button ghost" aria-pressed="false">Pause Live Updates</button>
               <span class="badge" id="ws-pill">WebSocket: connecting</span>
             </div>
           </div>
@@ -136,6 +142,19 @@
                   <h3 class="card-title">IRQ to CPU Heatmap</h3>
                   <div class="card-subtitle">Find the relationship between hot IRQ sources and CPUs.</div>
                 </div>
+                <div class="filter-row">
+                  <select id="irq-topn" class="select" aria-label="Active IRQs shown">
+                    <option value="25">Top 25 active</option>
+                    <option value="50">Top 50 active</option>
+                    <option value="100">Top 100 active</option>
+                    <option value="all">All active</option>
+                  </select>
+                  <select id="irq-aggregate" class="select" aria-label="Heatmap columns">
+                    <option value="cpu">Per CPU</option>
+                    <option value="numa">Per NUMA node</option>
+                    <option value="socket">Per socket</option>
+                  </select>
+                </div>
               </div>
               <div id="chart-irq-heatmap" class="chart tall"></div>
             </div>
@@ -160,6 +179,7 @@
                       <th>NIC</th>
                       <th>Direction</th>
                       <th>NUMA</th>
+                      <th>Cross-NUMA</th>
                       <th>Affinity</th>
                     </tr>
                   </thead>
@@ -280,6 +300,106 @@
           </div>
         </section>
 
+        <section id="section-storage" class="section">
+          <div class="grid">
+            <div class="card span-12">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">Storage and PCIe Health</h3>
+                  <div class="card-subtitle">Current block I/O totals and add-in card link state.</div>
+                </div>
+              </div>
+              <div id="storage-kpis" class="kpi-grid"></div>
+            </div>
+
+            <div class="card span-6">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">IOPS per Device</h3>
+                  <div class="card-subtitle">Read and write operations per second.</div>
+                </div>
+              </div>
+              <div id="storage-empty" class="hidden"></div>
+              <div id="chart-storage-iops" class="chart"></div>
+            </div>
+
+            <div class="card span-6">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">Throughput per Device</h3>
+                  <div class="card-subtitle">Read and write MB/s.</div>
+                </div>
+              </div>
+              <div id="chart-storage-throughput" class="chart"></div>
+            </div>
+
+            <div class="card span-12">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">Latency and Queue Depth</h3>
+                  <div class="card-subtitle">Await per completed I/O (solid) and requests in flight (dashed).</div>
+                </div>
+              </div>
+              <div id="chart-storage-latency" class="chart"></div>
+            </div>
+
+            <div class="card span-12">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">Block Devices</h3>
+                  <div class="card-subtitle">Queue settings, NUMA placement, and NVMe MSI-X vectors.</div>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>Device</th>
+                      <th>Read IOPS</th>
+                      <th>Write IOPS</th>
+                      <th>Read MB/s</th>
+                      <th>Write MB/s</th>
+                      <th>Await R / W (ms)</th>
+                      <th>In Flight</th>
+                      <th>Util</th>
+                      <th>Scheduler</th>
+                      <th>nr_requests</th>
+                      <th>Media</th>
+                      <th>NUMA</th>
+                      <th>MSI-X IRQs</th>
+                    </tr>
+                  </thead>
+                  <tbody id="storage-table"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="card span-12">
+              <div class="card-head">
+                <div>
+                  <h3 class="card-title">PCIe Cards</h3>
+                  <div class="card-subtitle">NICs, NVMe controllers, GPUs, and accelerators with link and AER status.</div>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>BDF</th>
+                      <th>Device / Driver</th>
+                      <th>NUMA Node</th>
+                      <th>Link Status (Current vs Max)</th>
+                      <th>MSI-X IRQs</th>
+                      <th>AER Cor / Non-fatal / Fatal</th>
+                    </tr>
+                  </thead>
+                  <tbody id="pcie-table"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <section id="section-diagnostics" class="section">
           <div class="grid diag-grid">
             <div class="card">
@@ -355,8 +475,9 @@
   </div>
 
   <div id="cpu-hover-tooltip" class="cpu-hover-tooltip hidden"></div>
+  <div id="toast-root" class="toast-root" role="status" aria-live="polite"></div>
 
-  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+  <script src="/frontend/static/echarts.min.js"></script>
   <script src="/frontend/app.js"></script>
 </body>
 </html>

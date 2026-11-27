@@ -42,6 +42,9 @@ def _env_list(name: str, default: str) -> List[str]:
     return [x.strip() for x in raw.split(",") if x.strip()]
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 @dataclass
 class Settings:
     bind_host: str
@@ -50,14 +53,10 @@ class Settings:
     output_dir: Path
     log_level: str
     collection_interval: float
-    metric_retention: int
-    retention_days: int
-    max_sessions: int
-    max_storage_mb: int
+    retention_minutes: float
     command_timeout_seconds: float
-    disable_ingest_allowlist: bool
+    storage_include_virtual: bool
     cors_origins: List[str]
-    allowed_ingest_ips: List[str]
     enabled_intervals: List[float]
     agent_token: str
     heartbeat_interval: int
@@ -66,23 +65,20 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
-        bind_host = _env("IRQLENS_HOST", "0.0.0.0")
+        bind_host = _env("IRQLENS_HOST", "127.0.0.1")
         bind_port = _env_int("IRQLENS_PORT", 10000)
         db_path = Path(_env("IRQLENS_DB_PATH", str(Path(__file__).resolve().parents[1] / "data" / "irqlens.db"))).resolve()
-        output_dir = Path(_env("IRQLENS_OUTPUT_DIR", "/root/irqlens")).resolve()
+        output_dir = Path(_env("IRQLENS_OUTPUT_DIR", str(REPO_ROOT / "captures"))).resolve()
         log_level = _env("IRQLENS_LOG_LEVEL", "INFO")
         collection_interval = _env_float("IRQLENS_COLLECTION_INTERVAL", 1.0)
-        metric_retention = _env_int("IRQLENS_METRIC_RETENTION", 5000)
-        retention_days = _env_int("IRQLENS_RETENTION_DAYS", 14)
-        max_sessions = _env_int("IRQLENS_MAX_SESSIONS", 100)
-        max_storage_mb = _env_int("IRQLENS_MAX_STORAGE_MB", 1024)
+        retention_minutes = _env_float("IRQLENS_RETENTION_MINUTES", 30.0)
         command_timeout_seconds = _env_float("IRQLENS_COMMAND_TIMEOUT_SECONDS", 8.0)
-        disable_ingest_allowlist = _env_bool("IRQLENS_DISABLE_INGEST_ALLOWLIST", False)
 
         cors_raw = _env("IRQLENS_CORS_ORIGINS", "*")
         cors_origins = [x.strip() for x in cors_raw.split(",") if x.strip()] if cors_raw else ["*"]
-        allowed_ingest_ips = _env_list("IRQLENS_ALLOWED_INGEST_IPS", "")
-        agent_token = _env("IRQLENS_AGENT_TOKEN", "")
+        # IRQLENS_TOKEN is the single shared token; the two specific variables override it per surface.
+        token = _env("IRQLENS_TOKEN", "")
+        agent_token = _env("IRQLENS_AGENT_TOKEN", "") or token
         heartbeat_interval = _env_int("IRQLENS_AGENT_HEARTBEAT_INTERVAL", 5)
         stale_threshold = _env_int("IRQLENS_AGENT_STALE_THRESHOLD", 15)
 
@@ -105,19 +101,15 @@ class Settings:
             output_dir=output_dir,
             log_level=log_level,
             collection_interval=max(0.1, collection_interval),
-            metric_retention=max(100, metric_retention),
-            retention_days=max(1, retention_days),
-            max_sessions=max(1, max_sessions),
-            max_storage_mb=max(128, max_storage_mb),
+            retention_minutes=max(1.0, retention_minutes),
             command_timeout_seconds=max(1.0, command_timeout_seconds),
-            disable_ingest_allowlist=disable_ingest_allowlist,
+            storage_include_virtual=_env_bool("IRQLENS_STORAGE_INCLUDE_VIRTUAL", False),
             cors_origins=cors_origins,
-            allowed_ingest_ips=allowed_ingest_ips,
             enabled_intervals=sorted(set(enabled_intervals)),
             agent_token=agent_token,
             heartbeat_interval=max(1, heartbeat_interval),
             stale_threshold=max(3, stale_threshold),
-            api_token=_env("IRQLENS_API_TOKEN", ""),
+            api_token=_env("IRQLENS_API_TOKEN", "") or token,
         )
 
     def ensure_dirs(self) -> None:

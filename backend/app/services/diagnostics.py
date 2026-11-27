@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
@@ -10,12 +11,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
-from ..collectors import DiagnosticCommandCollector, NetworkCollector, SystemCollector
+from ..collectors import COMMAND_CATEGORIES, DiagnosticCommandCollector, NetworkCollector, SystemCollector
 from ..config import Settings
 from ..models import CollectionSession, DiagnosticCommandResult, ExportFile
 from ..store import SqliteStore
-from .exporter import ExportEngine
+from .exporter import ExportEngine, sanitize, unwrap_envelope
 from .capture_quality import build_capture_quality
+from .visualization import flatten_irq_row
+from .workbook import build_sheets
 
 
 class DiagnosticSessionService:
@@ -28,10 +31,28 @@ class DiagnosticSessionService:
         self.command_collector = DiagnosticCommandCollector(settings.command_timeout_seconds)
         self.exporter = ExportEngine()
         self._active_session_id: str = ""
+        self._meta_cache: Dict[str, Dict[str, Any]] = {}
+        self._logger = logging.getLogger("irqlens.diagnostics")
 
     @property
     def active_session_id(self) -> str:
         return self._active_session_id
+
+    def _meta(self, session_id: str) -> Dict[str, Any]:
+        cached = self._meta_cache.get(session_id)
+        if cached:
+            return cached
+        meta: Dict[str, Any] = {"sut_id": "", "session_id": session_id, "sampling_interval_s": None}
+        session = self.store.get_session(session_id)
+        if session:
+            config = self._read_json(Path(session.output_dir) / "metadata" / "capture_config.json", {})
+            meta["sut_id"] = session.sut_id or "local"
+            meta["sampling_interval_s"] = config.get("sampling_interval_seconds") if isinstance(config, dict) else None
+            self._meta_cache[session_id] = meta
+        return meta
+
+    def _write_json(self, session_id: str, path: Path, data: Any, compact: bool = False) -> None:
+        self.exporter.write_json(path, data, self._meta(session_id), compact=compact)
 
     def _safe_session_id(self, session_id: str) -> str:
         return re.sub(r"[^A-Za-z0-9_.-]", "_", session_id)
@@ -59,6 +80,14 @@ class DiagnosticSessionService:
         if resolved != base and base not in resolved.parents:
             raise ValueError(f"path escapes output_dir: {resolved}")
         return resolved
+
+    def _within_output(self, target: Path) -> bool:
+        # False for captures recorded under another output directory, e.g. an earlier default.
+        try:
+            self._ensure_within_output(target)
+        except ValueError:
+            return False
+        return True
 
     def start(self, session_name: str, categories: List[str], system_hostname: str, os_distribution: str, kernel: str, sut_id: str = "", duration_seconds: Optional[int] = None) -> CollectionSession:
         ok, safe_name = self.validate_session_name(session_name)
@@ -94,7 +123,9 @@ class DiagnosticSessionService:
         interval = self.settings.collection_interval if sut_id in {"", "local"} else (
             system.sampling_interval_seconds if system else None
         )
-        self.exporter.write_json(metadata_dir / "capture_config.json", {
+        self._meta_cache[session_id] = {"sut_id": sut_id or "local", "session_id": session_id, "sampling_interval_s": interval}
+        latest_system = self.store.latest_system(sut_id or "local")
+        self._write_json(session_id, metadata_dir / "capture_config.json", {
             "schema_version": 1,
             "requested_duration_seconds": duration_seconds,
             "sampling_interval_seconds": interval,
@@ -102,9 +133,10 @@ class DiagnosticSessionService:
             "minimum_sample_coverage": 0.9,
             "maximum_gap_intervals": 2.5,
             "interfaces": [item.name for item in self.store.latest_interfaces(sut_id or "local")],
+            "irqbalance": latest_system.irqbalance if latest_system else "unknown",
         })
-        self.exporter.write_json(metadata_dir / "metadata.json", session.model_dump())
-        self.exporter.write_json(outdir / "summary.json", {
+        self._write_json(session_id, metadata_dir / "metadata.json", session.model_dump())
+        self._write_json(session_id, outdir / "summary.json", {
             "session_name": session_id,
             "sut_id": sut_id,
             "hostname": system_hostname,
@@ -122,7 +154,7 @@ class DiagnosticSessionService:
         if not session:
             return None
         root = self._ensure_within_output(Path(session.output_dir))
-        self.exporter.write_json(root / "metadata" / "metadata.json", session.model_dump())
+        self._write_json(session_id, root / "metadata" / "metadata.json", session.model_dump())
         summary = self._read_json(root / "summary.json", {})
         summary.update({
             "session_name": session.session_id, "sut_id": session.sut_id, "hostname": session.hostname,
@@ -132,16 +164,16 @@ class DiagnosticSessionService:
             "report_status": session.report_status, "report_path": session.report_path,
             "capture_quality_path": "capture_quality.json",
         })
-        self.exporter.write_json(root / "summary.json", summary)
+        self._write_json(session_id, root / "summary.json", summary)
         quality = build_capture_quality(session, self.store.session_files(session_id), self.store.diagnostic_jobs(session_id))
         path = root / "capture_quality.json"
-        self.exporter.write_json(path, quality)
+        self._write_json(session_id, path, quality)
         self.store.add_session_files(session_id, [self._to_export_file(path, "validation", "json")])
         return quality
 
     def capture_quality(self, session_id: str) -> Dict[str, Any]:
         session = self.store.get_session(session_id)
-        if not session:
+        if not session or not self._within_output(Path(session.output_dir)):
             return {"status": "NOT_EVALUATED", "checks": []}
         root = self._ensure_within_output(Path(session.output_dir))
         return self._read_json(root / "capture_quality.json", {
@@ -183,9 +215,14 @@ class DiagnosticSessionService:
         selected_host = sut_id
 
         if "irq" in categories:
-            irq_rows = [row.model_dump() for row in self.store.latest_irq(selected_host, limit=512)]
+            cpu_to_node = {
+                str(item.cpu_id): item.numa_node
+                for item in self.store.latest_cpu_topology(selected_host) if item.numa_node is not None
+            }
+            irq_rows = [row.model_dump() for row in self.store.current_irq(selected_host)]
+            flat_rows = [flatten_irq_row(row, cpu_to_node) for row in irq_rows]
             irq_dir = outdir / "irq"
-            files.extend(self._emit_category_files(irq_dir, "irqtop", {"host": selected_host, "rows": irq_rows}, irq_rows))
+            files.extend(self._emit_category_files(irq_dir, "irqtop", {"host": selected_host, "rows": irq_rows}, flat_rows, session_id))
 
         if "softirq" in categories:
             soft = self.store.latest_softirq(selected_host)
@@ -194,7 +231,7 @@ class DiagnosticSessionService:
             if soft:
                 soft_rows = [{"class": k, "rate": v} for k, v in soft.rates.items()]
             soft_dir = outdir / "softirq"
-            files.extend(self._emit_category_files(soft_dir, "softirq", soft_payload, soft_rows))
+            files.extend(self._emit_category_files(soft_dir, "softirq", soft_payload, soft_rows, session_id))
 
         if "network" in categories:
             category_dir = outdir / "network"
@@ -204,28 +241,41 @@ class DiagnosticSessionService:
                 "interfaces": iface_infos,
                 "samples": net_rows_raw,
             }
-            files.extend(self._emit_category_files(category_dir, "network", network_json, net_rows_raw))
+            files.extend(self._emit_category_files(category_dir, "network", network_json, net_rows_raw, session_id))
+            softnet = self.store.latest_json("softnet_samples", selected_host, {})
+            if softnet:
+                softnet_rows = [{"cpu": "ALL", **softnet.get("total", {})}]
+                softnet_rows.extend({"cpu": cpu, **delta} for cpu, delta in softnet.get("per_cpu", {}).items())
+                files.extend(self._emit_category_files(category_dir, "softnet", softnet, softnet_rows, session_id))
 
         if "interfaces" in categories:
             interfaces_dir = outdir / "interfaces"
-            files.extend(self._emit_category_files(interfaces_dir, "interfaces", {"interfaces": iface_infos}, iface_infos))
+            files.extend(self._emit_category_files(interfaces_dir, "interfaces", {"interfaces": iface_infos}, iface_infos, session_id))
 
         if "system" in categories:
             category_dir = outdir / "system"
-            files.extend(self._emit_category_files(category_dir, "system", system, [system]))
+            files.extend(self._emit_category_files(category_dir, "system", system, [system], session_id))
 
-        command_categories = [c for c in categories if c in {"network", "interfaces", "routes", "sockets", "ethtool"}]
+        if "storage" in categories:
+            devices = self.store.latest_json("storage_samples", selected_host, [])
+            files.extend(self._emit_category_files(outdir / "storage", "storage", {"devices": devices}, devices, session_id))
+
+        if "pcie" in categories:
+            devices = self.store.latest_json("pcie_samples", selected_host, [])
+            files.extend(self._emit_category_files(outdir / "pcie", "pcie", {"devices": devices}, devices, session_id))
+
+        command_categories = [c for c in categories if c in COMMAND_CATEGORIES]
         if command_categories and sut_id == "local":
             command_dir = outdir / "commands"
             command_rows = [result.model_dump() for result in self.command_collector.collect(interfaces, command_categories)]
-            files.extend(self._emit_command_files(command_dir, command_rows))
+            files.extend(self._emit_command_files(command_dir, command_rows, session_id))
         elif command_categories:
             self.store.enqueue_diagnostics(session_id, sut_id, command_categories)
 
         latest_dir = self.settings.output_dir / "latest"
         latest_dir.mkdir(parents=True, exist_ok=True)
         latest_link = latest_dir / "session.txt"
-        latest_link.write_text(session_id, encoding="utf-8")
+        self.exporter.write_bytes(latest_link, session_id.encode("utf-8"))
 
         self.store.add_session_files(session_id, files)
         return files
@@ -236,9 +286,9 @@ class DiagnosticSessionService:
             raise ValueError("diagnostic session is unavailable")
         command_dir = self._ensure_within_output(Path(session.output_dir)) / "commands" / job["job_id"]
         rows = [result.model_dump() for result in results]
-        files = self._emit_command_files(command_dir, rows)
+        files = self._emit_command_files(command_dir, rows, session.session_id)
         status_path = command_dir / "status.json"
-        self.exporter.write_json(status_path, {"sut_id": job["sut_id"], "job_id": job["job_id"], "error": error})
+        self._write_json(session.session_id, status_path, {"sut_id": job["sut_id"], "job_id": job["job_id"], "error": error})
         files.append(self._to_export_file(status_path, "commands", "json"))
         self.store.add_session_files(session.session_id, files)
         if not self.store.finish_diagnostics(job["job_id"], job["lease_token"], error):
@@ -246,30 +296,26 @@ class DiagnosticSessionService:
         self.store.update_session_report(session.session_id, "none")
         self.refresh_capture_quality(session.session_id)
 
-    def _emit_category_files(self, category_dir: Path, category: str, payload: object, rows: List[dict]) -> List[ExportFile]:
+    def _emit_category_files(self, category_dir: Path, category: str, payload: object, rows: List[dict], session_id: str = "") -> List[ExportFile]:
         category_dir.mkdir(parents=True, exist_ok=True)
         out: List[ExportFile] = []
 
         json_path = category_dir / f"{category}.json"
-        self.exporter.write_json(json_path, payload)
+        self.exporter.write_json(json_path, payload, self._meta(session_id) if session_id else None)
         out.append(self._to_export_file(json_path, category, "json"))
 
         csv_path = category_dir / f"{category}.csv"
         self.exporter.write_csv(csv_path, rows)
         out.append(self._to_export_file(csv_path, category, "csv"))
 
-        xml_path = category_dir / f"{category}.xml"
-        self.exporter.write_xml(xml_path, category, "rows", rows)
-        out.append(self._to_export_file(xml_path, category, "xml"))
-
         txt_path = category_dir / f"{category}.txt"
-        self.exporter.write_txt(txt_path, category, [json.dumps(payload, indent=2)])
+        self.exporter.write_txt(txt_path, category, [json.dumps(sanitize(payload), indent=2, allow_nan=False, default=str)])
         out.append(self._to_export_file(txt_path, category, "txt"))
 
         return out
 
-    def _emit_command_files(self, command_dir: Path, rows: List[dict]) -> List[ExportFile]:
-        files = self._emit_category_files(command_dir, "commands", {"commands": rows}, rows)
+    def _emit_command_files(self, command_dir: Path, rows: List[dict], session_id: str = "") -> List[ExportFile]:
+        files = self._emit_category_files(command_dir, "commands", {"commands": rows}, rows, session_id)
         for index, row in enumerate(rows):
             path = command_dir / f"command_{index + 1:03d}.txt"
             self.exporter.write_txt(path, str(row.get("command", "")), [
@@ -303,7 +349,7 @@ class DiagnosticSessionService:
         updated = self.store.get_session(session_id)
         if updated:
             summary_path = Path(updated.output_dir) / "summary.json"
-            self.exporter.write_json(summary_path, {
+            self._write_json(session_id, summary_path, {
                 "session_name": updated.session_id,
                 "sut_id": updated.sut_id,
                 "hostname": updated.hostname,
@@ -317,10 +363,28 @@ class DiagnosticSessionService:
             })
             metadata_dir = Path(updated.output_dir) / "metadata"
             metadata_dir.mkdir(parents=True, exist_ok=True)
-            self.exporter.write_json(metadata_dir / "metadata.json", updated.model_dump())
+            self._write_json(session_id, metadata_dir / "metadata.json", updated.model_dump())
             self._write_timeseries_capture(updated)
+            try:
+                self.write_workbook(session_id)
+            except Exception:
+                # A failed spreadsheet must not lose the rest of the capture.
+                self._logger.exception("workbook export failed for %s", session_id)
             self.refresh_capture_quality(session_id)
         return updated
+
+    def workbook_path(self, session: CollectionSession) -> Path:
+        return Path(session.output_dir) / f"{self._safe_session_id(session.session_id)}.xlsx"
+
+    def write_workbook(self, session_id: str) -> Optional[Path]:
+        session = self.store.get_session(session_id)
+        if not session or not Path(session.output_dir).is_dir():
+            return None
+        path = self._ensure_within_output(self.workbook_path(session))
+        sheets = build_sheets(self.store, session, self._meta(session_id)["sampling_interval_s"])
+        self.exporter.write_xlsx(path, sheets)
+        self.store.add_session_files(session_id, [self._to_export_file(path, "workbook", "xlsx")])
+        return path
 
     def list_files(self, session_id: str) -> List[ExportFile]:
         return self.store.session_files(session_id)
@@ -330,12 +394,12 @@ class DiagnosticSessionService:
         if not session:
             return None
         session_dir = Path(session.output_dir)
-        if not session_dir.exists():
+        if not session_dir.exists() or not self._within_output(session_dir):
             return None
         self.refresh_capture_quality(session_id)
-        archive_base = self.settings.output_dir / f"{session_id}"
-        archive_file = shutil.make_archive(str(archive_base), "zip", root_dir=str(session_dir))
-        archive_path = Path(archive_file)
+        archive_path = self.settings.output_dir / f"{session_id}.zip"
+        partial = shutil.make_archive(str(self.settings.output_dir / f"{session_id}.partial"), "zip", root_dir=str(session_dir))
+        os.replace(partial, archive_path)
         self.store.add_session_files(
             session_id,
             [
@@ -355,8 +419,9 @@ class DiagnosticSessionService:
         if not session:
             return False
 
-        session_dir = self._ensure_within_output(Path(session.output_dir))
-        if session_dir.exists() and session_dir.is_dir():
+        # Files outside the output directory are left alone; only the record goes.
+        session_dir = Path(session.output_dir)
+        if self._within_output(session_dir) and session_dir.is_dir():
             shutil.rmtree(session_dir, ignore_errors=True)
 
         # Remove legacy artifacts that may exist at output root.
@@ -368,13 +433,14 @@ class DiagnosticSessionService:
             except Exception:
                 continue
 
+        self._meta_cache.pop(session_id, None)
         return self.store.delete_session(session_id)
 
     def _read_json(self, path: Path, default: Any) -> Any:
         if not path.exists() or not path.is_file():
             return default
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            return unwrap_envelope(json.loads(path.read_text(encoding="utf-8")))
         except Exception:
             return default
 
@@ -581,15 +647,29 @@ class DiagnosticSessionService:
                 for item in soft_series
             ],
         }
+        storage_payload = {
+            "sut_id": sut_id,
+            "start_time": start_ts,
+            "end_time": end_ts,
+            "devices": self.store.storage_series(sut_id, start_ts, end_ts),
+        }
+        softnet_payload = {
+            "sut_id": sut_id,
+            "start_time": start_ts,
+            "end_time": end_ts,
+            "samples": self.store.softnet_series(sut_id, start_ts, end_ts),
+        }
 
         file_specs = [
             ("system", ts_dir / "cpu" / "cpu_utilization_timeseries.json", cpu_util_payload),
             ("system", ts_dir / "cpu" / "cpu_frequency_timeseries.json", cpu_freq_payload),
             ("network", ts_dir / "network" / "network_timeseries.json", network_payload),
             ("network", ts_dir / "network" / "network_interfaces_timeseries.json", iface_payload),
+            ("network", ts_dir / "network" / "softnet_timeseries.json", softnet_payload),
             ("irq", ts_dir / "irq" / "irq_timeseries.json", irq_payload),
             ("irq", ts_dir / "irq" / "irq_top_sources.json", irq_top_payload),
             ("softirq", ts_dir / "softirq" / "softirq_timeseries.json", soft_payload),
+            ("storage", ts_dir / "storage" / "storage_timeseries.json", storage_payload),
         ]
 
         out_files: List[ExportFile] = []
@@ -597,7 +677,7 @@ class DiagnosticSessionService:
             if category not in session.categories:
                 continue
             path.parent.mkdir(parents=True, exist_ok=True)
-            self.exporter.write_json(path, payload)
+            self._write_json(session.session_id, path, payload, compact=True)
             out_files.append(
                 ExportFile(
                     name=path.name,
@@ -877,7 +957,7 @@ class DiagnosticSessionService:
 """
 
         report_path = session_dir / "report.html"
-        report_path.write_text(html, encoding="utf-8")
+        self.exporter.write_bytes(report_path, html.encode("utf-8"))
         self.store.add_session_files(
             session_id,
             [

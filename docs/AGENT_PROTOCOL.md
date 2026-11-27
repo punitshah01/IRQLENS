@@ -15,13 +15,14 @@ This document describes the implemented protocol between `agent/main.py` and `ba
 - `POST /api/agent/diagnostics/{job_id}/results`
 
 ## Authentication
-- Server checks `IRQLENS_AGENT_TOKEN`, falling back to `IRQLENS_API_TOKEN`.
-- If both tokens are empty, server accepts requests without auth headers for isolated development only.
+- Server checks `IRQLENS_AGENT_TOKEN`, falling back to `IRQLENS_API_TOKEN`; both default to the shared `IRQLENS_TOKEN`.
+- The agent reads `--token`, then `IRQLENS_AGENT_TOKEN`, then `IRQLENS_TOKEN`.
+- If no token is configured, server accepts requests without auth headers; the launcher allows that only on loopback, and `--remote` always sets a token.
 - Unauthorized token returns `401`.
 - Dashboard/API credentials are separate when both tokens are set. All agents currently share one agent token; it is not a per-SUT identity credential. Use HTTPS and restrict network access.
 
 ## Remote Command Diagnostics
-Requires agent version 1.1.0 or newer. The server persists a job for each remote command snapshot at capture start/stop. The agent's separate diagnostic worker polls every two seconds without blocking its telemetry loop.
+Requires agent version 1.1.0 or newer (1.2.0 for the `storage` category). The server persists a job for each remote command snapshot at capture start/stop. The agent's separate diagnostic worker polls every two seconds without blocking its telemetry loop.
 
 Poll with `POST /api/agent/diagnostics/poll`:
 
@@ -35,7 +36,7 @@ Response is `{"job": null}` or:
 {"job": {"job_id": "server-generated-id", "session_id": "capture-name", "lease_token": "32-character-hex-lease", "categories": ["routes", "sockets", "ethtool"], "command_timeout_seconds": 8.0}}
 ```
 
-Only `network`, `interfaces`, `routes`, `sockets`, and `ethtool` categories are accepted by the agent. Executable/argument lists are built locally from the allowlist and locally discovered interfaces. There is no remote arbitrary-command or shell interface.
+Only `network`, `interfaces`, `routes`, `sockets`, `ethtool`, and `storage` categories are accepted by the agent. Executable/argument lists are built locally from the allowlist and locally discovered interfaces. There is no remote arbitrary-command or shell interface.
 
 Upload to `POST /api/agent/diagnostics/{job_id}/results` with:
 
@@ -50,7 +51,7 @@ Upload to `POST /api/agent/diagnostics/{job_id}/results` with:
 
 The lease in the upload must be the exact server-issued value, not the example above. Results are scoped to the claimed SUT and session. Duplicate uploads with the same completed lease are idempotent; stale leases return `409`. Jobs can be reclaimed after five minutes if an agent crashes or loses connectivity. The worker retries result uploads without rerunning commands while its process remains alive; a restart/reclaim may execute read-only commands again.
 
-Missing tools and unsuccessful commands are exported with `success: false` and make the job `failed`. Successful output is exported under `<session>/commands/<job-id>/` in JSON/CSV/XML/TXT plus individual command text files. Session detail returns a `remote_diagnostics` list, and `/ws` broadcasts `session_diagnostics_ready` after an upload.
+Missing tools and unsuccessful commands are exported with `success: false` and make the job `failed`. Successful output is exported under `<session>/commands/<job-id>/` in JSON/CSV/TXT plus individual command text files. Session detail returns a `remote_diagnostics` list, and `/ws` broadcasts `session_diagnostics_ready` after an upload.
 
 Queued/running jobs may outlive the capture timer, particularly with old or disconnected agents. Downloads/reports represent the data available when requested; wait for jobs to finish for complete command evidence. Late results clear report status so the report can be regenerated.
 
@@ -124,7 +125,42 @@ Example payload:
 Endpoint: `POST /api/agent/telemetry`
 
 Purpose:
-- Push current system, IRQ, SoftIRQ, interface, and network samples.
+- Push current system, IRQ, SoftIRQ, interface, and network samples, plus optional softnet, storage, and PCIe data.
+- The server stores one payload in a single transaction and then prunes that SUT's history to the retention window.
+
+Only IRQ lines that fired since the previous sample are sent, highest rate first, at most 1024 rows; when nothing fired, a single idle row marks the tick. `cpu_rates` keys are the real CPU ids from the `/proc/interrupts` header.
+
+Optional fields added in agent 1.2.0 (older agents omit them; the server accepts both):
+
+```json
+{
+  "system": {"irqbalance": "active"},
+  "softnet": {
+    "available": true,
+    "interval_s": 1.0,
+    "total": {"processed": 1200, "dropped": 0, "time_squeeze": 2, "cpu_collision": 0},
+    "per_cpu": {"3": {"processed": 1200, "dropped": 0, "time_squeeze": 2, "cpu_collision": 0}}
+  },
+  "storage": [
+    {"device": "nvme0n1", "read_iops": 100.0, "write_iops": 50.0, "read_mb_s": 1.0, "write_mb_s": 0.5,
+     "avg_read_await_ms": 0.5, "avg_write_await_ms": 2.0, "queue_depth_in_flight": 7.0, "util_pct": 50.0,
+     "model": "...", "scheduler": "none", "nr_requests": 1023, "rotational": false, "numa_node": 1,
+     "msi_irqs": ["130", "131"], "msi_irq_count": 2}
+  ],
+  "pcie": [
+    {"bdf": "0000:5e:00.0", "kind": "NIC", "vendor": "0x8086", "device": "0x1592", "class": "0x020000", "driver": "ice",
+     "interfaces": ["ens1f0"], "numa_node": 0,
+     "current_link_speed": "8.0 GT/s PCIe", "current_link_width": 8, "max_link_speed": "16.0 GT/s PCIe", "max_link_width": 16,
+     "link_degraded": true, "msi_irqs": ["120", "121"], "msi_irq_count": 2,
+     "aer_dev_correctable": 2, "aer_dev_nonfatal": 0, "aer_dev_fatal": 0, "aer_total": 2, "aer_increasing": false}
+  ]
+}
+```
+
+- `system.irqbalance` is `active`, `inactive`, or `unknown`.
+- `softnet` values are deltas since the previous sample; `per_cpu` lists only CPUs with a non-zero delta. An empty object means `/proc/net/softnet_stat` was unreadable.
+- `storage` is sent every sample. `pcie` is sent about every 10 seconds and is an empty list in between; the server keeps the last snapshot.
+- `aer_dev_*` is `null` when the kernel does not expose the counter.
 
 Example payload (abridged):
 ```json
@@ -251,7 +287,7 @@ Server marks SUT status based on time since last seen:
 
 ## Version Compatibility
 Current in-repo agent version string:
-- `AGENT_VERSION = "1.1.0"`
+- `AGENT_VERSION = "1.2.0"`
 
 Compatibility status:
 - No explicit protocol negotiation endpoint is implemented.

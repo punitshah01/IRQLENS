@@ -7,7 +7,11 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..collectors.commands import COMMAND_CATEGORIES
 from ..models import CollectionSession, ExportFile
+from .exporter import unwrap_envelope
+
+SUPPORTED_CATEGORIES = COMMAND_CATEGORIES | {"irq", "softirq", "system", "pcie"}
 
 
 def sample_quality(
@@ -79,7 +83,7 @@ def sample_quality(
 
 def _read_json(path: Path) -> Dict[str, Any]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = unwrap_envelope(json.loads(path.read_text(encoding="utf-8")))
         return payload if isinstance(payload, dict) else {}
     except (OSError, ValueError):
         return {}
@@ -109,8 +113,7 @@ def build_capture_quality(session: CollectionSession, files: List[ExportFile], j
         check = sample_quality(timestamps, session.start_time, end, interval)
         checks.append({"name": name, **check})
 
-    supported = {"irq", "softirq", "network", "interfaces", "system", "routes", "sockets", "ethtool"}
-    add_check("categories", bool(session.categories) and set(session.categories) <= supported, "No supported capture categories were selected, or an unknown category was requested.")
+    add_check("categories", bool(session.categories) and set(session.categories) <= SUPPORTED_CATEGORIES, "No supported capture categories were selected, or an unknown category was requested.")
     for category in session.categories:
         if category not in {"irq", "softirq", "network", "interfaces", "system"}:
             continue
@@ -142,7 +145,7 @@ def build_capture_quality(session: CollectionSession, files: List[ExportFile], j
         for interface in sorted(expected_interfaces):
             add_stream(f"Interface {interface}", interfaces.get(interface), "rx_bps")
 
-    command_categories = set(session.categories) & {"network", "interfaces", "routes", "sockets", "ethtool"}
+    command_categories = set(session.categories) & COMMAND_CATEGORIES
     command_results = []
     for item in files:
         path = Path(item.path).resolve()

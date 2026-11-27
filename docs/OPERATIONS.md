@@ -4,7 +4,11 @@
 
 ### Start from repository root
 ```bash
-python run_irqlens.py
+# this host only: 127.0.0.1:10000, no authentication
+python3 run_irqlens.py
+
+# agents and other hosts: 0.0.0.0:10000, token required (generated and printed if not given)
+python3 run_irqlens.py --remote --token <token>
 ```
 
 ### Start backend explicitly
@@ -13,8 +17,10 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 10000
+uvicorn app.main:app --host 127.0.0.1 --port 10000
 ```
+
+Started this way the server is unauthenticated unless `IRQLENS_TOKEN` is set; do not bind a non-loopback address without it.
 
 ### Stop
 - Press `Ctrl+C` in the server terminal.
@@ -56,13 +62,16 @@ curl -s http://127.0.0.1:10000/api/systems
 
 Operational notes:
 - Back up DB before schema/manual edits.
-- Row count trimming applies to IRQ, SoftIRQ, network, interface, and system samples per SUT, not yet CPU utilization/topology or heartbeats.
+- The database runs in WAL mode; `irqlens.db-wal` and `irqlens.db-shm` appear next to it while the server runs. Copy all three files, or stop the server first, when backing up.
+- Every time-series table keeps the last `IRQLENS_RETENTION_MINUTES` (default 30) per SUT; see section 9.
 - Remote diagnostic jobs are persisted in SQLite and reclaimable after a five-minute lease expires.
 
 ## 6. Session Files and Downloads
-- Output root: `IRQLENS_OUTPUT_DIR` (default `/root/irqlens`)
+- Output root: `IRQLENS_OUTPUT_DIR` (default `./captures` in the repository root)
 - Session files endpoint: `/api/sessions/{session_id}/files`
+- Excel workbook endpoint: `/api/sessions/{session_id}/workbook`
 - Session archive endpoint: `/api/sessions/{session_id}/download`
+- Scripted captures: `POST /api/sessions`, then `POST /api/sessions/{session_id}/stop`; see the CLI section of the README.
 
 ## 7. Upgrading
 Suggested process:
@@ -73,6 +82,8 @@ Suggested process:
 5. Restart agents.
 6. Verify API health and SUT status.
 
+When upgrading from a version whose output root was `/root/irqlens`, either keep `IRQLENS_OUTPUT_DIR=/root/irqlens` or accept that earlier captures stay listed but cannot be downloaded; deleting one then removes only its record. Agents older than 1.2.0 keep working but send no storage, PCIe, or softnet telemetry.
+
 ## 8. Backup
 Minimum backup set:
 - SQLite DB file (`IRQLENS_DB_PATH`)
@@ -81,16 +92,18 @@ Minimum backup set:
 
 ## 9. Cleanup and Retention
 Current implemented behavior:
-- Telemetry row retention by count (`IRQLENS_METRIC_RETENTION`)
+- Time-based telemetry retention: each SUT keeps the last `IRQLENS_RETENTION_MINUTES` (default 30) in every time-series table, measured from that SUT's newest sample. IRQ, CPU, or interface count does not shorten the window.
+- Pruning runs with every sampling tick or agent telemetry POST, inside the same transaction as the inserts.
+- Samples inside a running capture's window are kept until the capture stops.
+- The newest tick of a SUT that stopped reporting is kept until that SUT reports again.
 
-Configured but not currently auto-enforced:
-- `IRQLENS_RETENTION_DAYS`
-- `IRQLENS_MAX_SESSIONS`
-- `IRQLENS_MAX_STORAGE_MB`
+Not cleaned up automatically:
+- Capture directories, ZIP archives, and session records
+- History of SUTs that never report again (at most one retention window each)
 
 Manual cleanup options:
-- Remove old session directories/archives under output root
-- Archive/rotate DB externally if needed
+- Delete captures from Collect Logs, or remove old session directories/archives under output root
+- Stop the server and delete the database to discard all telemetry history and session records
 
 ## 10. Troubleshooting Quick Ops
 - SUT stale/offline: check agent process, token, and network route
@@ -98,16 +111,17 @@ Manual cleanup options:
 - Validation: run `tools/validate_sut_visualization.py` with appropriate mode
 
 ## 11. Access Control
-- Set `IRQLENS_API_TOKEN` for dashboard/API access and `IRQLENS_AGENT_TOKEN` for agents/legacy ingestion. If only one is set, it protects both surfaces.
-- Browser sign-in: username `irqlens`, password equal to the API token (or agent token when it is the only one configured).
+- `python3 run_irqlens.py` listens on loopback and needs no token. `--remote` requires one: pass `--token`, set `IRQLENS_TOKEN`, or copy the generated token from the startup output.
+- `IRQLENS_TOKEN` protects the dashboard, API, downloads, WebSocket, and agents. `IRQLENS_API_TOKEN` and `IRQLENS_AGENT_TOKEN` are optional per-surface overrides; if only one is set, it protects both surfaces.
+- Browser sign-in: username `irqlens`, password equal to the token.
 - Browser WebSockets use a signed 12-hour HttpOnly session cookie issued at sign-in. It is SameSite=Strict, Secure over HTTPS, and invalidated by token rotation.
 - Use separate token values to keep agent credentials out of management APIs. Tokens are shared credentials, not user accounts or per-SUT identities.
-- The validator accepts `--token` or `IRQLENS_API_TOKEN`; the legacy collector accepts `--token` or `IRQLENS_AGENT_TOKEN`.
+- The validator accepts `--token`, `IRQLENS_API_TOKEN`, `IRQLENS_AGENT_TOKEN`, or `IRQLENS_TOKEN`; the agent accepts `--token`, `IRQLENS_AGENT_TOKEN`, or `IRQLENS_TOKEN`.
 - Use TLS outside loopback and preserve Authorization and WebSocket upgrades through any proxy. Only `/health` remains public when authentication is configured.
-- Both tokens empty disables authentication. Restart after changing credentials.
+- No token configured disables authentication. Restart after changing credentials.
 
 ## 12. Remote Commands
-- Upgrade agents to 1.1.0 for command capture. Jobs use outbound polling; no inbound agent port is required.
+- Upgrade agents to 1.1.0 for command capture and to 1.2.0 for the `storage` category (`lsblk`, `nvme`). Jobs use outbound polling; no inbound agent port is required.
 - Capture details show queued/running/completed/failed jobs. Keep the agent running until jobs finish.
 - A failed job retains command stdout/stderr and exit codes. Check missing tools, privileges, timeout, and output-limit messages.
 - ZIP/report downloads include data currently available. Generate/download again after late results arrive; report status is cleared when results change.

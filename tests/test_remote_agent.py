@@ -7,22 +7,43 @@ from fastapi.testclient import TestClient
 from backend.app.main import app
 
 
-def test_legacy_and_validation_clients_send_tokens(monkeypatch):
+def test_validation_client_sends_token(monkeypatch):
     from unittest.mock import MagicMock
-    from collector.irq_collector import post_json
     from tools.validate_sut_visualization import _http_get_json
 
-    monkeypatch.setenv("IRQLENS_AGENT_TOKEN", "test-agent")
     monkeypatch.setenv("IRQLENS_API_TOKEN", "test-api")
-    opener = MagicMock()
-    monkeypatch.setattr("collector.irq_collector._OPENER", opener)
-    post_json("http://localhost/api/irq/ingest", {})
-    assert opener.open.call_args.args[0].get_header("Authorization") == "Bearer test-agent"
     fetch = MagicMock()
     fetch.return_value.__enter__.return_value.read.return_value = b'{}'
     monkeypatch.setattr("tools.validate_sut_visualization.urllib.request.urlopen", fetch)
     assert _http_get_json("http://localhost", "/api/health") == {}
     assert fetch.call_args.args[0].get_header("Authorization") == "Bearer test-api"
+    monkeypatch.delenv("IRQLENS_API_TOKEN")
+    monkeypatch.setenv("IRQLENS_TOKEN", "test-shared")
+    assert _http_get_json("http://localhost", "/api/health") == {}
+    assert fetch.call_args.args[0].get_header("Authorization") == "Bearer test-shared"
+
+
+def test_single_token_and_clone_and_run_defaults(monkeypatch):
+    from backend.app.config import REPO_ROOT, Settings
+
+    for name in ("IRQLENS_HOST", "IRQLENS_OUTPUT_DIR", "IRQLENS_RETENTION_MINUTES", "IRQLENS_API_TOKEN", "IRQLENS_AGENT_TOKEN", "IRQLENS_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    defaults = Settings.from_env()
+    assert defaults.bind_host == "127.0.0.1" and defaults.bind_port == 10000
+    assert defaults.output_dir == (REPO_ROOT / "captures").resolve()
+    assert defaults.retention_minutes == 30.0
+    assert defaults.api_token == "" and defaults.agent_token == ""
+    for removed in ("metric_retention", "retention_days", "max_sessions", "max_storage_mb", "allowed_ingest_ips"):
+        assert not hasattr(defaults, removed)
+
+    monkeypatch.setenv("IRQLENS_TOKEN", "shared")
+    monkeypatch.setenv("IRQLENS_RETENTION_MINUTES", "5")
+    shared = Settings.from_env()
+    assert shared.api_token == shared.agent_token == "shared"
+    assert shared.retention_minutes == 5.0
+    monkeypatch.setenv("IRQLENS_AGENT_TOKEN", "agents-only")
+    assert Settings.from_env().agent_token == "agents-only"
+    assert Settings.from_env().api_token == "shared"
 
 
 def test_diagnostic_jobs_persist_and_reclaim(tmp_path, monkeypatch):
@@ -203,6 +224,59 @@ def test_agent_register_heartbeat_and_routing():
         assert net.json().get("host") == "sut-01"
 
 
+def test_agent_validation_telemetry_round_trip():
+    sut = "io-sut"
+    registration = _sample_registration(sut)
+    registration["cpu_topology"] = [
+        {"cpu_id": 0, "socket_id": 0, "core_id": 0, "numa_node": 0},
+        {"cpu_id": 1, "socket_id": 1, "core_id": 0, "numa_node": 1},
+    ]
+    telemetry = _sample_telemetry(sut)
+    telemetry["system"]["irqbalance"] = "active"
+    telemetry["irq_rows"][0]["numa_node"] = "0"
+    telemetry["irq_rows"][0]["cpu_rates"] = {"0": 20.0, "1": 30.0}
+    telemetry["softnet"] = {
+        "available": True, "interval_s": 1.0,
+        "total": {"processed": 100, "dropped": 4, "time_squeeze": 2, "cpu_collision": 0},
+        "per_cpu": {"1": {"processed": 100, "dropped": 4, "time_squeeze": 2, "cpu_collision": 0}},
+    }
+    telemetry["storage"] = [
+        {"device": "nvme0n1", "read_iops": 100.0, "write_iops": 50.0, "read_mb_s": 1.0, "write_mb_s": 0.5,
+         "avg_read_await_ms": 0.5, "avg_write_await_ms": 2.0, "queue_depth_in_flight": 7, "util_pct": 50.0, "scheduler": "none"},
+        {"device": "sda", "read_iops": 10.0, "write_iops": 0.0, "read_mb_s": 0.25, "write_mb_s": 0.0,
+         "avg_read_await_ms": 9.0, "avg_write_await_ms": 0.0, "queue_depth_in_flight": 0, "util_pct": 1.0},
+    ]
+    telemetry["pcie"] = [
+        {"bdf": "0000:5e:00.0", "kind": "NIC", "link_degraded": True, "aer_total": 3, "aer_increasing": True},
+        {"bdf": "0000:3b:00.0", "kind": "NVMe", "link_degraded": False, "aer_total": 0, "aer_increasing": False},
+    ]
+    with TestClient(app) as client:
+        assert client.post("/api/agent/register", json=registration).status_code == 200
+        assert client.post("/api/agent/telemetry", json=telemetry).status_code == 200
+
+        io = client.get(f"/api/systems/{sut}/io?window_seconds=60")
+        assert io.status_code == 200
+        payload = io.json()
+        assert payload["irqbalance"] == "active"
+        assert payload["storage"]["totals"] == {
+            "read_iops": 110.0, "write_iops": 50.0, "total_iops": 160.0,
+            "read_mb_s": 1.25, "write_mb_s": 0.5, "max_await_ms": 9.0,
+        }
+        assert sorted(payload["storage"]["series"]) == ["nvme0n1", "sda"]
+        assert payload["storage"]["series"]["nvme0n1"][0]["queue_depth_in_flight"] == 7.0
+        assert payload["pcie"]["link_warnings"] == 1 and payload["pcie"]["aer_errors"] == 3 and payload["pcie"]["aer_increasing"] == 1
+        assert payload["softnet"]["latest"]["total"]["dropped"] == 4
+        assert payload["softnet"]["series"][0]["time_squeeze"] == 2.0
+        assert client.get("/api/systems/missing-sut/io").status_code == 404
+
+        row = client.get(f"/api/irq/current?sut_id={sut}").json()["rows"][0]
+        assert row["cross_numa_flag"] is True
+        assert row["handler_numa_nodes"] == [0, 1] and row["remote_share_pct"] == 60.0
+        viz = client.get(f"/api/systems/{sut}/visualization?window_seconds=60").json()
+        assert viz["irqbalance"] == "active"
+        assert [item["irq"] for item in viz["irq_heatmap"]["irqs"]] == ["16"]
+
+
 def test_remote_diagnostics_round_trip(monkeypatch):
     from backend.app.main import DIAGNOSTICS, settings
     from backend.app.models import DiagnosticCommandResult
@@ -237,7 +311,7 @@ def test_remote_diagnostics_round_trip(monkeypatch):
     detail = client.get(f"/api/sessions/{session_id}", headers=dashboard_headers).json()
     assert detail["remote_diagnostics"][0]["status"] == "completed"
     files = client.get(f"/api/sessions/{session_id}/files", headers=dashboard_headers).json()["files"]
-    assert {item["format"] for item in files} == {"json", "csv", "xml", "txt"}
+    assert {item["format"] for item in files} == {"json", "csv", "txt"}
     raw = next(item for item in files if item["name"] == "command_001.txt")
     download = client.get("/api/files", params={"path": raw["path"]}, headers=dashboard_headers)
     assert "default via 192.0.2.1" in download.text

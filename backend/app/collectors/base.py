@@ -1,12 +1,39 @@
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 
 class CollectorError(Exception):
     pass
+
+
+def read_int(path: object, default: Optional[int] = None) -> Optional[int]:
+    try:
+        return int(read_first_line(str(path), ""))
+    except ValueError:
+        return default
+
+
+def list_msi_irqs(device_dir: object) -> List[str]:
+    try:
+        names = [child.name for child in (Path(str(device_dir)) / "msi_irqs").iterdir() if child.name.isdigit()]
+    except OSError:
+        return []
+    return sorted(names, key=int)
+
+
+def link_name(path: object, default: str = "N/A") -> str:
+    try:
+        return os.path.basename(os.readlink(str(path))) or default
+    except (OSError, ValueError):
+        pass
+    # A plain file holding the target name stands in where symlinks are unavailable.
+    if Path(str(path)).is_file():
+        return read_first_line(str(path), default)
+    return default
 
 
 def read_text_safe(path: str) -> str:

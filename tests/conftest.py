@@ -9,7 +9,7 @@ os.environ["IRQLENS_DB_PATH"] = str(TEST_ROOT / "test.db")
 os.environ["IRQLENS_OUTPUT_DIR"] = str(TEST_ROOT / "output")
 os.environ["IRQLENS_AGENT_TOKEN"] = ""
 os.environ["IRQLENS_API_TOKEN"] = ""
-os.environ["IRQLENS_ALLOWED_INGEST_IPS"] = ""
+os.environ["IRQLENS_TOKEN"] = ""
 
 
 def pytest_configure(config):

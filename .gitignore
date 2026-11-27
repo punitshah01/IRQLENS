@@ -6,4 +6,7 @@ __pycache__/
 *.log
 .DS_Store
 backend/data/*.db
+backend/data/*.db-wal
+backend/data/*.db-shm
+captures/
 .playwright-artifacts/

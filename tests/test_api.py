@@ -20,12 +20,13 @@ def test_access_control_and_browser_auth(monkeypatch):
         assert "Basic" in response.headers["www-authenticate"]
     assert client.delete("/api/sessions/missing").status_code == 401
     assert client.post("/api/systems", json={}).status_code == 401
-    assert client.post("/api/irq/ingest", json={}).status_code == 401
+    assert client.post("/api/agent/diagnostics/poll", json={"sut_id": "missing"}).status_code == 401
     assert client.get("/health").status_code == 200
     assert client.get("/api/systems", auth=("irqlens", "test-api-token")).status_code == 200
     assert client.get("/api/systems", headers={"Authorization": "Bearer test-agent-token"}).status_code == 401
     assert client.get("/api/systems", headers={"Authorization": "Basic invalid!"}).status_code == 401
-    assert client.post("/api/irq/ingest", json={}, headers={"Authorization": "Bearer test-agent-token"}).status_code == 200
+    assert client.post("/api/agent/diagnostics/poll", json={"sut_id": "missing"}, headers={"Authorization": "Bearer test-agent-token"}).status_code == 404
+    assert client.post("/api/irq/ingest", json={}, auth=("irqlens", "test-api-token")).status_code == 404
     response = client.delete("/api/sessions/missing", auth=("irqlens", "test-api-token"), headers={"Origin": "https://untrusted.example"})
     assert response.status_code == 403
     with pytest.raises(WebSocketDisconnect):
@@ -423,7 +424,8 @@ def test_session_report_generation():
         artifact = client.get(f"/api/sessions/{sid}/report/system/system.json")
         assert artifact.status_code == 200
         assert artifact.headers["content-disposition"].startswith("attachment")
-        assert artifact.json().get("hostname")
+        assert artifact.headers["content-type"] == "application/json"
+        assert artifact.json()["data"].get("hostname")
         assert client.get(f"/api/sessions/{sid}/report/summary.json").status_code == 404
         assert client.get(f"/api/sessions/{sid}/report/..%2F..%2Flatest%2Fsession.txt").status_code == 403
 
@@ -660,3 +662,101 @@ def test_session_report_status_consistency_when_file_missing():
         payload = status_after_remove.json()
         assert payload.get("status") == "none"
         assert payload.get("report_path") == ""
+
+
+XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def test_capture_downloads_are_binary_exact_and_typed():
+    import io
+    import json
+    import zipfile
+
+    import openpyxl
+
+    from backend.app.services.workbook import SHEET_NAMES
+
+    with TestClient(app) as client:
+        sid = f"download_case_{time.time_ns()}"
+        start = client.post("/api/sessions", json={
+            "session_name": sid, "duration_seconds": 30, "categories": ["irq", "softirq", "system", "pcie"],
+        })
+        assert start.status_code == 200
+        assert start.json()["session"]["session_id"] == sid
+        assert client.get(f"/api/sessions/{sid}/workbook").status_code == 409
+        assert client.post(f"/api/sessions/{sid}/stop", json={"reason": "manual"}).status_code == 200
+        output_dir = Path(client.get(f"/api/sessions/{sid}").json()["output_dir"])
+
+        workbook = client.get(f"/api/sessions/{sid}/workbook")
+        assert workbook.status_code == 200
+        assert workbook.headers["content-type"] == XLSX_MEDIA_TYPE
+        assert workbook.headers["content-disposition"] == f'attachment; filename="{sid}.xlsx"'
+        assert workbook.content == (output_dir / f"{sid}.xlsx").read_bytes()
+        assert workbook.content[:4] == b"PK\x03\x04"
+        assert openpyxl.load_workbook(io.BytesIO(workbook.content)).sheetnames == list(SHEET_NAMES)
+        listed = client.get(f"/api/sessions/{sid}/files").json()["files"]
+        assert any(item["format"] == "xlsx" and item["name"] == f"{sid}.xlsx" for item in listed)
+        assert not any(item["format"] == "xml" for item in listed)
+
+        (output_dir / f"{sid}.xlsx").unlink()
+        regenerated = client.get(f"/api/sessions/{sid}/workbook")
+        assert regenerated.status_code == 200 and regenerated.content[:4] == b"PK\x03\x04"
+
+        for relative, media_type in [("system/system.json", "application/json"), ("system/system.csv", "text/csv; charset=utf-8"), ("system/system.txt", "text/plain; charset=utf-8")]:
+            target = output_dir / relative
+            response = client.get("/api/files", params={"path": str(target)})
+            assert response.status_code == 200
+            assert response.headers["content-type"] == media_type
+            assert response.headers["content-disposition"] == f'attachment; filename="{target.name}"'
+            assert response.headers["x-content-type-options"] == "nosniff"
+            assert response.content == target.read_bytes()
+        system_json = client.get("/api/files", params={"path": str(output_dir / "system" / "system.json")})
+        envelope = json.loads(system_json.content)
+        assert envelope["schema_version"] == "1.0" and envelope["session_id"] == sid and envelope["sut_id"] == "local"
+        system_csv = client.get("/api/files", params={"path": str(output_dir / "system" / "system.csv")})
+        assert system_csv.content.startswith(b"\xef\xbb\xbf")
+
+        archive = client.get(f"/api/sessions/{sid}/download")
+        assert archive.status_code == 200
+        assert archive.headers["content-type"] == "application/zip"
+        assert archive.headers["content-disposition"] == f'attachment; filename="{sid}.zip"'
+        assert archive.content == (settings.output_dir / f"{sid}.zip").read_bytes()
+        with zipfile.ZipFile(io.BytesIO(archive.content)) as bundle:
+            assert bundle.testzip() is None
+            assert {f"{sid}.xlsx", "summary.json", "system/system.csv"} <= set(bundle.namelist())
+        assert not list(settings.output_dir.glob("*.partial.zip"))
+
+        assert client.get("/api/sessions/missing-workbook/workbook").status_code == 404
+        assert client.get("/api/files", params={"path": str(output_dir / "missing.csv")}).status_code == 404
+        assert client.get("/api/files", params={"path": str(output_dir.parent.parent / "outside.csv")}).status_code == 403
+        assert client.delete(f"/api/sessions/{sid}").status_code == 200
+
+
+def test_capture_recorded_under_another_output_dir_opens_and_deletes(tmp_path):
+    from backend.app.main import STORE
+    from backend.app.models import CollectionSession, ExportFile
+
+    outside = tmp_path / "old-root" / "legacy_capture"
+    outside.mkdir(parents=True)
+    kept = outside / "system.xml"
+    kept.write_text("<system/>", encoding="utf-8")
+    sid = f"legacy_capture_{time.time_ns()}"
+    STORE.create_session(CollectionSession(
+        session_id=sid, sut_id="local", status="stopped", start_time=1.0, end_time=2.0, hostname="old-host",
+        os_distribution="Linux", kernel="5.4", collector_version="0.1.0", output_dir=str(outside),
+    ))
+    STORE.add_session_files(sid, [ExportFile(name="system.xml", category="system", format="xml", path=str(kept), size_bytes=9)])
+
+    client = TestClient(app)
+    detail = client.get(f"/api/sessions/{sid}")
+    assert detail.status_code == 200
+    assert detail.json()["capture_quality"] == {"status": "NOT_EVALUATED", "checks": []}
+    assert [item["format"] for item in client.get(f"/api/sessions/{sid}/files").json()["files"]] == ["xml"]
+    assert client.post(f"/api/sessions/{sid}/quality").status_code == 409
+    assert client.get(f"/api/sessions/{sid}/workbook").status_code == 403
+    assert client.get(f"/api/sessions/{sid}/download").status_code == 404
+    assert client.get("/api/files", params={"path": str(kept)}).status_code == 403
+    assert client.delete(f"/api/sessions/{sid}").status_code == 200
+    assert client.get(f"/api/sessions/{sid}").status_code == 404
+    assert sorted(path.name for path in outside.iterdir()) == ["system.xml"]
+    assert kept.read_text(encoding="utf-8") == "<system/>"

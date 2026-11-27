@@ -1,7 +1,65 @@
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
+
+CROSS_NUMA_SHARE = 0.10
+
+
+def _node(value: Any) -> Optional[int]:
+    try:
+        node = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return node if node >= 0 else None
+
+
+def cross_numa_mismatch(
+    irq_numa_node: Any,
+    cpu_rates: Mapping[str, float],
+    cpu_to_node: Mapping[str, int],
+    threshold: float = CROSS_NUMA_SHARE,
+) -> Dict[str, Any]:
+    device_node = _node(irq_numa_node)
+    total = sum(max(0.0, float(rate)) for rate in cpu_rates.values())
+    handler_nodes = set()
+    remote_share = 0.0
+    if total > 0:
+        for cpu, rate in cpu_rates.items():
+            share = max(0.0, float(rate)) / total
+            node = _node(cpu_to_node.get(str(cpu)))
+            if share <= threshold or node is None:
+                continue
+            handler_nodes.add(node)
+            if device_node is not None and node != device_node:
+                remote_share += share
+    return {
+        "cross_numa_flag": remote_share > 0.0,
+        "handler_numa_nodes": sorted(handler_nodes),
+        "remote_share_pct": round(remote_share * 100.0, 1),
+    }
+
+
+def flatten_irq_row(row: Mapping[str, Any], cpu_to_node: Mapping[str, int]) -> Dict[str, Any]:
+    cpu_rates = {str(cpu): float(rate) for cpu, rate in (row.get("cpu_rates") or {}).items()}
+    top_cpu, top_rate = max(cpu_rates.items(), key=lambda item: item[1], default=("", 0.0))
+    numa = cross_numa_mismatch(row.get("numa_node"), cpu_rates, cpu_to_node)
+    return {
+        "irq": str(row.get("irq", "")),
+        "irq_name": str(row.get("irq_name", "")),
+        "nic": str(row.get("nic", "") or ""),
+        "source_class": str(row.get("source_class", "") or ""),
+        "direction": str(row.get("direction", "") or ""),
+        "total_irq_s": float(row.get("total_rate") or 0.0),
+        "peak_irq_s": float(row.get("peak_rate") or row.get("total_rate") or 0.0),
+        "top_cpu": top_cpu,
+        "top_cpu_irq_s": top_rate,
+        "numa_node": str(row.get("numa_node", "N/A")),
+        "handler_numa_nodes": ",".join(str(node) for node in numa["handler_numa_nodes"]),
+        "cross_numa_flag": numa["cross_numa_flag"],
+        "active_cpu_count": sum(1 for rate in cpu_rates.values() if rate > 0.0),
+        "affinity_list": str(row.get("affinity_list", "N/A")),
+    }
 
 
 def irq_balance_score(cpu_rates: Dict[str, float]) -> Dict[str, Union[float, str]]:

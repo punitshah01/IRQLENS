@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import HTTPConnection
 
+from .collectors import collect_cpu_topology
 from .config import settings
 from .models import (
     CPUTopologyEntry,
@@ -28,7 +29,6 @@ from .models import (
     AgentDiagnosticPollRequest,
     AgentDiagnosticResultsRequest,
     IRQSample,
-    NetworkSample,
     SessionStartRequest,
     SessionStopRequest,
     SystemCreateRequest,
@@ -36,6 +36,8 @@ from .models import (
     SystemRecord,
 )
 from .services import DiagnosticSessionService, HealthService, TelemetrySampler, detect_spikes, irq_balance_score
+from .services.exporter import sanitize
+from .services.visualization import cross_numa_mismatch
 from .store import STORE
 from .ws import WS
 
@@ -65,15 +67,80 @@ HEALTH = HealthService(settings=settings)
 SESSION_AUTO_STOP_TASKS: Dict[str, asyncio.Task] = {}
 SESSION_REPORT_TASKS: Dict[str, asyncio.Task] = {}
 ALLOWED_CAPTURE_DURATIONS = {30, 60, 120, 300, 600, 900, 1800}
+MEDIA_TYPES = {
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".json": "application/json",
+    ".csv": "text/csv",
+    ".zip": "application/zip",
+    ".txt": "text/plain",
+    ".html": "text/html",
+}
 
 
-def _ip_allowed(request: Request) -> bool:
-    if settings.disable_ingest_allowlist:
-        return True
-    if not settings.allowed_ingest_ips:
-        return True
-    client = request.client.host if request.client else ""
-    return client in settings.allowed_ingest_ips
+def _attachment(target: Path) -> FileResponse:
+    return FileResponse(
+        str(target),
+        filename=target.name,
+        media_type=MEDIA_TYPES.get(target.suffix.lower(), "application/octet-stream"),
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
+
+
+def _num(value: Any) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _cpu_to_node(sut_id: str) -> Dict[str, int]:
+    return {str(item.cpu_id): item.numa_node for item in STORE.latest_cpu_topology(sut_id) if item.numa_node is not None}
+
+
+def _current_irq_rows(sut_id: str, limit: int) -> List[Dict[str, Any]]:
+    cpu_to_node = _cpu_to_node(sut_id)
+    return [
+        {**row.model_dump(), **cross_numa_mismatch(row.numa_node, row.cpu_rates, cpu_to_node)}
+        for row in STORE.current_irq(sut_id, limit=limit)
+    ]
+
+
+def _io_payload(sut_id: str, from_ts: float, to_ts: float) -> Dict[str, Any]:
+    devices = STORE.latest_json("storage_samples", sut_id, [])
+    pcie = STORE.latest_json("pcie_samples", sut_id, [])
+    system = STORE.latest_system(sut_id)
+    read_iops = sum(_num(item.get("read_iops")) for item in devices)
+    write_iops = sum(_num(item.get("write_iops")) for item in devices)
+    awaits = [_num(item.get(key)) for item in devices for key in ("avg_read_await_ms", "avg_write_await_ms")]
+    return {
+        "sut_id": sut_id,
+        "from_ts": float(from_ts),
+        "to_ts": float(to_ts),
+        "timestamp": time.time(),
+        "irqbalance": system.irqbalance if system else "unknown",
+        "storage": {
+            "devices": devices,
+            "series": STORE.storage_series(sut_id, from_ts, to_ts),
+            "totals": {
+                "read_iops": read_iops,
+                "write_iops": write_iops,
+                "total_iops": read_iops + write_iops,
+                "read_mb_s": sum(_num(item.get("read_mb_s")) for item in devices),
+                "write_mb_s": sum(_num(item.get("write_mb_s")) for item in devices),
+                "max_await_ms": max(awaits, default=0.0),
+            },
+        },
+        "pcie": {
+            "devices": pcie,
+            "link_warnings": sum(1 for item in pcie if item.get("link_degraded")),
+            "aer_errors": int(sum(_num(item.get("aer_total")) for item in pcie)),
+            "aer_increasing": sum(1 for item in pcie if item.get("aer_increasing")),
+        },
+        "softnet": {
+            "latest": STORE.latest_json("softnet_samples", sut_id, {}),
+            "series": STORE.softnet_series(sut_id, from_ts, to_ts),
+        },
+    }
 
 
 def _resolve_host(host: Optional[str]) -> str:
@@ -137,7 +204,7 @@ def _origin_allowed(connection: HTTPConnection) -> bool:
 async def access_control(request: Request, call_next):
     if request.url.path == "/health":
         return await call_next(request)
-    agent_request = request.url.path.startswith("/api/agent/") or request.url.path == "/api/irq/ingest"
+    agent_request = request.url.path.startswith("/api/agent/")
     authorized = _agent_authorized(request) if agent_request else _api_authorized(request)
     if not authorized:
         return JSONResponse(
@@ -244,63 +311,10 @@ def _safe_path_in_output(path_str: str) -> Path:
 
 
 def _parse_local_cpu_topology() -> Dict[str, Any]:
-    root = Path("/sys/devices/system/cpu")
-    if not root.exists():
-        return {"available": False, "reason": "topology files unavailable"}
-
-    rows: List[Dict[str, Any]] = []
-    cpu_model = ""
     sample = STORE.latest_system("local")
-    if sample:
-        cpu_model = sample.cpu_model
-    for cpu_dir in sorted(root.glob("cpu[0-9]*"), key=lambda p: int(p.name[3:])):
-        cpu_id = int(cpu_dir.name[3:])
-        topo = cpu_dir / "topology"
-        package = "0"
-        core = str(cpu_id)
-        if topo.exists():
-            pkg_path = topo / "physical_package_id"
-            core_path = topo / "core_id"
-            if pkg_path.exists():
-                package = pkg_path.read_text(encoding="utf-8", errors="ignore").strip() or "0"
-            if core_path.exists():
-                core = core_path.read_text(encoding="utf-8", errors="ignore").strip() or str(cpu_id)
-
-        numa = "0"
-        for node_path in cpu_dir.glob("node*"):
-            if node_path.name.startswith("node"):
-                numa = node_path.name.replace("node", "")
-                break
-        online = None
-        online_path = cpu_dir / "online"
-        if online_path.exists():
-            try:
-                online = online_path.read_text(encoding="utf-8", errors="ignore").strip() == "1"
-            except Exception:
-                online = None
-        thread_siblings = ""
-        core_siblings = ""
-        thread_path = topo / "thread_siblings_list"
-        core_sib_path = topo / "core_siblings_list"
-        if thread_path.exists():
-            thread_siblings = thread_path.read_text(encoding="utf-8", errors="ignore").strip()
-        if core_sib_path.exists():
-            core_siblings = core_sib_path.read_text(encoding="utf-8", errors="ignore").strip()
-        rows.append(
-            {
-                "cpu_id": cpu_id,
-                "socket_id": int(package) if package.isdigit() else None,
-                "core_id": int(core) if core.isdigit() else None,
-                "numa_node": int(numa) if numa.isdigit() else None,
-                "online": online,
-                "thread_siblings_list": thread_siblings,
-                "core_siblings_list": core_siblings,
-                "cpu_model": cpu_model,
-            }
-        )
-
+    rows = collect_cpu_topology(sample.cpu_model if sample else "")
     if not rows:
-        return {"available": False, "reason": "no cpu topology rows"}
+        return {"available": False, "reason": "topology files unavailable"}
     return {"available": True, "rows": rows}
 
 
@@ -366,11 +380,14 @@ def _visualization_payload(
     cpu_util_series = STORE.cpu_utilization_series(sut_id, from_ts, to_ts=to_ts)
 
     latest_ts = STORE.latest_irq_timestamp_at(sut_id, to_ts=to_ts)
-    latest_irq_rows = STORE.irq_at_timestamp(sut_id, latest_ts, limit=max(50, top_n * 6)) if latest_ts is not None else []
+    latest_irq_rows = STORE.irq_at_timestamp(sut_id, latest_ts, limit=5000) if latest_ts is not None else []
     latest_softirq = STORE.latest_softirq(sut_id)
     latest_network = STORE.latest_network(sut_id, limit=500)
+    latest_system = STORE.latest_system(sut_id)
 
-    top_irq = sorted(latest_irq_rows, key=lambda x: float(x.total_rate), reverse=True)[: max(5, top_n)]
+    # Rows arrive sorted by rate; top_n <= 0 keeps every active IRQ.
+    active_irq = [row for row in latest_irq_rows if float(row.total_rate) > 0.0]
+    top_irq = active_irq if top_n <= 0 else active_irq[:top_n]
 
     cpu_ids = sorted(
         {
@@ -467,6 +484,7 @@ def _visualization_payload(
         "from_ts": float(from_ts),
         "to_ts": float(to_ts),
         "timestamp": now,
+        "irqbalance": latest_system.irqbalance if latest_system else "unknown",
         "series": {
             "irq": irq_series,
             "network": network_series,
@@ -571,70 +589,6 @@ def health_legacy() -> dict:
     return {"ok": True}
 
 
-@app.post("/api/irq/ingest")
-async def ingest(request: Request) -> dict:
-    if not _ip_allowed(request):
-        raise HTTPException(status_code=403, detail="ingest client IP not allowed")
-
-    raw = await request.json()
-    raw_samples = raw.get("samples", []) if isinstance(raw, dict) else []
-    raw_host = raw.get("host_samples", []) if isinstance(raw, dict) else []
-
-    irq_samples: List[IRQSample] = []
-    net_samples: List[NetworkSample] = []
-
-    for item in raw_samples:
-        try:
-            irq_samples.append(IRQSample.model_validate(item))
-        except Exception:
-            continue
-
-    for item in raw_host:
-        if not isinstance(item, dict):
-            continue
-        # Legacy collector compatibility: map old host sample fields to NetworkSample.
-        if "interface" not in item:
-            item = {
-                "timestamp": float(item.get("timestamp", time.time())),
-                "sut_ip": str(item.get("sut_ip", "legacy")),
-                "interface": str(item.get("nic", "all") or "all"),
-                "rx_bytes": 0,
-                "tx_bytes": 0,
-                "rx_packets": 0,
-                "tx_packets": 0,
-                "rx_errors": 0,
-                "tx_errors": 0,
-                "rx_drops": 0,
-                "tx_drops": 0,
-                "rx_bps": float(item.get("rx_bps", 0.0)),
-                "tx_bps": float(item.get("tx_bps", 0.0)),
-                "rx_pps": float(item.get("rx_pps", 0.0)),
-                "tx_pps": float(item.get("tx_pps", 0.0)),
-                "rx_err_ps": 0.0,
-                "tx_err_ps": 0.0,
-                "rx_drop_ps": float(item.get("rx_drop_ps", 0.0)),
-                "tx_drop_ps": float(item.get("tx_drop_ps", 0.0)),
-            }
-        try:
-            net_samples.append(NetworkSample.model_validate(item))
-        except Exception:
-            continue
-
-    if irq_samples:
-        STORE.add_irq_samples(irq_samples)
-    if net_samples:
-        STORE.add_network_samples(net_samples)
-
-    await WS.broadcast(
-        {
-            "type": "ingest",
-            "timestamp": time.time(),
-            "hosts": sorted({s.sut_ip for s in irq_samples + net_samples}),
-        }
-    )
-    return {"ok": True, "irq_count": len(irq_samples), "network_count": len(net_samples)}
-
-
 @app.get("/api/system")
 def get_system(host: Optional[str] = None, sut_id: Optional[str] = None) -> dict:
     target = _resolve_sut(sut_id, host)
@@ -656,8 +610,7 @@ def get_interfaces(host: Optional[str] = None, sut_id: Optional[str] = None) -> 
 @app.get("/api/irq/current")
 def irq_current(host: Optional[str] = None, sut_id: Optional[str] = None, limit: int = 256) -> dict:
     target = _resolve_sut(sut_id, host)
-    rows = STORE.latest_irq(target, limit=limit)
-    return {"host": target, "rows": [row.model_dump() for row in rows]}
+    return {"host": target, "rows": _current_irq_rows(target, limit)}
 
 
 @app.get("/api/irq/latest")
@@ -757,7 +710,7 @@ def systems() -> dict:
 def system_visualization(
     sut_id: str,
     window_seconds: int = 300,
-    top_n: int = 20,
+    top_n: int = 25,
     from_ts: Optional[float] = None,
     to_ts: Optional[float] = None,
 ) -> dict:
@@ -766,14 +719,28 @@ def system_visualization(
     return _visualization_payload(sut_id=sut_id, window_seconds=window_seconds, top_n=top_n, from_ts=from_ts, to_ts=to_ts)
 
 
+@app.get("/api/systems/{sut_id}/io")
+def system_io(
+    sut_id: str,
+    window_seconds: int = 300,
+    from_ts: Optional[float] = None,
+    to_ts: Optional[float] = None,
+) -> dict:
+    if not STORE.get_system(sut_id) and sut_id != "local":
+        raise HTTPException(status_code=404, detail="system not found")
+    end = time.time() if to_ts is None else to_ts
+    start = end - max(30, min(3600, int(window_seconds))) if from_ts is None else from_ts
+    return _io_payload(sut_id, min(start, end), max(start, end))
+
+
 @app.get("/api/systems/{sut_id}/visualization/topology")
 def system_topology(sut_id: str) -> dict:
     if sut_id == "local":
-        parsed = _parse_local_cpu_topology()
-        if parsed.get("available"):
-            rows = [CPUTopologyEntry.model_validate(row) for row in parsed.get("rows", [])]
-            STORE.add_cpu_topology("local", rows, timestamp=time.time())
-        return parsed
+        # The sampler keeps local topology current; parse directly only before its first tick.
+        stored = STORE.latest_cpu_topology("local")
+        if stored:
+            return {"available": True, "rows": [row.model_dump() for row in stored]}
+        return _parse_local_cpu_topology()
     system = STORE.get_system(sut_id)
     if not system:
         raise HTTPException(status_code=404, detail="system not found")
@@ -888,7 +855,7 @@ def system_interfaces(sut_id: str) -> dict:
 
 @app.get("/api/systems/{sut_id}/irq")
 def system_irq(sut_id: str, limit: int = 256) -> dict:
-    return {"sut_id": sut_id, "rows": [r.model_dump() for r in STORE.latest_irq(sut_id, limit=limit)]}
+    return {"sut_id": sut_id, "rows": _current_irq_rows(sut_id, limit)}
 
 
 @app.get("/api/systems/{sut_id}/network")
@@ -947,7 +914,10 @@ async def check_capture_quality(session_id: str) -> dict:
         raise HTTPException(status_code=404, detail="session not found")
     if session.status == "running":
         raise HTTPException(status_code=409, detail="capture is still running")
-    quality = await asyncio.to_thread(DIAGNOSTICS.refresh_capture_quality, session_id)
+    try:
+        quality = await asyncio.to_thread(DIAGNOSTICS.refresh_capture_quality, session_id)
+    except ValueError:
+        raise HTTPException(status_code=409, detail="capture files are outside the configured output directory")
     if quality is None:
         raise HTTPException(status_code=404, detail="session not found")
     return quality
@@ -1063,9 +1033,23 @@ def session_report_artifact(session_id: str, artifact_path: str) -> FileResponse
         raise HTTPException(status_code=403, detail="file outside session directory")
     if not target.is_file() or not any(Path(item.path).resolve() == target for item in STORE.session_files(session_id)):
         raise HTTPException(status_code=404, detail="session file not found")
-    return FileResponse(str(target), filename=target.name)
+    return _attachment(target)
 
 
+@app.get("/api/sessions/{session_id}/workbook")
+async def session_workbook(session_id: str) -> FileResponse:
+    session = STORE.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    if session.status == "running":
+        raise HTTPException(status_code=409, detail="capture is still running")
+    target = _safe_path_in_output(str(DIAGNOSTICS.workbook_path(session)))
+    if not target.is_file() and not await asyncio.to_thread(DIAGNOSTICS.write_workbook, session_id):
+        raise HTTPException(status_code=404, detail="session files not found")
+    return _attachment(target)
+
+
+@app.post("/api/sessions")
 @app.post("/api/sessions/start")
 async def start_session(req: SessionStartRequest) -> dict:
     if int(req.duration_seconds) not in ALLOWED_CAPTURE_DURATIONS:
@@ -1199,27 +1183,27 @@ async def agent_telemetry(payload: AgentTelemetryPayload, request: Request) -> d
 
     sut_id = payload.sut_id
     system_info = payload.system.model_copy(update={"timestamp": payload.timestamp})
-    STORE.add_system(sut_id, system_info)
-    STORE.add_interfaces(sut_id, payload.interfaces)
-
-    irq_rows = []
-    for row in payload.irq_rows:
-        irq_rows.append(row.model_copy(update={"sut_ip": sut_id, "sut_id": sut_id}))
-    if irq_rows:
-        STORE.add_irq_samples(irq_rows)
-
+    irq_rows = [row.model_copy(update={"sut_ip": sut_id, "sut_id": sut_id}) for row in payload.irq_rows]
     soft = payload.softirq.model_copy(update={"sut_ip": sut_id, "sut_id": sut_id, "timestamp": payload.timestamp})
-    STORE.add_softirq_sample(soft)
+    net_rows = [row.model_copy(update={"sut_ip": sut_id, "sut_id": sut_id}) for row in payload.network_samples]
 
-    net_rows = []
-    for row in payload.network_samples:
-        net_rows.append(row.model_copy(update={"sut_ip": sut_id, "sut_id": sut_id}))
-    if net_rows:
+    with STORE.transaction():
+        STORE.add_system(sut_id, system_info)
+        STORE.add_interfaces(sut_id, payload.interfaces)
+        STORE.add_irq_samples(irq_rows)
+        STORE.add_softirq_sample(soft)
         STORE.add_network_samples(net_rows)
-    if payload.cpu_topology:
-        STORE.add_cpu_topology(sut_id, payload.cpu_topology, timestamp=payload.timestamp)
-    if payload.cpu_utilization:
-        STORE.add_cpu_utilization(sut_id, payload.cpu_utilization, timestamp=payload.timestamp)
+        if payload.cpu_topology:
+            STORE.add_cpu_topology(sut_id, payload.cpu_topology, timestamp=payload.timestamp)
+        if payload.cpu_utilization:
+            STORE.add_cpu_utilization(sut_id, payload.cpu_utilization, timestamp=payload.timestamp)
+        if payload.softnet:
+            STORE.add_softnet(sut_id, sanitize(payload.softnet), payload.timestamp)
+        if payload.storage:
+            STORE.add_storage(sut_id, sanitize(payload.storage), payload.timestamp)
+        if payload.pcie:
+            STORE.add_pcie(sut_id, sanitize(payload.pcie), payload.timestamp)
+        STORE.prune(sut_id, payload.timestamp)
 
     existing = STORE.get_system(sut_id)
     now = time.time()
@@ -1281,7 +1265,7 @@ def session_download(session_id: str) -> FileResponse:
     if not archive:
         raise HTTPException(status_code=404, detail="session archive not found")
     archive = _safe_path_in_output(str(archive))
-    return FileResponse(str(archive), filename=archive.name, media_type="application/zip")
+    return _attachment(archive)
 
 
 @app.get("/api/files")
@@ -1289,7 +1273,7 @@ def file_download(path: str) -> FileResponse:
     target = _safe_path_in_output(path)
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="file not found")
-    return FileResponse(str(target), filename=target.name)
+    return _attachment(target)
 
 
 @app.websocket("/ws")

@@ -10,8 +10,8 @@ IRQLENS is composed of four runtime parts:
 ## Component Responsibilities
 
 ## Frontend
-- Renders all pages and visualizations with ECharts.
-- Polls/refreshes API data.
+- Renders all pages and visualizations with ECharts, vendored under `frontend/static/` (no CDN or other external request).
+- Polls/refreshes API data, redrawing at most once per second.
 - Opens one WebSocket connection to `/ws` for refresh-trigger events.
 - Implements client-side filters (IRQ/CPU/interface), custom range controls, zoom persistence, threshold filtering, and compare views.
 
@@ -27,21 +27,26 @@ IRQLENS is composed of four runtime parts:
 - `SoftIRQCollector`
 - `NetworkCollector`
 - `SystemCollector`
+- `SoftnetCollector` (`/proc/net/softnet_stat`)
+- `StorageCollector` (`/proc/diskstats`, `/sys/block`, `/sys/class/nvme`)
+- `PCIeCollector` (`/sys/bus/pci/devices`)
 
-This path provides local-host telemetry as system id `local`.
+This path provides local-host telemetry as system id `local`. Each tick is written to SQLite in one transaction, followed by retention pruning.
 
 ## Remote Agent
 - Runs on Linux SUT.
-- Reads proc/sys sources and computes rates.
+- Reads proc/sys sources with the same collector classes and computes rates.
 - Sends registration, heartbeat, and telemetry payloads via HTTP.
 - Includes optional CPU topology snapshots.
 
 ## Data Storage
-SQLite tables include:
-- Telemetry: IRQ, SoftIRQ, network, interfaces, system snapshots
+SQLite (WAL mode) tables include:
+- Telemetry: IRQ, SoftIRQ, network, interfaces, system snapshots, CPU utilization, softnet, storage, PCIe
 - Topology snapshots
 - Registered systems and heartbeats
 - Diagnostic sessions and generated files
+
+Every time-series table is pruned per SUT to the last `IRQLENS_RETENTION_MINUTES`.
 
 ## Visualization Pipeline
 1. Raw telemetry samples are collected/stored.
@@ -59,9 +64,10 @@ SQLite tables include:
 1. User starts session with selected categories.
 2. Service gathers snapshots from store or local collectors.
 3. Local mode optionally runs allowlisted commands.
-4. Export engine emits JSON/CSV/XML/TXT files.
-5. Session file catalog is stored in SQLite.
-6. Session archive endpoint creates ZIP on demand.
+4. Export engine emits strict, enveloped JSON plus CSV (UTF-8 with BOM) and TXT files, each written to a `.tmp` file and renamed into place.
+5. On stop, time-series JSON and one multi-sheet `.xlsx` workbook are written.
+6. Session file catalog is stored in SQLite.
+7. Session archive endpoint creates ZIP on demand.
 
 ## Data Flow
 ```text
@@ -75,12 +81,12 @@ Linux proc/sys -> collectors/agent -> backend store -> visualization APIs -> bro
 - Agent -> server: HTTP POST (register/heartbeat/telemetry)
 
 ## Security Model (Current)
-- Optional agent bearer token verification.
-- Optional ingest IP allowlist for legacy endpoint.
+- The launcher binds loopback without authentication by default; `--remote` binds all interfaces and requires a shared token.
+- One token (`IRQLENS_TOKEN`) for dashboard, API, WebSocket, and agents, with optional per-surface overrides.
 - Diagnostic command execution constrained to allowlist.
 - File download path constrained to output directory.
 
 ## Known Architecture Limits
 - No built-in TLS termination.
 - No protocol version negotiation between agent and server.
-- Retention-day/storage-cap configs are not currently enforced by a cleanup worker.
+- Capture files and session records are not cleaned up automatically.

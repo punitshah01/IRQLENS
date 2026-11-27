@@ -1,11 +1,15 @@
-const PRIMARY_VIEWS = ["overview", "cpu", "irq", "network", "diagnostics"];
+const PRIMARY_VIEWS = ["overview", "cpu", "irq", "network", "storage", "diagnostics"];
 const NAV_LABELS = {
   overview: "Overview",
   cpu: "CPU",
   irq: "IRQ",
   network: "Network",
+  storage: "Storage & PCIe",
   diagnostics: "Collect Logs",
 };
+const LIVE_RENDER_INTERVAL_MS = 1000;
+const IRQ_TOP_N_OPTIONS = ["25", "50", "100", "all"];
+const IRQ_AGGREGATE_OPTIONS = ["cpu", "numa", "socket"];
 const TIME_RANGES = [
   { key: "30", label: "30s", seconds: 30 },
   { key: "60", label: "1m", seconds: 60 },
@@ -59,6 +63,7 @@ const state = {
   health: null,
   snapshot: null,
   viz: null,
+  io: null,
   topology: null,
   interfaceHistory: null,
   sessions: [],
@@ -75,10 +80,15 @@ const state = {
   cpuMetric: storage.get("irqlens:cpuMetric", "irq"),
   irqSearch: "",
   irqSort: "rate",
+  irqTopN: storage.get("irqlens:irqTopN", "25"),
+  irqAggregate: storage.get("irqlens:irqAggregate", "cpu"),
   timeRange: storage.get("irqlens:timeRange", "300"),
   customFrom: storage.get("irqlens:customFrom", ""),
   customTo: storage.get("irqlens:customTo", ""),
   paused: false,
+  lastLiveRenderAt: 0,
+  lastRefreshAt: 0,
+  switcherSignature: "",
   staleMs: 5000,
   lastDataAt: 0,
   ws: null,
@@ -98,7 +108,7 @@ const state = {
     startedAt: 0,
     endsAt: 0,
     timer: null,
-    categories: ["irq", "softirq", "network", "system", "interfaces", "ethtool"],
+    categories: ["irq", "softirq", "network", "system", "interfaces", "ethtool", "storage", "pcie"],
     files: [],
     completedSessionId: "",
     error: "",
@@ -113,6 +123,8 @@ if (!["irq", "softirq", "util"].includes(state.cpuMetric)) {
   state.cpuMetric = "irq";
   storage.set("irqlens:cpuMetric", state.cpuMetric);
 }
+if (!IRQ_TOP_N_OPTIONS.includes(state.irqTopN)) state.irqTopN = "25";
+if (!IRQ_AGGREGATE_OPTIONS.includes(state.irqAggregate)) state.irqAggregate = "cpu";
 
 const el = {};
 
@@ -216,13 +228,14 @@ function viewTitle(view) {
     case "irq": return ["IRQ", "Trace which interrupts are driving activity."];
     case "network": return ["Network", "Inspect interface traffic, drops, errors, and related IRQs."];
     case "cpu": return ["CPU", "See which CPU and NUMA regions are absorbing IRQ activity."];
+    case "storage": return ["Storage & PCIe", "Track block-device I/O and add-in card link health."];
     case "diagnostics": return ["Collect Logs", "Capture evidence for the selected SUT and review recent captures."];
     default: return ["IRQLENS", "Monitoring dashboard"];
   }
 }
 
 function renderNavigation() {
-  const monitorViews = ["overview", "cpu", "irq", "network"];
+  const monitorViews = ["overview", "cpu", "irq", "network", "storage"];
   const operationViews = ["diagnostics"];
   const renderButtons = views => views.map(view => {
     const active = state.view === view ? "nav-button active" : "nav-button";
@@ -318,6 +331,32 @@ function renderContextBar() {
   el["breadcrumb"].textContent = buildBreadcrumb();
   el["ws-pill"].className = `tag ${wsTone()}`;
   el["ws-pill"].textContent = `WebSocket: ${state.wsStatus}`;
+  renderSutSwitcher();
+  const irqbalance = state.io?.irqbalance || state.viz?.irqbalance || "unknown";
+  const balancePill = qs("irqbalance-pill");
+  if (balancePill) {
+    balancePill.className = irqbalance === "unknown" ? "tag" : "tag info";
+    balancePill.textContent = `irqbalance: ${irqbalance}`;
+  }
+  const liveToggle = qs("live-toggle");
+  if (liveToggle) {
+    liveToggle.textContent = state.paused ? "Resume Live Updates" : "Pause Live Updates";
+    liveToggle.className = `action-button ${state.paused ? "warn" : "ghost"}`;
+    liveToggle.setAttribute("aria-pressed", state.paused ? "true" : "false");
+  }
+}
+
+function renderSutSwitcher() {
+  const select = qs("sut-switcher");
+  if (!select) return;
+  // Rebuilding on every tick would close an open dropdown.
+  const signature = JSON.stringify([state.host, state.systems.map(item => [item.id, item.hostname, item.name, item.status])]);
+  if (signature === state.switcherSignature) return;
+  state.switcherSignature = signature;
+  select.innerHTML = state.systems.length
+    ? state.systems.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.hostname || item.name || item.id)} [${escapeHtml(item.status)}]</option>`).join("")
+    : `<option value="">No SUT registered</option>`;
+  select.value = state.host || "";
 }
 
 function buildBreadcrumb() {
@@ -389,6 +428,46 @@ function buildFindings() {
       target: "irq",
     });
   }
+  const crossNuma = (state.snapshot?.irq?.rows || []).filter(row => row.cross_numa_flag);
+  if (crossNuma.length) {
+    const worst = crossNuma[0];
+    findings.push({
+      tone: "warn",
+      title: "Cross-NUMA IRQ handling",
+      text: `${crossNuma.length} IRQ(s) run on CPUs outside their device's NUMA node, e.g. ${worst.irq_name || worst.irq} (device node ${worst.numa_node}, handled on node ${(worst.handler_numa_nodes || []).join(", ")}).`,
+      action: "View IRQ",
+      target: "irq",
+    });
+  }
+  const pcie = state.io?.pcie || {};
+  if (Number(pcie.link_warnings || 0) > 0) {
+    findings.push({
+      tone: "bad",
+      title: "PCIe link degraded",
+      text: `${Number(pcie.link_warnings)} card(s) are running below their maximum link speed or width.`,
+      action: "View Storage & PCIe",
+      target: "storage",
+    });
+  }
+  if (Number(pcie.aer_errors || 0) > 0) {
+    findings.push({
+      tone: Number(pcie.aer_increasing || 0) > 0 ? "bad" : "warn",
+      title: "PCIe AER errors",
+      text: `${Number(pcie.aer_errors)} AER error(s) recorded${Number(pcie.aer_increasing || 0) > 0 ? "; counters are still increasing." : "."}`,
+      action: "View Storage & PCIe",
+      target: "storage",
+    });
+  }
+  const softnetDropped = Number(state.io?.softnet?.latest?.total?.dropped || 0);
+  if (softnetDropped > 0) {
+    findings.push({
+      tone: "bad",
+      title: "Softnet backlog drops",
+      text: `${softnetDropped} packet(s) were dropped from per-CPU backlog queues in the last sample.`,
+      action: "View Network",
+      target: "network",
+    });
+  }
   const drops = Number(net.rx_drop_ps || 0) + Number(net.tx_drop_ps || 0);
   if (drops > 0) {
     findings.push({
@@ -417,7 +496,7 @@ function buildFindings() {
       target: "network",
     });
   }
-  return findings.slice(0, 4);
+  return findings.slice(0, 6);
 }
 
 function healthSummaryText() {
@@ -455,7 +534,7 @@ function showSection(view) {
     const tooltip = qs("cpu-hover-tooltip");
     if (tooltip) tooltip.classList.add("hidden");
   }
-  ["overview", "irq", "network", "cpu", "diagnostics"].forEach(name => {
+  ["overview", "irq", "network", "cpu", "storage", "diagnostics"].forEach(name => {
     const node = qs(`section-${name}`);
     node.classList.toggle("active", name === view);
   });
@@ -595,7 +674,7 @@ function renderIrq() {
   `).join("") : emptyState("No IRQ data", "No IRQ samples are available for the selected SUT and time context.");
 
   renderTopIrqChart(topRows);
-  renderIrqHeatmap(rows.slice(0, 48));
+  renderIrqHeatmap(heatmapRows(rows));
 
   qs("irq-table").innerHTML = rows.length ? rows.map(row => {
     const topCpu = topCpuForIrq(row);
@@ -608,9 +687,43 @@ function renderIrq() {
       <td>${escapeHtml(row.nic || "Mapping unavailable")}</td>
       <td>${escapeHtml(row.direction || "Other")}</td>
       <td>${escapeHtml(row.numa_node || "N/A")}</td>
+      <td>${row.cross_numa_flag ? `<span class="tag bad">Handled on node ${escapeHtml((row.handler_numa_nodes || []).join(", "))}</span>` : ""}</td>
       <td class="mono">${escapeHtml(row.affinity_list || "N/A")}</td>
     </tr>`;
-  }).join("") : `<tr><td colspan="9">No IRQ rows available.</td></tr>`;
+  }).join("") : `<tr><td colspan="10">No IRQ rows available.</td></tr>`;
+}
+
+function heatmapRows(rows) {
+  const active = rows
+    .filter(row => Number(row.total_rate || 0) > 0)
+    .sort((a, b) => Number(b.total_rate || 0) - Number(a.total_rate || 0));
+  const top = state.irqTopN === "all" ? active : active.slice(0, Number(state.irqTopN) || 25);
+  const field = heatmapGroupField();
+  if (!field) return top;
+  const groupOf = {};
+  (state.topology?.rows || []).forEach(item => {
+    groupOf[String(item.cpu_id)] = item[field] == null ? "?" : String(item[field]);
+  });
+  return top.map(row => {
+    const grouped = {};
+    for (const [cpu, rate] of Object.entries(row.cpu_rates || {})) {
+      const key = groupOf[cpu] ?? "?";
+      grouped[key] = (grouped[key] || 0) + Number(rate || 0);
+    }
+    return { ...row, cpu_rates: grouped };
+  });
+}
+
+function heatmapGroupField() {
+  if (!(state.topology?.rows || []).length) return "";
+  if (state.irqAggregate === "numa") return "numa_node";
+  if (state.irqAggregate === "socket") return "socket_id";
+  return "";
+}
+
+function heatmapColumnLabel() {
+  const field = heatmapGroupField();
+  return field === "numa_node" ? "NUMA" : field === "socket_id" ? "Socket" : "CPU";
 }
 
 function filterIrqRows() {
@@ -695,7 +808,7 @@ function renderNetwork() {
       { label: "TX Packets", value: fmtCount(source.tx_pps), note: "Packets per second" },
       { label: "Errors", value: fmtCount(Number(source.rx_err_ps || 0) + Number(source.tx_err_ps || 0)), note: "RX + TX errors" },
       { label: "Drops", value: fmtCount(Number(source.rx_drop_ps || 0) + Number(source.tx_drop_ps || 0)), note: "RX + TX drops" },
-    ].map(item => `
+    ].concat(softnetCards()).map(item => `
       <div class="kpi-card">
         <div class="kpi-label">${item.label}</div>
         <div class="kpi-value">${item.value}</div>
@@ -1229,6 +1342,153 @@ function renderCpuNumaBars() {
   `).join("")}</div>`;
 }
 
+function softnetCards() {
+  const total = state.io?.softnet?.latest?.total;
+  if (state.selectedIface !== "ALL" || !total) return [];
+  return [
+    { label: "Softnet Drops", value: fmtCount(total.dropped), note: "Backlog drops, last sample" },
+    { label: "Time Squeeze", value: fmtCount(total.time_squeeze), note: "NAPI budget exhausted, last sample" },
+  ];
+}
+
+function fmtNumber(value, digits = 1) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(digits) : "N/A";
+}
+
+function renderStorage() {
+  const storageData = state.io?.storage || {};
+  const totals = storageData.totals || {};
+  const pcie = state.io?.pcie || {};
+  qs("storage-kpis").innerHTML = [
+    { label: "Total Storage IOPS", value: fmtCount(totals.total_iops), note: "Read + write, all devices" },
+    { label: "Read MB/s", value: fmtNumber(totals.read_mb_s || 0), note: "Total read throughput" },
+    { label: "Write MB/s", value: fmtNumber(totals.write_mb_s || 0), note: "Total write throughput" },
+    { label: "Max Await Latency", value: `${fmtNumber(totals.max_await_ms || 0, 2)} ms`, note: "Slowest device, read or write" },
+    { label: "PCIe Link Warnings", value: String(Number(pcie.link_warnings || 0)), note: "Cards below maximum speed or width" },
+    { label: "AER Errors", value: String(Number(pcie.aer_errors || 0)), note: Number(pcie.aer_increasing || 0) > 0 ? "Counters still increasing" : "Correctable + non-fatal + fatal" },
+  ].map(item => `
+    <div class="kpi-card">
+      <div class="kpi-label">${item.label}</div>
+      <div class="kpi-value">${item.value}</div>
+      <div class="kpi-note">${item.note}</div>
+    </div>
+  `).join("");
+
+  const series = storageData.series || {};
+  const names = Object.keys(series).sort();
+  const points = (name, key) => filterRowsToRange(series[name]).map(point => [Number(point.timestamp) * 1000, Number(point[key] || 0)]);
+  const empty = qs("storage-empty");
+  if (!names.length) {
+    ["storageIops", "storageThroughput", "storageLatency"].forEach(clearChart);
+    empty.classList.remove("hidden");
+    empty.innerHTML = emptyState("No block-device samples", "Storage telemetry appears once the selected Linux SUT reports /proc/diskstats.");
+  } else {
+    empty.classList.add("hidden");
+    renderMultiSeriesChart("storageIops", "chart-storage-iops", names.flatMap(name => [
+      { name: `${name} read`, data: points(name, "read_iops") },
+      { name: `${name} write`, data: points(name, "write_iops") },
+    ]), "IOPS");
+    renderMultiSeriesChart("storageThroughput", "chart-storage-throughput", names.flatMap(name => [
+      { name: `${name} read`, data: points(name, "read_mb_s") },
+      { name: `${name} write`, data: points(name, "write_mb_s") },
+    ]), "MB/s");
+    renderMultiSeriesChart("storageLatency", "chart-storage-latency", names.flatMap(name => [
+      { name: `${name} read await`, data: points(name, "avg_read_await_ms") },
+      { name: `${name} write await`, data: points(name, "avg_write_await_ms") },
+      { name: `${name} in flight`, data: points(name, "queue_depth_in_flight"), axis: 1, dashed: true },
+    ]), "ms", "In flight");
+  }
+
+  const devices = storageData.devices || [];
+  qs("storage-table").innerHTML = devices.length ? devices.map(device => `<tr>
+      <td class="mono">${escapeHtml(device.device)}${device.model ? `<div class="muted">${escapeHtml(device.model)}</div>` : ""}</td>
+      <td>${fmtCount(device.read_iops)}</td>
+      <td>${fmtCount(device.write_iops)}</td>
+      <td>${fmtNumber(device.read_mb_s || 0, 2)}</td>
+      <td>${fmtNumber(device.write_mb_s || 0, 2)}</td>
+      <td>${fmtNumber(device.avg_read_await_ms || 0, 2)} / ${fmtNumber(device.avg_write_await_ms || 0, 2)}</td>
+      <td>${fmtNumber(device.queue_depth_in_flight || 0, 0)}</td>
+      <td>${fmtNumber(device.util_pct || 0)}%</td>
+      <td>${escapeHtml(device.scheduler || "N/A")}</td>
+      <td>${device.nr_requests == null ? "N/A" : fmtNumber(device.nr_requests, 0)}</td>
+      <td>${device.rotational == null ? "N/A" : (device.rotational ? "Rotational" : "Solid state")}</td>
+      <td>${device.numa_node == null ? "N/A" : fmtNumber(device.numa_node, 0)}</td>
+      <td>${fmtNumber(device.msi_irq_count || 0, 0)}</td>
+    </tr>`).join("") : `<tr><td colspan="13">No block devices reported.</td></tr>`;
+
+  const cards = pcie.devices || [];
+  qs("pcie-table").innerHTML = cards.length ? cards.map(card => {
+    const current = `${escapeHtml(card.current_link_speed || "N/A")} x${fmtNumber(card.current_link_width || 0, 0)}`;
+    const maximum = `${escapeHtml(card.max_link_speed || "N/A")} x${fmtNumber(card.max_link_width || 0, 0)}`;
+    const aerText = [card.aer_dev_correctable, card.aer_dev_nonfatal, card.aer_dev_fatal]
+      .map(value => (value == null ? "N/A" : fmtNumber(value, 0))).join(" / ");
+    const aerTone = Number(card.aer_total || 0) > 0 ? (card.aer_increasing ? "bad" : "warn") : "";
+    const interfaces = Array.isArray(card.interfaces) && card.interfaces.length ? ` • ${escapeHtml(card.interfaces.join(", "))}` : "";
+    return `<tr>
+      <td class="mono">${escapeHtml(card.bdf)}</td>
+      <td>${escapeHtml(card.kind || "Device")} <span class="mono">${escapeHtml(card.vendor)}:${escapeHtml(card.device)}</span><div class="muted">${escapeHtml(card.driver || "N/A")}${interfaces}</div></td>
+      <td>${card.numa_node == null ? "N/A" : fmtNumber(card.numa_node, 0)}</td>
+      <td>${current} <span class="muted">vs ${maximum}</span>${card.link_degraded ? ` <span class="tag bad">Downgraded</span>` : ""}</td>
+      <td>${fmtNumber(card.msi_irq_count || 0, 0)}</td>
+      <td>${aerTone ? `<span class="tag ${aerTone}">${aerText}</span>` : aerText}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="6">No PCIe cards reported.</td></tr>`;
+}
+
+function downloadLink(label, url, className = "") {
+  return `<a class="${className}" href="${escapeHtml(url)}" data-download-url="${escapeHtml(url)}">${escapeHtml(label)}</a>`;
+}
+
+function showToast(message, tone = "info") {
+  const root = qs("toast-root");
+  if (!root) return;
+  const node = document.createElement("div");
+  node.className = `toast ${tone}`;
+  node.textContent = message;
+  root.appendChild(node);
+  setTimeout(() => node.remove(), 6000);
+}
+
+async function downloadFile(url) {
+  let response;
+  try {
+    response = await fetch(url);
+  } catch (_) {
+    showToast("Download failed: the server is unreachable.", "bad");
+    return false;
+  }
+  if (response.status !== 200) {
+    const detail = await response.json().then(body => body.detail, () => "");
+    showToast(`Download failed (HTTP ${response.status})${typeof detail === "string" && detail ? `: ${detail}` : ""}`, "bad");
+    return false;
+  }
+  // blob() keeps binary files such as .xlsx and .zip byte-exact; text() would corrupt them.
+  const blob = await response.blob();
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+  const plain = /filename="?([^";]+)"?/i.exec(disposition);
+  let name = plain ? plain[1] : "download";
+  if (encoded) {
+    try {
+      name = decodeURIComponent(encoded[1]);
+    } catch (_) {
+      // Keep the plain filename.
+    }
+  }
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = name;
+  link.hidden = true;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  // Revoking in the same task can cancel the download in some browsers.
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  return true;
+}
+
 function renderDiagnostics() {
   const system = currentSystem();
   qs("diag-selected-sut").textContent = system ? (system.hostname || system.name || system.id) : "No SUT selected";
@@ -1251,6 +1511,8 @@ function renderDiagnostics() {
     { key: "routes", title: "Routes", text: "Capture routing tables and rules." },
     { key: "sockets", title: "Sockets", text: "Capture socket summaries and listeners." },
     { key: "ethtool", title: "Network commands", text: "Capture ethtool output when supported." },
+    { key: "storage", title: "Storage", text: "Capture block-device I/O, lsblk, and NVMe details." },
+    { key: "pcie", title: "PCIe cards", text: "Capture PCIe link state and AER counters." },
   ].map(item => `
     <label class="checkbox-card">
       <input type="checkbox" data-diag-cat="${item.key}" ${state.diag.categories.includes(item.key) ? "checked" : ""} />
@@ -1323,7 +1585,8 @@ function renderDiagCompleteHtml() {
       </div>
       <div class="button-row" style="margin-top:14px;">
         <button class="action-button ghost" id="diag-view-session">View Capture</button>
-        <a class="action-button primary" href="${api("/api/sessions/" + encodeURIComponent(state.diag.completedSessionId) + "/download")}">Download ZIP</a>
+        ${downloadLink("Download Excel", api("/api/sessions/" + encodeURIComponent(state.diag.completedSessionId) + "/workbook"), "action-button ghost")}
+        ${downloadLink("Download ZIP", api("/api/sessions/" + encodeURIComponent(state.diag.completedSessionId) + "/download"), "action-button primary")}
       </div>
     </div>
   `;
@@ -1555,7 +1818,7 @@ function renderSessions() {
                   <button class="action-button ghost" data-view-session="${escapeHtml(session.session_id)}" ${deleting ? "disabled" : ""}>View</button>
                   <button class="action-button primary" data-generate-report="${escapeHtml(session.session_id)}" ${reportPending || session.status === "running" ? "disabled" : ""}>${reportPending ? "Generating..." : "Generate Report"}</button>
                   ${reportReady ? `<a class="action-button ghost" target="_blank" rel="noopener" href="${api("/api/sessions/" + encodeURIComponent(session.session_id) + "/report/view")}">View Report</a>` : ""}
-                  ${reportReady ? `<a class="action-button ghost" href="${api("/api/files?path=" + encodeURIComponent(session.report_path))}" download>Download Report</a>` : ""}
+                  ${reportReady ? downloadLink("Download Report", api("/api/files?path=" + encodeURIComponent(session.report_path)), "action-button ghost") : ""}
                   <button class="action-button danger" data-delete-session="${escapeHtml(session.session_id)}" ${deleting ? "disabled" : ""}>${deleting ? "Deleting..." : "Delete"}</button>
                 </div>
               </div>
@@ -1647,8 +1910,9 @@ function renderSessions() {
         <div class="button-row session-action-bar">
           <button class="action-button primary" id="session-generate-report" ${reportPending || detail.status === "running" ? "disabled" : ""}>${reportPending ? "Generating..." : "Generate Report"}</button>
           ${reportReady ? `<a class="action-button ghost" target="_blank" rel="noopener" href="${api("/api/sessions/" + encodeURIComponent(detail.session_id) + "/report/view")}">View Report</a>` : ""}
-          ${reportReady ? `<a class="action-button ghost" href="${api("/api/files?path=" + encodeURIComponent(detail.report_path))}" download>Download Report</a>` : ""}
-          <a class="action-button ghost" href="${api("/api/sessions/" + encodeURIComponent(detail.session_id) + "/download")}">Download ZIP</a>
+          ${reportReady ? downloadLink("Download Report", api("/api/files?path=" + encodeURIComponent(detail.report_path)), "action-button ghost") : ""}
+          ${detail.status === "running" ? "" : downloadLink("Download Excel", api("/api/sessions/" + encodeURIComponent(detail.session_id) + "/workbook"), "action-button ghost")}
+          ${downloadLink("Download ZIP", api("/api/sessions/" + encodeURIComponent(detail.session_id) + "/download"), "action-button ghost")}
           <button class="action-button danger" id="session-delete">Delete Session</button>
         </div>
       </div>
@@ -1704,7 +1968,7 @@ function renderSessions() {
             <details class="file-group" open>
               <summary><span class="item-title">${escapeHtml(category)}</span><span class="muted">${files.length} file(s)</span></summary>
               <div class="stack-list" style="margin-top:8px;">
-                ${files.map(file => `<div class="key-value"><span>${escapeHtml(file.name)}</span><a href="${api("/api/files?path=" + encodeURIComponent(file.path))}">Download</a></div>`).join("")}
+                ${files.map(file => `<div class="key-value"><span>${escapeHtml(file.name)}</span>${downloadLink("Download", api("/api/files?path=" + encodeURIComponent(file.path)))}</div>`).join("")}
               </div>
             </details>
           `).join("") : `<div class="muted">No files were recorded for this session.</div>`}
@@ -1917,6 +2181,10 @@ function renderActiveView() {
     renderCpu();
     return;
   }
+  if (state.view === "storage") {
+    renderStorage();
+    return;
+  }
   if (state.view === "diagnostics") {
     renderDiagnostics();
     bindDiagnosticsActions();
@@ -1950,24 +2218,29 @@ function renderCpuLiveUpdate() {
   }
 }
 
-function scheduleTelemetryRefresh(delayMs = 900) {
+function scheduleTelemetryRefresh(delayMs = LIVE_RENDER_INTERVAL_MS) {
   if (state.refreshTimer) return;
+  // Charts redraw at most once per interval, however fast the backend samples.
+  const wait = Math.max(delayMs, LIVE_RENDER_INTERVAL_MS - (Date.now() - state.lastRefreshAt));
   state.refreshTimer = setTimeout(async () => {
     state.refreshTimer = null;
     if (state.refreshInFlight || !state.host) return;
     state.refreshInFlight = true;
     try {
       await loadSystems();
-      await loadSelectedData();
+      if (!state.paused) await loadSelectedData();
       if (state.view === "diagnostics") {
         await loadSessions();
         if (state.selectedSessionId) await loadSessionDetail(state.selectedSessionId);
       }
-      render();
+      state.lastRefreshAt = Date.now();
+      // While paused, monitoring views keep the frame the user froze; capture lists still update.
+      if (state.paused && state.view !== "diagnostics") renderContextBar();
+      else render();
     } finally {
       state.refreshInFlight = false;
     }
-  }, delayMs);
+  }, wait);
 }
 
 function ensureChart(key, elementId) {
@@ -2028,6 +2301,29 @@ function renderDualTrendChart(key, elementId, first, second, firstName, secondNa
   });
 }
 
+function renderMultiSeriesChart(key, elementId, series, yName, secondAxisName = "") {
+  const chart = ensureChart(key, elementId);
+  if (!chart) return;
+  const axis = name => ({ type: "value", name, axisLabel: { color: "#6b7280" } });
+  chart.setOption({
+    ...baseChart(),
+    grid: { left: 54, right: secondAxisName ? 54 : 24, top: 40, bottom: 42 },
+    animation: false,
+    tooltip: { trigger: "axis" },
+    legend: { type: "scroll", top: 0, textStyle: { color: "#6b7280" } },
+    xAxis: { type: "time", axisLabel: { color: "#6b7280" } },
+    yAxis: secondAxisName ? [axis(yName), { ...axis(secondAxisName), splitLine: { show: false } }] : [axis(yName)],
+    series: series.map(item => ({
+      name: item.name,
+      type: "line",
+      showSymbol: false,
+      data: item.data,
+      yAxisIndex: item.axis || 0,
+      lineStyle: { width: 2, type: item.dashed ? "dashed" : "solid" },
+    })),
+  }, true);
+}
+
 function renderTopIrqChart(rows) {
   const chart = ensureChart("irqTop", "chart-irq-top");
   if (!chart) return;
@@ -2053,7 +2349,10 @@ function renderIrqHeatmap(rows) {
   const maxRate = Math.max(1, ...rows.flatMap(row => Object.values(row.cpu_rates || {}).map(v => Number(v || 0))));
   const labelStep = cpus.length <= 24 ? 1 : Math.ceil(cpus.length / 18);
   const showCpuLabel = (idx) => idx === 0 || idx === cpus.length - 1 || idx % labelStep === 0;
-  const topRows = rows.slice(0, 48);
+  const topRows = rows;
+  const columnLabel = heatmapColumnLabel();
+  // A handful of NUMA/socket columns get wide cells; per-CPU columns stay compact.
+  const cellWidth = cpus.length <= 16 ? 48 : 14;
 
   const levelFor = (rate) => {
     const ratio = Math.max(0, Math.min(1, Number(rate || 0) / maxRate));
@@ -2066,7 +2365,7 @@ function renderIrqHeatmap(rows) {
   };
 
   const header = cpus.map((cpu, idx) => `
-    <div class="irq-cpu-label" title="CPU ${escapeHtml(cpu)}">${showCpuLabel(idx) ? escapeHtml(cpu) : ""}</div>
+    <div class="irq-cpu-label" title="${columnLabel} ${escapeHtml(cpu)}">${showCpuLabel(idx) ? escapeHtml(cpu) : ""}</div>
   `).join("");
 
   const body = topRows.map(row => {
@@ -2079,7 +2378,8 @@ function renderIrqHeatmap(rows) {
         <div
           class="irq-heat-cell"
           data-level="${level}"
-          title="CPU ${escapeHtml(cpu)}\nIRQ source: ${escapeHtml(rowTitle)}\nIRQ rate: ${fmtCount(rate)}/s\nTotal: ${fmtCount(row.total_count || 0)}"
+          style="width:${cellWidth}px;"
+          title="${columnLabel} ${escapeHtml(cpu)}\nIRQ source: ${escapeHtml(rowTitle)}\nIRQ rate: ${fmtCount(rate)}/s\nTotal: ${fmtCount(row.total_count || 0)}"
         ></div>
       `;
     }).join("");
@@ -2091,9 +2391,9 @@ function renderIrqHeatmap(rows) {
 
   root.innerHTML = `
     <div class="irq-matrix-shell">
-      <div class="legend"><span>Low</span><div class="legend-bar"></div><span>High</span><span class="muted">Current IRQ/s per (IRQ source, CPU)</span></div>
+      <div class="legend"><span>Low</span><div class="legend-bar"></div><span>High</span><span class="muted">Current IRQ/s per (IRQ source, ${columnLabel}) • ${topRows.length} active IRQ(s)</span></div>
       <div class="irq-matrix-scroll">
-        <div class="irq-matrix-grid" style="grid-template-columns: minmax(220px, 220px) repeat(${cpus.length}, minmax(14px, 14px));">
+        <div class="irq-matrix-grid" style="grid-template-columns: minmax(220px, 220px) repeat(${cpus.length}, minmax(${cellWidth}px, ${cellWidth}px));">
           <div class="irq-header-label">IRQ Source</div>
           ${header}
           ${body}
@@ -2141,6 +2441,7 @@ async function loadSelectedData() {
   if (!state.host) {
     state.snapshot = null;
     state.viz = null;
+    state.io = null;
     state.topology = null;
     state.interfacesMeta = [];
     return;
@@ -2157,7 +2458,8 @@ async function loadSelectedData() {
   const query = state.timeRange === "custom"
     ? `from_ts=${encodeURIComponent(bounds.from)}&to_ts=${encodeURIComponent(bounds.to)}`
     : `window_seconds=${encodeURIComponent(bounds.to - bounds.from)}`;
-  state.viz = await fetchJson(`/api/systems/${encodeURIComponent(state.host)}/visualization?${query}&top_n=20`);
+  state.viz = await fetchJson(`/api/systems/${encodeURIComponent(state.host)}/visualization?${query}&top_n=25`);
+  state.io = await fetchJson(`/api/systems/${encodeURIComponent(state.host)}/io?${query}`).catch(() => null);
   state.cpuUtilTimestamp = Number(state.viz?.timestamp || state.cpuUtilTimestamp || 0);
   state.topology = await fetchJson(`/api/systems/${encodeURIComponent(state.host)}/visualization/topology`);
   if (state.selectedIface !== "ALL") {
@@ -2220,6 +2522,44 @@ function bindGlobalActions() {
     state.irqSort = event.target.value || "rate";
     renderIrq();
   };
+  qs("irq-topn").value = state.irqTopN;
+  qs("irq-topn").onchange = event => {
+    state.irqTopN = IRQ_TOP_N_OPTIONS.includes(event.target.value) ? event.target.value : "25";
+    storage.set("irqlens:irqTopN", state.irqTopN);
+    renderIrq();
+  };
+  qs("irq-aggregate").value = state.irqAggregate;
+  qs("irq-aggregate").onchange = event => {
+    state.irqAggregate = IRQ_AGGREGATE_OPTIONS.includes(event.target.value) ? event.target.value : "cpu";
+    storage.set("irqlens:irqAggregate", state.irqAggregate);
+    renderIrq();
+  };
+  qs("sut-switcher").onchange = async event => {
+    const sutId = event.target.value;
+    if (!sutId || sutId === state.host) return;
+    state.host = sutId;
+    state.selectedIface = "ALL";
+    state.selectedCpu = "";
+    state.selectedSessionId = "";
+    state.expandedSessionId = "";
+    state.sessionDetail = null;
+    state.sessionFiles = [];
+    persistSelections();
+    await loadSelectedData();
+    if (state.view === "diagnostics") await loadSessions();
+    render();
+  };
+  qs("live-toggle").onclick = () => {
+    state.paused = !state.paused;
+    renderContextBar();
+    if (!state.paused) scheduleTelemetryRefresh(0);
+  };
+  document.addEventListener("click", event => {
+    const node = event.target.closest ? event.target.closest("[data-download-url]") : null;
+    if (!node) return;
+    event.preventDefault();
+    downloadFile(node.dataset.downloadUrl);
+  });
   qs("network-interface-selector").onchange = async event => {
     state.selectedIface = event.target.value || "ALL";
     persistSelections();
@@ -2289,12 +2629,14 @@ function wireWebSocket() {
     const sutId = payload.sut_id || payload.host || "";
     const isCurrentSutTelemetry = payload.type === "telemetry" && sutId && sutId === state.host;
     if (isCurrentSutTelemetry) {
+      if (state.paused) return;
       const updated = applyLiveCpuUtilization(payload);
-      if (updated) {
+      if (updated && Date.now() - state.lastLiveRenderAt >= LIVE_RENDER_INTERVAL_MS) {
+        state.lastLiveRenderAt = Date.now();
         renderCpuLiveUpdate();
         renderContextBar();
       }
-      scheduleTelemetryRefresh(900);
+      scheduleTelemetryRefresh();
       return;
     }
 
@@ -2331,10 +2673,13 @@ async function boot() {
     }
   }, 1000);
   setInterval(async () => {
-    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+    if (!state.paused && (!state.ws || state.ws.readyState !== WebSocket.OPEN)) {
       await refreshAll();
       render();
+      return;
     }
+    // A SUT that stopped reporting sends no events; polling lets it turn STALE or OFFLINE.
+    scheduleTelemetryRefresh(0);
   }, 5000);
   window.addEventListener("resize", resizeCharts);
 }

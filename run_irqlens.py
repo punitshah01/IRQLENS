@@ -5,11 +5,14 @@ import argparse
 import socket
 import os
 import platform
+import secrets
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
+
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+REQUIRED_MODULES = "fastapi, uvicorn, pydantic, websockets, openpyxl"
 
 
 def _venv_python(backend_dir: Path) -> Path:
@@ -45,7 +48,7 @@ def _print_banner(url: str) -> None:
 
 
 def _dependency_status() -> list[tuple[str, str]]:
-    deps = ["ip", "ss", "ethtool", "sysctl", "lscpu", "numactl"]
+    deps = ["ip", "ss", "ethtool", "sysctl", "lscpu", "numactl", "lsblk", "nvme"]
     out: list[tuple[str, str]] = []
     for dep in deps:
         exe = shutil.which(dep)
@@ -59,36 +62,22 @@ def _running_as_root() -> bool:
     return False
 
 
-def _default_sut_id(host_ip: str) -> str:
-    try:
-        return socket.gethostname() or host_ip
-    except Exception:
-        return host_ip
-
-
-def _merge_allowlist_for_local_collection(env: dict[str, str], host_ip: str) -> None:
-    entries = []
-    raw = env.get("IRQLENS_ALLOWED_INGEST_IPS", "")
-    if raw:
-        entries.extend([x.strip() for x in raw.split(",") if x.strip()])
-    for candidate in [host_ip, "127.0.0.1", "::1", "localhost"]:
-        if candidate and candidate not in entries:
-            entries.append(candidate)
-    env["IRQLENS_ALLOWED_INGEST_IPS"] = ",".join(entries)
+def _dependencies_installed(venv_py: Path) -> bool:
+    check = subprocess.run([str(venv_py), "-c", f"import {REQUIRED_MODULES}"], capture_output=True)
+    return check.returncode == 0
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Start IRQLENS backend and optionally local collector")
-    ap.add_argument("--collect-local", action="store_true", help="Also start the local IRQ collector on this Linux host")
-    ap.add_argument("--nic", default="", help="NIC name for local collection, e.g. ens3np0")
-    ap.add_argument("--sut-ip", default="", help="Logical SUT identifier shown in the dashboard")
-    ap.add_argument("--interval", type=float, default=1.0, help="Collector sampling interval seconds")
-    ap.add_argument("--topn", type=int, default=64, help="Top IRQ lines sent per sample")
+    ap = argparse.ArgumentParser(description="Start the IRQLENS server; local collection is built in")
+    ap.add_argument("--host", default="", help="Bind address (default 127.0.0.1, or 0.0.0.0 with --remote)")
+    ap.add_argument("--port", type=int, default=10000, help="Bind port")
+    ap.add_argument("--remote", action="store_true", help="Bind 0.0.0.0 and require a token from every client and agent")
+    ap.add_argument("--token", default="", help="Access token (default: IRQLENS_TOKEN; generated in --remote mode if unset)")
+    ap.add_argument("--interval", type=float, default=0.0, help="Local sampling interval in seconds")
     args = ap.parse_args()
 
     root = Path(__file__).resolve().parent
     backend = root / "backend"
-    collector = root / "collector" / "irq_collector.py"
     req = backend / "requirements.txt"
 
     if not req.exists():
@@ -99,13 +88,31 @@ def main() -> int:
     if not venv_py.exists():
         subprocess.check_call([sys.executable, "-m", "venv", str(backend / ".venv")])
 
-    subprocess.check_call([str(venv_py), "-m", "pip", "install", "-r", str(req)])
+    # Skipping pip when everything imports keeps restarts fast and works without network access.
+    if not _dependencies_installed(venv_py):
+        subprocess.check_call([str(venv_py), "-m", "pip", "install", "-r", str(req)])
+
+    host = args.host or ("0.0.0.0" if args.remote else "127.0.0.1")
+    remote = args.remote or host not in LOOPBACK_HOSTS
 
     env = dict(os.environ)
     env.setdefault("IRQLENS_DB_PATH", str((backend / "data" / "irqlens.db").resolve()))
-    env.setdefault("IRQLENS_OUTPUT_DIR", "/root/irqlens")
-    host_ip = _detect_host_ip()
-    url = f"http://{host_ip}:10000"
+    env.setdefault("IRQLENS_OUTPUT_DIR", str(root / "captures"))
+    env["IRQLENS_HOST"] = host
+    env["IRQLENS_PORT"] = str(args.port)
+    if args.interval > 0:
+        env["IRQLENS_COLLECTION_INTERVAL"] = str(args.interval)
+
+    token = args.token or env.get("IRQLENS_TOKEN", "")
+    generated = False
+    if remote and not token and not (env.get("IRQLENS_API_TOKEN") and env.get("IRQLENS_AGENT_TOKEN")):
+        token = secrets.token_urlsafe(24)
+        generated = True
+    if token:
+        env["IRQLENS_TOKEN"] = token
+
+    host_ip = _detect_host_ip() if remote else "127.0.0.1"
+    url = f"http://{host_ip}:{args.port}"
     no_proxy_hosts = [host_ip, "127.0.0.1", "::1", "localhost"]
     existing_no_proxy = env.get("no_proxy") or env.get("NO_PROXY") or ""
     entries = [x.strip() for x in existing_no_proxy.split(",") if x.strip()]
@@ -114,8 +121,6 @@ def main() -> int:
             entries.append(candidate)
     env["no_proxy"] = ",".join(entries)
     env["NO_PROXY"] = env["no_proxy"]
-    if args.collect_local:
-        env["IRQLENS_DISABLE_INGEST_ALLOWLIST"] = "1"
 
     backend_cmd = [
         str(venv_py),
@@ -123,50 +128,35 @@ def main() -> int:
         "uvicorn",
         "app.main:app",
         "--host",
-        "0.0.0.0",
+        host,
         "--port",
-        "10000",
+        str(args.port),
     ]
     print("Starting IRQLENS")
     print(f"Platform: {platform.system()} {platform.release()}")
     print(f"Running as root: {'YES' if _running_as_root() else 'NO'}")
+    print(f"Captures: {env['IRQLENS_OUTPUT_DIR']}")
     print("Dependency status:")
     for name, status in _dependency_status():
         print(f"  - {name}: {status}")
+    if remote:
+        print(f"Remote mode: listening on {host}:{args.port}; every client and agent must present the token.")
+        if generated:
+            print(f"Generated token (IRQLENS_TOKEN): {token}")
+        print("  Browser sign-in: user 'irqlens', password = token")
+        print(f"  Agent: python3 agent/main.py --server {url} --token <token>")
+    else:
+        print("Local mode: loopback only, no authentication. Use --remote to accept agents and other hosts.")
     _print_banner(url)
+    # Redirected output is block-buffered; flush so the token reaches the log before the server starts.
+    sys.stdout.flush()
 
     backend_proc = subprocess.Popen(backend_cmd, cwd=str(backend), env=env)
-    collector_proc = None
     try:
-        if args.collect_local:
-            if os.name == "nt":
-                print("Local collection is only supported on Linux because IRQLENS reads /proc telemetry.")
-            else:
-                time.sleep(1.0)
-                sut_id = args.sut_ip or _default_sut_id(host_ip)
-                collector_cmd = [
-                    sys.executable,
-                    str(collector),
-                    "--server",
-                    url,
-                    "--sut-ip",
-                    sut_id,
-                    "--interval",
-                    str(args.interval),
-                    "--topn",
-                    str(args.topn),
-                ]
-                if args.nic:
-                    collector_cmd.extend(["--nic", args.nic])
-                print(f"Starting local collector for {sut_id}")
-                collector_proc = subprocess.Popen(collector_cmd, cwd=str(root), env=env)
-
         return backend_proc.wait()
     except KeyboardInterrupt:
         return 130
     finally:
-        if collector_proc and collector_proc.poll() is None:
-            collector_proc.terminate()
         if backend_proc.poll() is None:
             backend_proc.terminate()
 

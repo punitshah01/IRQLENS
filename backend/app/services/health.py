@@ -16,7 +16,7 @@ class HealthService:
         self.settings = settings
 
     def dependencies(self) -> List[AppDependencyStatus]:
-        deps = ["ip", "ss", "ethtool", "sysctl", "lscpu", "numactl"]
+        deps = ["ip", "ss", "ethtool", "sysctl", "lscpu", "numactl", "lsblk", "nvme"]
         out: List[AppDependencyStatus] = []
         for dep in deps:
             exe = shutil.which(dep)

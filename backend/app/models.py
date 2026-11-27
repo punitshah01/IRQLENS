@@ -30,6 +30,7 @@ class SystemInfo(BaseModel):
     numa_nodes: int
     running_as_root: bool
     architecture: str = "N/A"
+    irqbalance: Literal["active", "inactive", "unknown"] = "unknown"
 
 
 class InterfaceInfo(BaseModel):
@@ -149,7 +150,8 @@ class CollectionSession(BaseModel):
 class ExportFile(BaseModel):
     name: str
     category: str
-    format: Literal["json", "csv", "xml", "txt", "zip", "html"]
+    # "xml" is no longer written; it stays valid so older captures still list their files.
+    format: Literal["json", "csv", "xlsx", "txt", "zip", "html", "xml"]
     path: str
     size_bytes: int
 
@@ -169,11 +171,6 @@ class HealthStatus(BaseModel):
     interval_seconds: float
 
 
-class IngestPayload(BaseModel):
-    samples: List[IRQSample] = Field(default_factory=list)
-    host_samples: List[NetworkSample] = Field(default_factory=list)
-
-
 class DashboardSnapshot(BaseModel):
     timestamp: float
     system: SystemInfo
@@ -188,7 +185,7 @@ class DashboardSnapshot(BaseModel):
 
 
 class SessionStartRequest(BaseModel):
-    categories: List[str] = Field(default_factory=lambda: ["irq", "softirq", "network", "interfaces", "routes", "sockets", "ethtool", "system"])
+    categories: List[str] = Field(default_factory=lambda: ["irq", "softirq", "network", "interfaces", "routes", "sockets", "ethtool", "system", "storage", "pcie"])
     sut_id: str = ""
     session_name: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
     duration_seconds: int = Field(default=60, ge=1, le=1800)
@@ -313,3 +310,6 @@ class AgentTelemetryPayload(BaseModel):
     network_global: Dict[str, float] = Field(default_factory=dict)
     cpu_topology: List[CPUTopologyEntry] = Field(default_factory=list)
     cpu_utilization: Dict[str, float] = Field(default_factory=dict)
+    softnet: Dict[str, Any] = Field(default_factory=dict)
+    storage: List[Dict[str, Any]] = Field(default_factory=list, max_length=4096)
+    pcie: List[Dict[str, Any]] = Field(default_factory=list, max_length=4096)

@@ -11,6 +11,7 @@ The default user flow is: start IRQLENS, select a SUT, monitor and investigate C
 - CPU
 - IRQ
 - Network
+- Storage & PCIe
 - Collect Logs
 
 ## Collect Logs model
@@ -53,6 +54,7 @@ The default user flow is: start IRQLENS, select a SUT, monitor and investigate C
 ## Header and controls
 
 - Keep the header minimal and SUT-focused.
+- The header carries the SUT switcher (every registered SUT with its status), the irqbalance state, the Pause/Resume Live Updates control, and the WebSocket state.
 - Avoid global controls that do not directly improve monitoring workflow.
 - Do not add global admin/management controls to the user-facing dashboard.
 
@@ -60,6 +62,8 @@ The default user flow is: start IRQLENS, select a SUT, monitor and investigate C
 
 - Never sacrifice responsiveness for additional visualization complexity.
 - Prefer incremental updates and lightweight interactions over full-page re-renders.
+- Live views redraw at most once per second, however fast the backend samples.
+- The IRQ heatmap defaults to the Top 25 active IRQs; showing more, or all, is an explicit user choice.
 
 ## Change discipline
 

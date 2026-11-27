@@ -14,6 +14,7 @@ Primary navigation:
 - CPU
 - IRQ
 - Network
+- Storage & PCIe
 - Collect Logs
 
 Capture history is part of Collect Logs. There are no Admin, Settings, Management, or standalone Systems/Sessions views. See `IRQLENS_UI_RULES.md` for the UI contract.
@@ -29,7 +30,9 @@ The top header always shows:
 This context is preserved while moving between views.
 
 ## SUT Context
-The current UI restores a saved SUT or automatically selects a remote SUT, falling back to local. The header displays its hostname and status. Interactive SUT switching is currently not exposed; system inventory is available through the API.
+The header SUT dropdown lists every registered SUT with its status (`ONLINE`, `STALE`, `OFFLINE`) and switches between them. On load the UI restores the last selection, otherwise selects a remote SUT, falling back to local. Statuses refresh every few seconds even when the selected SUT has stopped reporting.
+
+The header also shows the `irqbalance` state of the selected SUT and a **Pause Live Updates** button. While paused, monitoring views keep the frame on screen; Collect Logs keeps updating.
 
 ## Overview
 Overview is intentionally limited to:
@@ -49,8 +52,8 @@ Use IRQ to answer:
 
 The IRQ page contains:
 - ranked IRQ list
-- IRQ-to-CPU heatmap
-- detail table for evidence
+- IRQ-to-CPU heatmap of the Top 25 active IRQs (25 / 50 / 100 / All), with columns per CPU, per NUMA node, or per socket
+- detail table for evidence, including a Cross-NUMA column
 
 ## Network
 Use Network to answer:
@@ -82,6 +85,18 @@ The CPU page contains:
 
 Click any CPU cell to inspect it.
 
+## Storage & PCIe
+Use Storage & PCIe to answer:
+- which block device is busy, and how slow is it?
+- is a card running below its maximum link speed or width?
+- are AER errors present or still increasing?
+
+The page contains:
+- KPI strip: total IOPS, read/write MB/s, max await, PCIe link warnings, AER errors
+- per-device IOPS, throughput, and latency/queue-depth trends
+- block-device table with queue settings and NUMA placement
+- PCIe card table with current vs maximum link and AER counters
+
 ## Collect Logs
 A diagnostic session is a user-created capture period for a selected SUT.
 
@@ -92,7 +107,7 @@ Diagnostics provides a workflow:
 - start capture
 - watch capture progress
 - view completed session
-- download ZIP evidence
+- download the Excel workbook or ZIP evidence
 - inspect remote-command job status and failures
 
 This is separate from live monitoring.
@@ -108,7 +123,7 @@ Recent Captures within Collect Logs shows diagnostic captures with:
 - generated files
 - download actions
 
-Select a capture to review files and remote-command status, generate an HTML report, or download a ZIP. Snapshot categories export JSON, CSV, XML, and TXT; time-series files are JSON.
+Select a capture to review files and remote-command status, generate an HTML report, or download the Excel workbook or a ZIP. Snapshot categories export JSON, CSV, and TXT; time-series files are JSON; each capture has one `.xlsx` workbook. A failed download shows an error message instead of saving a broken file.
 
 ## Time Range
 Time range is controlled from the page header, not inside charts.

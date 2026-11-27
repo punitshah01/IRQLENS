@@ -5,12 +5,73 @@ import platform
 import re
 import time
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 
-from .base import read_text_safe
+from .base import read_first_line, read_text_safe
+
+_IRQBALANCE_TTL = 30.0
+
+
+def irqbalance_status(proc_root: str = "/proc") -> str:
+    try:
+        entries = [entry for entry in Path(proc_root).iterdir() if entry.name.isdigit()]
+    except OSError:
+        return "unknown"
+    if not entries:
+        return "unknown"
+    for entry in entries:
+        if read_first_line(str(entry / "comm"), "") == "irqbalance":
+            return "active"
+    return "inactive"
+
+
+def collect_cpu_topology(cpu_model: str = "", sys_root: str = "/sys") -> List[Dict[str, object]]:
+    root = Path(sys_root) / "devices" / "system" / "cpu"
+    if not root.exists():
+        return []
+    rows: List[Dict[str, object]] = []
+    for cpu_dir in sorted(root.glob("cpu[0-9]*"), key=lambda p: int(p.name[3:])):
+        topo = cpu_dir / "topology"
+        socket_raw = read_first_line(str(topo / "physical_package_id"), "")
+        core_raw = read_first_line(str(topo / "core_id"), "")
+        numa_node = None
+        for node in cpu_dir.glob("node*"):
+            if node.name[4:].isdigit():
+                numa_node = int(node.name[4:])
+                break
+        online_raw = read_first_line(str(cpu_dir / "online"), "")
+        freq_khz = None
+        for freq_path in (cpu_dir / "cpufreq" / "scaling_cur_freq", cpu_dir / "cpufreq" / "cpuinfo_cur_freq"):
+            raw = read_first_line(str(freq_path), "")
+            if raw.isdigit():
+                freq_khz = int(raw)
+                break
+        rows.append({
+            "cpu_id": int(cpu_dir.name[3:]),
+            "socket_id": int(socket_raw) if socket_raw.isdigit() else None,
+            "core_id": int(core_raw) if core_raw.isdigit() else None,
+            "numa_node": numa_node,
+            "online": online_raw == "1" if online_raw in ("0", "1") else None,
+            "thread_siblings_list": read_first_line(str(topo / "thread_siblings_list"), ""),
+            "core_siblings_list": read_first_line(str(topo / "core_siblings_list"), ""),
+            "cpu_model": cpu_model,
+            "freq_khz": freq_khz,
+        })
+    return rows
 
 
 class SystemCollector:
+    def __init__(self) -> None:
+        self._irqbalance = "unknown"
+        self._irqbalance_at = -_IRQBALANCE_TTL
+
+    def irqbalance(self) -> str:
+        now = time.monotonic()
+        if now - self._irqbalance_at >= _IRQBALANCE_TTL:
+            self._irqbalance = irqbalance_status()
+            self._irqbalance_at = now
+        return self._irqbalance
+
     def collect(self, ts: float) -> Dict[str, object]:
         os_dist = "Unknown"
         os_ver = "Unknown"
@@ -88,4 +149,5 @@ class SystemCollector:
             "memory_available_kb": mem_avail,
             "numa_nodes": numa_nodes,
             "running_as_root": os.geteuid() == 0 if hasattr(os, "geteuid") else False,
+            "irqbalance": self.irqbalance(),
         }

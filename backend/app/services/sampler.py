@@ -6,10 +6,16 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from ..collectors import IRQCollector, NetworkCollector, SoftIRQCollector, SystemCollector
+from ..collectors import (
+    IRQCollector, NetworkCollector, PCIeCollector, SoftIRQCollector, SoftnetCollector, StorageCollector,
+    SystemCollector, collect_cpu_topology,
+)
 from ..config import Settings
-from ..models import DashboardSnapshot, InterfaceInfo, IRQSample, NetworkCorrelation, NetworkSample, SoftIRQSample, SystemInfo
+from ..models import CPUTopologyEntry, DashboardSnapshot, InterfaceInfo, IRQSample, NetworkCorrelation, NetworkSample, SoftIRQSample, SystemInfo
 from ..store import SqliteStore
+
+PCIE_INTERVAL_SECONDS = 10.0
+TOPOLOGY_INTERVAL_SECONDS = 60.0
 
 
 def _read_cpu_stat_counters() -> Dict[str, tuple[int, int]]:
@@ -72,6 +78,11 @@ class TelemetrySampler:
         self.softirq_collector = SoftIRQCollector()
         self.net_collector = NetworkCollector()
         self.system_collector = SystemCollector()
+        self.softnet_collector = SoftnetCollector()
+        self.storage_collector = StorageCollector(include_virtual=settings.storage_include_virtual)
+        self.pcie_collector = PCIeCollector()
+        self._pcie_at = 0.0
+        self._topology_at = 0.0
 
         self._task: Optional[asyncio.Task] = None
         self._stop: Optional[asyncio.Event] = None
@@ -164,35 +175,8 @@ class TelemetrySampler:
                 cpu_utilization = _cpu_utilization_percent(self._previous_cpu_stat, current_cpu_stat)
                 self._previous_cpu_stat = current_cpu_stat
 
-                cpu_labels, irq_parsed = self.irq_collector.parse()
-                irq_rates = self.irq_collector.rates(irq_parsed, elapsed)
-                irq_rows: List[IRQSample] = []
-                for irq, row in irq_parsed.items():
-                    rate_info = irq_rates.get(irq)
-                    if not rate_info:
-                        continue
-                    src_class, irq_type = self.irq_collector.classify(row.irq_name)
-                    irq_rows.append(
-                        IRQSample(
-                            timestamp=ts,
-                            sut_ip=self.sut_ip,
-                            irq=irq,
-                            irq_name=row.irq_name,
-                            device=row.irq_name.split()[0] if row.irq_name else "N/A",
-                            interrupt_type=irq_type,
-                            affinity_list=self.irq_collector.affinity_for_irq(irq),
-                            numa_node=self.irq_collector.numa_for_irq(irq),
-                            nic="" if src_class != "network" else row.irq_name.split("-")[0],
-                            queue="",
-                            direction="RX" if "rx" in row.irq_name.lower() else "TX" if "tx" in row.irq_name.lower() else "Other",
-                            source_class=src_class,
-                            total_count=int(rate_info.get("total_count", 0)),
-                            total_rate=float(rate_info.get("total_rate", 0.0)),
-                            cpu_rates=dict(rate_info.get("cpu_rates", {})),
-                        )
-                    )
-                irq_rows.sort(key=lambda item: item.total_rate, reverse=True)
-                self.store.add_irq_samples(irq_rows)
+                irq_rows = [IRQSample(**row) for row in self.irq_collector.sample_rows(self.sut_ip, ts, elapsed)]
+                cpu_labels = self.irq_collector.cpu_labels_seen
 
                 soft_totals, soft_per_cpu = self.softirq_collector.parse()
                 soft_rates, soft_cpu_rates = self.softirq_collector.rates(soft_totals, soft_per_cpu, elapsed)
@@ -203,21 +187,38 @@ class TelemetrySampler:
                     rates=soft_rates,
                     per_cpu_rates=soft_cpu_rates,
                 )
-                self.store.add_softirq_sample(soft)
 
                 net_rows_raw, net_global, iface_info_raw = self.net_collector.collect(elapsed, ts)
-                net_rows: List[NetworkSample] = []
-                for row in net_rows_raw:
-                    net_rows.append(NetworkSample(sut_ip=self.sut_ip, **row))
-                self.store.add_network_samples(net_rows)
-
+                net_rows = [NetworkSample(sut_ip=self.sut_ip, **row) for row in net_rows_raw]
                 iface_info = [InterfaceInfo.model_validate(row) for row in iface_info_raw]
-                self.store.add_interfaces(self.sut_ip, iface_info)
-
                 system = SystemInfo.model_validate(self.system_collector.collect(ts))
-                self.store.add_system(self.sut_ip, system)
-                if cpu_utilization:
-                    self.store.add_cpu_utilization(self.sut_ip, cpu_utilization, timestamp=ts)
+                softnet = self.softnet_collector.collect(elapsed)
+                storage = self.storage_collector.collect(elapsed)
+                pcie = None
+                if ts - self._pcie_at >= PCIE_INTERVAL_SECONDS:
+                    pcie, self._pcie_at = self.pcie_collector.collect(), ts
+                topology = None
+                if ts - self._topology_at >= TOPOLOGY_INTERVAL_SECONDS:
+                    topology = [CPUTopologyEntry.model_validate(row) for row in collect_cpu_topology(system.cpu_model)]
+                    self._topology_at = ts
+
+                with self.store.transaction():
+                    self.store.add_irq_samples(irq_rows)
+                    self.store.add_softirq_sample(soft)
+                    self.store.add_network_samples(net_rows)
+                    self.store.add_interfaces(self.sut_ip, iface_info)
+                    self.store.add_system(self.sut_ip, system)
+                    if cpu_utilization:
+                        self.store.add_cpu_utilization(self.sut_ip, cpu_utilization, timestamp=ts)
+                    if softnet["available"]:
+                        self.store.add_softnet(self.sut_ip, softnet, ts)
+                    if storage:
+                        self.store.add_storage(self.sut_ip, storage, ts)
+                    if pcie:
+                        self.store.add_pcie(self.sut_ip, pcie, ts)
+                    if topology:
+                        self.store.add_cpu_topology(self.sut_ip, topology, timestamp=ts)
+                    self.store.prune(self.sut_ip, ts)
 
                 highest_irq = irq_rows[0].irq_name if irq_rows else "N/A"
                 highest_irq_rate = irq_rows[0].total_rate if irq_rows else 0.0
