@@ -46,15 +46,17 @@ def test_single_token_and_clone_and_run_defaults(monkeypatch):
     assert Settings.from_env().api_token == "shared"
 
 
-def test_launcher_says_how_to_reach_the_dashboard(monkeypatch, capsys):
+def test_launcher_serves_all_interfaces_without_sign_in_by_default(monkeypatch, capsys):
     import sys
     from pathlib import Path
 
     import run_irqlens
 
+    started = []
+
     class FakeServer:
-        def __init__(self, *args, **kwargs):
-            pass
+        def __init__(self, command, **kwargs):
+            started.append((command, kwargs["env"]))
 
         def wait(self):
             return 0
@@ -69,20 +71,32 @@ def test_launcher_says_how_to_reach_the_dashboard(monkeypatch, capsys):
     for name in ("IRQLENS_TOKEN", "IRQLENS_API_TOKEN", "IRQLENS_AGENT_TOKEN"):
         monkeypatch.delenv(name, raising=False)
 
-    monkeypatch.setattr(sys, "argv", ["run_irqlens.py"])
-    assert run_irqlens.main() == 0
-    local = capsys.readouterr().out
-    # A loopback URL is useless in the browser of the machine the user SSHed in from.
-    assert "ssh -L 10000:127.0.0.1:10000" in local and "--remote" in local
-    assert "this host only" in local and "Paste the URL" not in local
-    box = [line for line in local.splitlines() if line.lstrip().startswith(("┌", "│", "└"))]
+    def launch(*args):
+        monkeypatch.setattr(sys, "argv", ["run_irqlens.py", *args])
+        assert run_irqlens.main() == 0
+        command, env = started[-1]
+        return capsys.readouterr().out, command, env
+
+    out, command, env = launch()
+    assert command[-4:] == ["--host", "0.0.0.0", "--port", "10000"]
+    assert "http://192.0.2.10:10000" in out and "without sign-in" in out and "Paste the URL" in out
+    assert "IRQLENS_TOKEN" not in env and "Generated token" not in out
+    box = [line for line in out.splitlines() if line.lstrip().startswith(("┌", "│", "└"))]
     assert len(box) == 8 and len({len(line) for line in box}) == 1
 
-    monkeypatch.setattr(sys, "argv", ["run_irqlens.py", "--remote"])
-    assert run_irqlens.main() == 0
-    remote = capsys.readouterr().out
-    assert "http://192.0.2.10:10000" in remote and "Generated token" in remote
-    assert "Paste the URL" in remote and "ssh -L" not in remote
+    out, command, env = launch("--port", "8080")
+    assert command[-1] == "8080" and "http://192.0.2.10:8080" in out
+
+    # --remote used to generate a token; it is still accepted and no longer does.
+    out, command, env = launch("--remote")
+    assert "IRQLENS_TOKEN" not in env and "http://192.0.2.10:10000" in out and "without sign-in" in out
+
+    out, command, env = launch("--token", "chosen-token")
+    assert env["IRQLENS_TOKEN"] == "chosen-token" and "sign-in required" in out and "chosen-token" not in out
+
+    out, command, env = launch("--host", "127.0.0.1")
+    assert command[-4:] == ["--host", "127.0.0.1", "--port", "10000"]
+    assert "ssh -L 10000:127.0.0.1:10000" in out and "this host only" in out and "Paste the URL" not in out
 
 
 def test_diagnostic_jobs_persist_and_reclaim(tmp_path, monkeypatch):

@@ -13,7 +13,7 @@ All notable documentation and implementation highlights are tracked here.
 - `POST /api/sessions` for scripted captures, with curl and Python examples in the README.
 - `storage` and `pcie` capture categories; `lsblk -J`, `nvme list -o json`, `nvme smart-log`, `ethtool -l`, and `ethtool -x` in the command allowlist.
 - Header SUT switcher with status, Pause/Resume Live Updates, IRQ heatmap Top-N selector (25 / 50 / 100 / All) and per-NUMA / per-socket aggregation.
-- `run_irqlens.py --remote`, `--token`, `--host`, `--port`; single shared token `IRQLENS_TOKEN`.
+- `run_irqlens.py --host`, `--port`, `--token`; optional single shared token `IRQLENS_TOKEN`.
 - `IRQLENS_RETENTION_MINUTES` and `IRQLENS_STORAGE_INCLUDE_VIRTUAL`; agent `--include-virtual-disks`.
 - Capture-quality checks with frozen sampling configuration, boundary-gap and coverage analysis, per-interface checks, and artifact hashes.
 - Check Evidence action, authenticated quality endpoint, and explicit evidence status in capture details and HTML reports.
@@ -37,7 +37,7 @@ All notable documentation and implementation highlights are tracked here.
   - `docs/images/README.md`
 
 ### Changed
-- The launcher binds `127.0.0.1:10000` without authentication by default; remote access requires `--remote` and a token. `backend/run_backend.sh` and `.ps1` bind loopback too.
+- The launcher serves `http://<host-ip>:10000` on all interfaces without sign-in by default. `--port` changes the port, `--host 127.0.0.1` limits it to the server host, and `--token` requires a token. `backend/run_backend.sh` and `.ps1` bind loopback.
 - Default `IRQLENS_OUTPUT_DIR` is `./captures` in the repository root instead of `/root/irqlens`. Captures recorded under another directory stay listed but are not downloadable; deleting one removes only its record.
 - SQLite runs in WAL mode and each sampling tick is one transaction.
 - Retention is time-based (`IRQLENS_RETENTION_MINUTES`, default 30) and applies to every time-series table, replacing the 5000-row cap that truncated history on high-IRQ servers. Existing history older than the window is dropped on the first sample after upgrading.
@@ -48,7 +48,7 @@ All notable documentation and implementation highlights are tracked here.
 - Charts redraw at most once per second. The IRQ heatmap shows the Top 25 active IRQs by default.
 - Agent version 1.2.0 sends softnet, storage, and PCIe telemetry and up to 1024 IRQ rows.
 - The launcher skips `pip install` when dependencies are already importable.
-- In local mode the launcher states that the URL works on the server host only and prints the SSH port-forward command and the `--remote` alternative for other machines.
+- With `--host 127.0.0.1` the launcher states that the URL works on the server host only and prints the SSH port-forward command.
 - Python 3.14 is supported and tested in CI: FastAPI 0.121.2, Starlette 0.49.3 (now pinned), uvicorn 0.38.0, and pydantic 2.12.5 replace pins whose `pydantic-core` had no Python 3.14 wheel. The launcher installs wheels only and reports an unsupported interpreter instead of starting a Rust build.
 - New captures export only selected time-series categories; repeated stop requests preserve the original capture window and report metadata is refreshed for downloads.
 - Escaped untrusted Overview telemetry text and exposed remote-command status in Collect Logs.

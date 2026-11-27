@@ -81,7 +81,7 @@ Linux proc/sys -> collectors/agent -> backend store -> visualization APIs -> bro
 - Agent -> server: HTTP POST (register/heartbeat/telemetry)
 
 ## Security Model (Current)
-- The launcher binds loopback without authentication by default; `--remote` binds all interfaces and requires a shared token.
+- The launcher binds all interfaces without authentication by default; `--token` adds a shared token and `--host 127.0.0.1` limits it to the server host.
 - One token (`IRQLENS_TOKEN`) for dashboard, API, WebSocket, and agents, with optional per-surface overrides.
 - Diagnostic command execution constrained to allowlist.
 - File download path constrained to output directory.

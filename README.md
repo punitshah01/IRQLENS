@@ -166,8 +166,8 @@ Repository-grounded requirements:
 - Core telemetry continues if optional tools are missing.
 
 ### Ports
-- Default server bind: `127.0.0.1:10000` (loopback only, no authentication).
-- `python run_irqlens.py --remote` binds `0.0.0.0:10000` and requires a token from every browser, script, and agent.
+- Default server bind: `0.0.0.0:10000` (all interfaces, no sign-in). `--port` changes the port; `--host 127.0.0.1` serves the server host only.
+- `--token <value>` (or `IRQLENS_TOKEN`) requires that token from every browser, script, and agent.
 - Browser connects to server over HTTP and WebSocket on the same port.
 - Agent sends HTTP POSTs to server on server port (default 10000).
 
@@ -186,7 +186,7 @@ Repository-grounded requirements:
 ## Installation
 
 ### Option A: clone and run
-The launcher creates `backend/.venv`, installs `backend/requirements.txt` on first start only, and serves the dashboard on `http://127.0.0.1:10000`.
+The launcher creates `backend/.venv`, installs `backend/requirements.txt` on first start only, and serves the dashboard on `http://<host-ip>:10000` (it prints the URL).
 
 ```bash
 git clone <repository-url>
@@ -220,9 +220,9 @@ On Windows the server and dashboard run, but local telemetry is empty because `/
 
 ## Quick Start
 1. Clone the repository.
-2. Start IRQLENS server: `python3 run_irqlens.py` (this host only) or `python3 run_irqlens.py --remote` (agents and other hosts).
-3. Open the dashboard: `http://127.0.0.1:10000`, or `http://<server>:10000` in remote mode.
-4. Remote SUTs only: on each Linux SUT, start the IRQLENS agent with the server URL and token.
+2. Start IRQLENS server: `python3 run_irqlens.py` (add `--port <n>` for a port other than 10000).
+3. Open the URL it prints: `http://<server-ip>:10000`.
+4. Remote SUTs only: on each Linux SUT, start the IRQLENS agent with the server URL.
 5. Verify the SUT appears as `ONLINE` in the header SUT dropdown or `GET /api/systems`.
 6. Pick the SUT in the header dropdown. The UI restores the last selection, otherwise prefers a remote SUT and falls back to the local system.
 7. Confirm live updates (`WebSocket: connected`).
@@ -230,29 +230,28 @@ On Windows the server and dashboard run, but local telemetry is empty because `/
 9. Start a capture in Collect Logs (or from a script, see [CLI](#cli-trigger-captures-from-benchmark-scripts)) and download the Excel workbook or ZIP.
 
 ## Start IRQLENS Server
-Local mode, the default: loopback only, no authentication.
-
 ```bash
 # from repo root
-python3 run_irqlens.py
+python3 run_irqlens.py              # http://<host-ip>:10000
+python3 run_irqlens.py --port 8080  # http://<host-ip>:8080
 ```
 
-`http://127.0.0.1:10000` then works only in a browser on the server host. To view a headless SUT from your own machine without opening the port, forward it over SSH and open the same URL locally:
+The server listens on all interfaces and asks for no sign-in: anyone who can reach the port can use the dashboard, start captures, and delete sessions. The launcher prints the URL to open.
+
+Optional restrictions:
 
 ```bash
-# on your machine
+python3 run_irqlens.py --host 127.0.0.1   # this host only
+python3 run_irqlens.py --token <token>    # browsers, scripts, and agents must present the token
+```
+
+With `--host 127.0.0.1`, or when a firewall blocks the port, forward it over SSH from your own machine and open `http://127.0.0.1:10000` there:
+
+```bash
 ssh -L 10000:127.0.0.1:10000 <user>@<sut>
 ```
 
-Remote mode: binds `0.0.0.0:10000` and requires one token from every browser, script, and agent. Without `--token` or `IRQLENS_TOKEN`, a token is generated and printed at startup.
-
-```bash
-python3 run_irqlens.py --remote --token <token>
-# or
-IRQLENS_TOKEN=<token> python3 run_irqlens.py --remote
-```
-
-Launcher options: `--host`, `--port` (default 10000), `--remote`, `--token`, `--interval` (local sampling interval in seconds). A non-loopback `--host` is treated as remote mode.
+Launcher options: `--host` (default `0.0.0.0`), `--port` (default 10000), `--token`, `--interval` (local sampling interval in seconds). `--remote` is still accepted and has no effect.
 
 Starting the backend directly (no launcher) binds whatever uvicorn is told and is unauthenticated unless a token variable is set:
 
@@ -262,13 +261,13 @@ uvicorn app.main:app --host 127.0.0.1 --port 10000
 ```
 
 Runtime details:
-- Bind address: launcher `--host` / `--port` (default `127.0.0.1:10000`)
+- Bind address: launcher `--host` / `--port` (default `0.0.0.0:10000`)
 - DB location: `IRQLENS_DB_PATH` (default from `run_irqlens.py`: `backend/data/irqlens.db`)
 - Session/log output root: `IRQLENS_OUTPUT_DIR` (default `./captures`)
 - Log level: `IRQLENS_LOG_LEVEL` (default `INFO`)
 
 ## Install IRQLENS Agent on SUT
-Agent implementation path: `agent/main.py`. The server must be started with `--remote` so the agent can reach it.
+Agent implementation path: `agent/main.py`. Add `--token <token>` when the server was started with one.
 
 ```bash
 # on Linux SUT
@@ -277,7 +276,6 @@ python3 agent/main.py \
   --server http://<irqlens-server>:10000 \
   --sut-id <sut-id> \
   --name <display-name> \
-  --token <token> \
   --telemetry-interval 1.0 \
   --heartbeat-interval 5.0
 ```
@@ -296,7 +294,7 @@ The agent needs only the Python standard library plus `pydantic` (it imports the
 Authentication:
 - `IRQLENS_TOKEN` (or `run_irqlens.py --token`) is the single shared token for the dashboard, API, downloads, WebSocket, and agents.
 - `IRQLENS_API_TOKEN` (dashboard/API) and `IRQLENS_AGENT_TOKEN` (agents) are optional per-surface overrides for deployments that want separate credentials. Each falls back to the other when only one is set.
-- No token configured means authentication is disabled; the launcher allows that only on loopback. See [Security](#security).
+- No token configured means authentication is disabled, which is the launcher's default. See [Security](#security).
 
 Permissions and host requirement:
 - Agent is intended for Linux only.
@@ -572,8 +570,8 @@ Upgrading: the default output directory was `/root/irqlens`. Captures recorded u
 
 ## Security
 Current implemented controls:
-- `python run_irqlens.py` binds loopback only and needs no token. `--remote` (or any non-loopback `--host`) requires a token and generates one if none is supplied.
-- One shared token (`IRQLENS_TOKEN`) protects pages, telemetry reads, management mutations, session exports, API docs, WebSocket access, and every `/api/agent/*` endpoint.
+- `python run_irqlens.py` listens on all interfaces without authentication by default: anyone who can reach the port has full access to the dashboard and API. `--host 127.0.0.1` limits it to the server host; `--token <value>` or `IRQLENS_TOKEN` requires a token.
+- When configured, one shared token (`IRQLENS_TOKEN`) protects pages, telemetry reads, management mutations, session exports, API docs, WebSocket access, and every `/api/agent/*` endpoint.
 - `IRQLENS_API_TOKEN` and `IRQLENS_AGENT_TOKEN` optionally override the shared token per surface. Each falls back to the other when only one is configured. Configure distinct values to prevent agent credentials from accessing dashboard/management APIs.
 - Browser sign-in uses HTTP Basic: username `irqlens`, password equal to the dashboard/API token. Scripts use `Authorization: Bearer <token>`. Credentials are not stored in browser local storage or URL query strings.
 - Browser sign-in issues a signed 12-hour HttpOnly, SameSite=Strict session cookie for subsequent requests and WebSockets; it is Secure over HTTPS and contains no API token. Token rotation invalidates existing cookies. Native HTTP Basic credential caching remains browser-controlled.
@@ -584,7 +582,7 @@ Current implemented controls:
 - File download endpoint validates requested paths are under configured output root and answers with `X-Content-Type-Options: nosniff`
 
 Important operational warning:
-- Authentication is disabled when no token is configured. The launcher prevents that combination on non-loopback addresses; starting uvicorn directly on a non-loopback address without a token does not. Restart the server after changing token configuration.
+- Authentication is disabled when no token is configured, which is the default. Run it that way only on networks where every host that can reach the port is trusted; otherwise set a token. Restart the server after changing token configuration.
 - HTTP Basic and bearer tokens require HTTPS/WSS outside loopback. Use TLS termination, network ACLs, and access restrictions. This is shared-token authentication, not per-user roles or per-SUT credentials.
 - A reverse proxy must forward Authorization and WebSocket upgrades and preserve the external scheme/host with trusted proxy configuration.
 
@@ -608,7 +606,7 @@ Browser  --->  IRQLENS Server :10000 (HTTP + WS)
 Agent    --->  IRQLENS Server :10000 (HTTP POST)
 ```
 
-In the default local mode the server listens on loopback only, so neither flow works from another host; start it with `--remote` for agents and remote browsers.
+The launcher listens on all interfaces by default; with `--host 127.0.0.1` neither flow works from another host.
 
 The `port` field in system registration defaults to `8443` as metadata for SUT records; current telemetry transport still targets server URL/port configured by agent (`--server`).
 
@@ -655,7 +653,7 @@ curl -fsS -OJ "$BASE/api/sessions/$NAME/workbook"
 curl -fsS -OJ "$BASE/api/sessions/$NAME/download"
 ```
 
-In remote mode add `-H "Authorization: Bearer $IRQLENS_TOKEN"` to every call. Behind an HTTP proxy, export `no_proxy=127.0.0.1,localhost` first.
+If the server was started with a token, add `-H "Authorization: Bearer $IRQLENS_TOKEN"` to every call. Behind an HTTP proxy, export `no_proxy=127.0.0.1,localhost` first.
 
 The same flow in Python, standard library only:
 
@@ -666,7 +664,7 @@ import time
 import urllib.request
 
 BASE = "http://127.0.0.1:10000"
-HEADERS = {"Content-Type": "application/json"}  # remote mode: add "Authorization": "Bearer <token>"
+HEADERS = {"Content-Type": "application/json"}  # with a server token: add "Authorization": "Bearer <token>"
 
 
 def call(path, payload=None):
@@ -703,7 +701,7 @@ From `backend/app/config.py`. Set environment variables in the launching shell; 
 | `IRQLENS_COMMAND_TIMEOUT_SECONDS` | Diagnostic command timeout | `8.0` | No |
 | `IRQLENS_LOG_LEVEL` | Backend log level | `INFO` | No |
 | `IRQLENS_CORS_ORIGINS` | CORS allow list | `*` | No |
-| `IRQLENS_TOKEN` | Single shared token for dashboard, API, WebSocket, and agents | empty | Required by `--remote` (generated if unset) |
+| `IRQLENS_TOKEN` | Single shared token for dashboard, API, WebSocket, and agents | empty | No (unset = no sign-in) |
 | `IRQLENS_AGENT_TOKEN` | Agent-only override of the shared token | empty | No |
 | `IRQLENS_API_TOKEN` | Dashboard/API-only override of the shared token | empty | No |
 | `IRQLENS_AGENT_HEARTBEAT_INTERVAL` | Suggested heartbeat interval returned to agent | `5` | No |
@@ -764,12 +762,13 @@ PASS/WARN/FAIL semantics:
 - `FAIL`: blocking failure; script exits non-zero
 
 ## Troubleshooting
-### Browser shows "127.0.0.1 refused to connect"
-The server runs in local mode on another host. `127.0.0.1` in your browser is your own machine, not the SUT. Forward the port (`ssh -L 10000:127.0.0.1:10000 <user>@<sut>`) or start the server with `--remote` and open `http://<sut>:10000`.
+### Browser cannot reach the dashboard
+- Timeout on `http://<sut>:10000`: a firewall between you and the SUT blocks that port. Start the server on a port that is open (`--port <n>`), or forward the port over SSH (`ssh -L 10000:127.0.0.1:10000 <user>@<sut>`) and open `http://127.0.0.1:10000`.
+- "127.0.0.1 refused to connect": `127.0.0.1` in your browser is your own machine, not the SUT. Use the URL the launcher printed, or the SSH forward above.
 
 ### Agent does not connect
 Check:
-- Server was started with `--remote`; the default local mode listens on loopback only
+- Server was not started with `--host 127.0.0.1` (this host only)
 - Agent server URL (`--server`) and port reachability
 - Server is listening on expected interface/port
 - Agent `--token` matches the server token (`IRQLENS_TOKEN`, or `IRQLENS_AGENT_TOKEN` when that override is set)

@@ -5,7 +5,6 @@ import argparse
 import socket
 import os
 import platform
-import secrets
 import shutil
 import subprocess
 import sys
@@ -69,10 +68,10 @@ def _dependencies_installed(venv_py: Path) -> bool:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Start the IRQLENS server; local collection is built in")
-    ap.add_argument("--host", default="", help="Bind address (default 127.0.0.1, or 0.0.0.0 with --remote)")
+    ap.add_argument("--host", default="0.0.0.0", help="Bind address (default 0.0.0.0 = all interfaces; 127.0.0.1 = this host only)")
     ap.add_argument("--port", type=int, default=10000, help="Bind port")
-    ap.add_argument("--remote", action="store_true", help="Bind 0.0.0.0 and require a token from every client and agent")
-    ap.add_argument("--token", default="", help="Access token (default: IRQLENS_TOKEN; generated in --remote mode if unset)")
+    ap.add_argument("--remote", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--token", default="", help="Require this token from every browser, script, and agent (default: IRQLENS_TOKEN; unset = no sign-in)")
     ap.add_argument("--interval", type=float, default=0.0, help="Local sampling interval in seconds")
     args = ap.parse_args()
 
@@ -98,8 +97,8 @@ def main() -> int:
             print("IRQLENS needs prebuilt wheels: use Python 3.9-3.14 (delete backend/.venv after switching) and check access to PyPI.")
             return 1
 
-    host = args.host or ("0.0.0.0" if args.remote else "127.0.0.1")
-    remote = args.remote or host not in LOOPBACK_HOSTS
+    host = args.host
+    local = host in LOOPBACK_HOSTS
 
     env = dict(os.environ)
     env.setdefault("IRQLENS_DB_PATH", str((backend / "data" / "irqlens.db").resolve()))
@@ -110,14 +109,11 @@ def main() -> int:
         env["IRQLENS_COLLECTION_INTERVAL"] = str(args.interval)
 
     token = args.token or env.get("IRQLENS_TOKEN", "")
-    generated = False
-    if remote and not token and not (env.get("IRQLENS_API_TOKEN") and env.get("IRQLENS_AGENT_TOKEN")):
-        token = secrets.token_urlsafe(24)
-        generated = True
     if token:
         env["IRQLENS_TOKEN"] = token
+    protected = bool(token or env.get("IRQLENS_API_TOKEN") or env.get("IRQLENS_AGENT_TOKEN"))
 
-    host_ip = _detect_host_ip() if remote else "127.0.0.1"
+    host_ip = "127.0.0.1" if local else _detect_host_ip()
     url = f"http://{host_ip}:{args.port}"
     no_proxy_hosts = [host_ip, "127.0.0.1", "::1", "localhost"]
     existing_no_proxy = env.get("no_proxy") or env.get("NO_PROXY") or ""
@@ -145,20 +141,22 @@ def main() -> int:
     print("Dependency status:")
     for name, status in _dependency_status():
         print(f"  - {name}: {status}")
-    if remote:
-        print(f"Remote mode: listening on {host}:{args.port}; every client and agent must present the token.")
-        if generated:
-            print(f"Generated token (IRQLENS_TOKEN): {token}")
+    if args.remote:
+        print("Note: --remote is no longer needed; all interfaces are served by default.")
+    hint = "Paste the URL above into your browser."
+    if local:
+        print("This host only: listening on loopback.")
+        print(f"  From another machine: ssh -L {args.port}:127.0.0.1:{args.port} <user>@<this-host>, then open {url} there.")
+        hint = "Works in a browser on this host only."
+    elif protected:
+        print(f"Listening on {host}:{args.port}; sign-in required.")
         print("  Browser sign-in: user 'irqlens', password = token")
         print(f"  Agent: python3 agent/main.py --server {url} --token <token>")
-        hint = "Paste the URL above into your browser."
     else:
-        print("Local mode: loopback only, no authentication.")
-        print(f"  From another machine: ssh -L {args.port}:127.0.0.1:{args.port} <user>@<this-host>, then open {url} there.")
-        print("  Or restart with --remote to accept other hosts and agents (token required).")
-        hint = "Works in a browser on this host only."
+        print(f"Listening on {host}:{args.port} without sign-in: anyone who can reach this port can use the dashboard.")
+        print("  --token <value> requires sign-in; --host 127.0.0.1 serves this host only.")
     _print_banner(url, hint)
-    # Redirected output is block-buffered; flush so the token reaches the log before the server starts.
+    # Redirected output is block-buffered; flush so the URL reaches the log before the server starts.
     sys.stdout.flush()
 
     backend_proc = subprocess.Popen(backend_cmd, cwd=str(backend), env=env)

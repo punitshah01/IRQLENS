@@ -17,7 +17,7 @@ This document describes the implemented protocol between `agent/main.py` and `ba
 ## Authentication
 - Server checks `IRQLENS_AGENT_TOKEN`, falling back to `IRQLENS_API_TOKEN`; both default to the shared `IRQLENS_TOKEN`.
 - The agent reads `--token`, then `IRQLENS_AGENT_TOKEN`, then `IRQLENS_TOKEN`.
-- If no token is configured, server accepts requests without auth headers; the launcher allows that only on loopback, and `--remote` always sets a token.
+- If no token is configured, which is the launcher's default, the server accepts requests without auth headers.
 - Unauthorized token returns `401`.
 - Dashboard/API credentials are separate when both tokens are set. All agents currently share one agent token; it is not a per-SUT identity credential. Use HTTPS and restrict network access.
 

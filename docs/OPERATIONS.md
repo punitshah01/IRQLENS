@@ -4,11 +4,13 @@
 
 ### Start from repository root
 ```bash
-# this host only: 127.0.0.1:10000, no authentication
+# all interfaces, no sign-in: open the printed http://<host-ip>:10000
 python3 run_irqlens.py
 
-# agents and other hosts: 0.0.0.0:10000, token required (generated and printed if not given)
-python3 run_irqlens.py --remote --token <token>
+# another port, this host only, or token required
+python3 run_irqlens.py --port 8080
+python3 run_irqlens.py --host 127.0.0.1
+python3 run_irqlens.py --token <token>
 ```
 
 ### Start backend explicitly
@@ -20,7 +22,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --host 127.0.0.1 --port 10000
 ```
 
-Started this way the server is unauthenticated unless `IRQLENS_TOKEN` is set; do not bind a non-loopback address without it.
+Started this way the server is unauthenticated unless `IRQLENS_TOKEN` is set.
 
 ### Stop
 - Press `Ctrl+C` in the server terminal.
@@ -111,7 +113,7 @@ Manual cleanup options:
 - Validation: run `tools/validate_sut_visualization.py` with appropriate mode
 
 ## 11. Access Control
-- `python3 run_irqlens.py` listens on loopback and needs no token. `--remote` requires one: pass `--token`, set `IRQLENS_TOKEN`, or copy the generated token from the startup output.
+- `python3 run_irqlens.py` listens on all interfaces without sign-in; anyone who can reach the port has full access. To require a token pass `--token` or set `IRQLENS_TOKEN`; `--host 127.0.0.1` keeps the server local.
 - `IRQLENS_TOKEN` protects the dashboard, API, downloads, WebSocket, and agents. `IRQLENS_API_TOKEN` and `IRQLENS_AGENT_TOKEN` are optional per-surface overrides; if only one is set, it protects both surfaces.
 - Browser sign-in: username `irqlens`, password equal to the token.
 - Browser WebSockets use a signed 12-hour HttpOnly session cookie issued at sign-in. It is SameSite=Strict, Secure over HTTPS, and invalidated by token rotation.
