@@ -338,7 +338,60 @@ def test_session_exports_all_formats_and_raw_commands(tmp_path: Path):
     files = service._emit_category_files(tmp_path / "system", "system", {"hostname": "test"}, [{"hostname": "test"}])
     assert {item.format for item in files} == {"json", "csv", "txt"}
     assert not (tmp_path / "system" / "system.xml").exists()
-    commands = [{"command": "ip route", "exit_code": 0, "stdout": "default via 192.0.2.1", "stderr": ""}]
+    commands = [
+        {"command": "ip route", "exit_code": 0, "stdout": "default via 192.0.2.1", "stderr": ""},
+        {"command": "ethtool -S ens3np0", "exit_code": 0, "stdout": "rx_packets: 1", "stderr": ""},
+        {"command": "nvme smart-log /dev/nvme0 ../..\\x:y", "exit_code": 0, "stdout": "", "stderr": ""},
+        {"command": "sysctl " + "a" * 200, "exit_code": 0, "stdout": "", "stderr": ""},
+        {"command": "/", "exit_code": 1, "stdout": "", "stderr": ""},
+    ]
     files = service._emit_command_files(tmp_path / "commands", commands)
-    assert len(files) == 4
-    assert "default via 192.0.2.1" in (tmp_path / "commands" / "command_001.txt").read_text(encoding="utf-8")
+    # Raw outputs are named after the command; the number keeps them unique and in run order.
+    assert [item.name for item in files[3:]] == [
+        "001_ip_route.txt", "002_ethtool_-S_ens3np0.txt", "003_nvme_smart-log_dev_nvme0_.._.._x_y.txt",
+        "004_sysctl_" + "a" * 53 + ".txt", "005_command.txt",
+    ]
+    assert all(Path(item.path).parent == tmp_path / "commands" for item in files)
+    assert "default via 192.0.2.1" in (tmp_path / "commands" / "001_ip_route.txt").read_text(encoding="utf-8")
+
+
+def test_capture_quality_separates_unsupported_device_queries(diagnostic_service):
+    service = diagnostic_service
+    session = service.start("device_queries", ["ethtool"], "sut", "Linux", "test", "local", duration_seconds=30)
+    root = Path(session.output_dir)
+
+    def row(command, exit_code, stdout="", stderr="", success=None):
+        return {"category": "ethtool", "command": command, "exit_code": exit_code, "stdout": stdout, "stderr": stderr,
+                "success": exit_code == 0 if success is None else success}
+
+    # Exit codes and messages as ethtool printed them for lo and docker0 on a real server.
+    rows = [
+        row("ethtool ens1", 0, "Link detected: yes"),
+        row("ethtool -S lo", 94, stderr="no stats available\n"),
+        row("ethtool -g docker0", 1, stderr="netlink error: Operation not supported\n"),
+        row("ethtool -i lo", 71, stderr="Cannot get driver information: Operation not supported\n"),
+    ]
+    service.store.add_session_files(session.session_id, service._emit_command_files(root / "commands", rows, session.session_id))
+    service.stop(session.session_id)
+    quality = service.capture_quality(session.session_id)
+    assert (quality["status"], quality["issue_count"]) == ("COMPLETE", 0)
+    assert quality["unsupported_commands"] == [
+        {"command": "ethtool -S lo", "reason": "no stats available"},
+        {"command": "ethtool -g docker0", "reason": "netlink error: Operation not supported"},
+        {"command": "ethtool -i lo", "reason": "Cannot get driver information: Operation not supported"},
+    ]
+    report = service.generate_html_report(session.session_id).read_text(encoding="utf-8")
+    assert "Evidence completeness: COMPLETE" in report
+    assert "Not counted: 3 device queries that the interface does not support (ethtool -S lo, ethtool -g docker0, ethtool -i lo)." in report
+
+    # A cut-off output, a missing device and an answer that broke off part-way are still failures.
+    rows += [
+        row("ethtool -S ens1", 0, "x" * 10, "\nOutput truncated at 1048576 characters per stream.", success=False),
+        row("ethtool ens9", 75, stderr="Cannot get device settings: No such device\n"),
+        row("ethtool -k ens1", 1, "rx-checksumming: on", "netlink error: Operation not supported\n"),
+    ]
+    service.store.add_session_files(session.session_id, service._emit_command_files(root / "commands", rows, session.session_id))
+    quality = service.refresh_capture_quality(session.session_id)
+    assert (quality["status"], quality["issue_count"]) == ("INCOMPLETE", 3)
+    assert [check["name"] for check in quality["checks"] if check["status"] == "FAILED"] == ["ethtool -S ens1", "ethtool ens9", "ethtool -k ens1"]
+    assert len(quality["unsupported_commands"]) == 3

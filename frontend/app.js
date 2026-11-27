@@ -74,6 +74,7 @@ const state = {
   reportingSessions: {},
   qualityRequests: {},
   qualityErrors: {},
+  folds: new Map(),
   sessionDetail: null,
   sessionFiles: [],
   selectedSessionId: "",
@@ -1786,18 +1787,53 @@ async function loadSessionDetail(sessionId) {
   state.sessionFiles = files.files || [];
 }
 
+// Unchanged markup is left in place, so an open list or a text selection survives the refresh.
+function setHtml(node, html) {
+  if (node.renderedHtml === html) return false;
+  node.renderedHtml = html;
+  node.innerHTML = html;
+  return true;
+}
+
+function foldSection(key, title, note, bodyHtml, openByDefault = false) {
+  const open = state.folds.has(key) ? state.folds.get(key) : openByDefault;
+  return `
+    <details class="file-group" data-fold="${escapeHtml(key)}" ${open ? "open" : ""}>
+      <summary><span class="item-title">${escapeHtml(title)}</span><span class="muted">${escapeHtml(note)}</span></summary>
+      ${bodyHtml}
+    </details>
+  `;
+}
+
+function qualityChecksTable(checks) {
+  return `
+    <div class="table-wrap" style="margin-top:8px;">
+      <table class="table">
+        <thead><tr><th>Check</th><th>Status</th><th>Samples received / expected</th><th>Coverage</th><th>Largest gap</th><th>Findings</th></tr></thead>
+        <tbody>${checks.map(check => `<tr>
+          <td>${escapeHtml(check.name)}</td><td>${escapeHtml(check.status)}</td>
+          <td>${check.unique_samples != null ? `${Number(check.unique_samples)} / ${check.expected_samples == null ? "Unknown" : Number(check.expected_samples)}` : "N/A"}</td>
+          <td>${check.coverage_percent == null ? "N/A" : `${Number(check.coverage_percent).toFixed(1)}%`}</td>
+          <td>${check.max_gap_seconds == null ? "N/A" : `${Number(check.max_gap_seconds).toFixed(2)}s`}</td>
+          <td>${escapeHtml((check.reasons || []).join(" "))}</td>
+        </tr>`).join("")}</tbody>
+      </table>
+    </div>
+  `;
+}
+
 function renderSessions() {
   const listRoot = qs("sessions-list");
   const detailRoot = qs("session-detail");
   // A list that is already on screen stays there while it is refreshed.
   if (state.loading.sessions && !state.sessions.length) {
     listRoot.innerHTML = emptyState("Loading sessions", "Fetching diagnostic capture history.");
-    detailRoot.innerHTML = emptyState("Select a capture", "Choose a capture to inspect summary, files, and download options.");
+    setHtml(detailRoot, emptyState("Select a capture", "Choose a capture to inspect summary, files, and download options."));
     return;
   }
   if (!state.sessions.length) {
     listRoot.innerHTML = emptyState("No captures yet.", "Start your first capture from Collect Logs.");
-    detailRoot.innerHTML = emptyState("No captures yet.", "Start a capture while a workload is running to collect SUT evidence.");
+    setHtml(detailRoot, emptyState("No captures yet.", "Start a capture while a workload is running to collect SUT evidence."));
     return;
   }
   const recent = state.sessions.slice(0, 3);
@@ -1903,11 +1939,11 @@ function renderSessions() {
   });
 
   if (!state.selectedSessionId) {
-    detailRoot.innerHTML = emptyState("Select a capture", "Choose a capture to inspect summary, files, and download options.");
+    setHtml(detailRoot, emptyState("Select a capture", "Choose a capture to inspect summary, files, and download options."));
     return;
   }
   if (!state.sessionDetail || state.sessionDetail.session_id !== state.selectedSessionId) {
-    detailRoot.innerHTML = emptyState("Loading capture", "Fetching capture detail and generated files.");
+    setHtml(detailRoot, emptyState("Loading capture", "Fetching capture detail and generated files."));
     return;
   }
   const grouped = groupFilesByCategory(state.sessionFiles);
@@ -1918,7 +1954,11 @@ function renderSessions() {
   const reportFailed = detail.report_status === "failed";
   const quality = detail.capture_quality || { status: "NOT_EVALUATED", checks: [] };
   const qualityBusy = !!state.qualityRequests[detail.session_id];
-  detailRoot.innerHTML = `
+  const checks = quality.checks || [];
+  const issues = checks.filter(check => check.status !== "COMPLETE");
+  const unsupported = quality.unsupported_commands || [];
+  const foldKey = name => `${detail.session_id}:${name}`;
+  const rendered = setHtml(detailRoot, `
     <div class="detail-panel">
       <div class="card-head">
         <div>
@@ -1958,20 +1998,15 @@ function renderSessions() {
         <div class="key-value"><span>Workload / silicon verdict</span><strong>NOT EVALUATED</strong></div>
         ${quality.generated_at ? `<div class="key-value"><span>Checked</span><span>${fmtTs(quality.generated_at)}</span></div>` : ""}
         ${state.qualityErrors[detail.session_id] ? `<div role="alert" class="item-text">${escapeHtml(state.qualityErrors[detail.session_id])}</div>` : ""}
-        ${(quality.checks || []).length ? `
-          <div class="table-wrap" style="margin-top:12px;">
-            <table class="table">
-              <thead><tr><th>Check</th><th>Status</th><th>Samples received / expected</th><th>Coverage</th><th>Largest gap</th><th>Findings</th></tr></thead>
-              <tbody>${quality.checks.map(check => `<tr>
-                <td>${escapeHtml(check.name)}</td><td>${escapeHtml(check.status)}</td>
-                <td>${check.unique_samples != null ? `${Number(check.unique_samples)} / ${check.expected_samples == null ? "Unknown" : Number(check.expected_samples)}` : "N/A"}</td>
-                <td>${check.coverage_percent == null ? "N/A" : `${Number(check.coverage_percent).toFixed(1)}%`}</td>
-                <td>${check.max_gap_seconds == null ? "N/A" : `${Number(check.max_gap_seconds).toFixed(2)}s`}</td>
-                <td>${escapeHtml((check.reasons || []).join(" "))}</td>
-              </tr>`).join("")}</tbody>
-            </table>
-          </div>
-        ` : ""}
+        <div class="file-list compact-file-list" style="margin-top:12px;">
+          ${issues.length ? foldSection(foldKey("quality-issues"), "Needs attention", `${issues.length} check(s)`, qualityChecksTable(issues), true) : ""}
+          ${checks.length ? foldSection(foldKey("quality-all"), "All checks", `${checks.length - issues.length} of ${checks.length} complete`, qualityChecksTable(checks)) : ""}
+          ${unsupported.length ? foldSection(foldKey("quality-unsupported"), "Unsupported queries", `${unsupported.length}, not counted`, `
+            <div class="stack-list" style="margin-top:8px;">
+              ${unsupported.map(item => `<div class="key-value"><span class="mono">${escapeHtml(item.command)}</span><span class="muted">${escapeHtml(item.reason)}</span></div>`).join("")}
+            </div>
+          `) : ""}
+        </div>
       </section>
       ${(detail.remote_diagnostics || []).length ? `
         <div class="detail-panel" style="margin-top:16px;">
@@ -1982,18 +2017,19 @@ function renderSessions() {
       <div class="detail-panel" style="margin-top:16px;">
         <div class="item-title">Session Files</div>
         <div class="file-list compact-file-list" style="margin-top:10px;">
-          ${Object.keys(grouped).length ? Object.entries(grouped).map(([category, files]) => `
-            <details class="file-group" open>
-              <summary><span class="item-title">${escapeHtml(category)}</span><span class="muted">${files.length} file(s)</span></summary>
-              <div class="stack-list" style="margin-top:8px;">
-                ${files.map(file => `<div class="key-value"><span>${escapeHtml(file.name)}</span>${downloadLink("Download", api("/api/files?path=" + encodeURIComponent(file.path)))}</div>`).join("")}
-              </div>
-            </details>
-          `).join("") : `<div class="muted">No files were recorded for this session.</div>`}
+          ${Object.keys(grouped).length ? Object.entries(grouped).map(([category, files]) => foldSection(foldKey(`files-${category}`), category, `${files.length} file(s)`, `
+            <div class="stack-list" style="margin-top:8px;">
+              ${files.map(file => `<div class="key-value"><span>${escapeHtml(file.name)}</span>${downloadLink("Download", api("/api/files?path=" + encodeURIComponent(file.path)))}</div>`).join("")}
+            </div>
+          `)).join("") : `<div class="muted">No files were recorded for this session.</div>`}
         </div>
       </div>
     </div>
-  `;
+  `);
+  if (!rendered) return;
+  detailRoot.querySelectorAll("details[data-fold]").forEach(node => {
+    node.ontoggle = () => state.folds.set(node.dataset.fold, node.open);
+  });
 
   const generateBtn = qs("session-generate-report");
   if (generateBtn) {

@@ -10,6 +10,8 @@ from typing import Dict, List
 from ..models import DiagnosticCommandResult
 
 COMMAND_CATEGORIES = frozenset({"network", "interfaces", "routes", "sockets", "ethtool", "storage"})
+# `ethtool -S` on a NIC with 126 queues prints about 110,000 characters.
+MAX_STREAM_CHARS = 1024 * 1024
 
 
 def nvme_controllers(sys_root: str = "/sys") -> List[str]:
@@ -92,9 +94,10 @@ class DiagnosticCommandCollector:
                     return results
                 interface = command[-1] if command[0] == "ethtool" else ""
                 result = self.run(category, command, interface)
-                if len(result.stdout) > 65536 or len(result.stderr) > 65536:
+                if len(result.stdout) > MAX_STREAM_CHARS or len(result.stderr) > MAX_STREAM_CHARS:
                     result = result.model_copy(update={
-                        "stdout": result.stdout[:65536], "stderr": result.stderr[:65536] + "\nOutput truncated at 65536 characters per stream.",
+                        "stdout": result.stdout[:MAX_STREAM_CHARS],
+                        "stderr": result.stderr[:MAX_STREAM_CHARS] + f"\nOutput truncated at {MAX_STREAM_CHARS} characters per stream.",
                         "success": False,
                     })
                 output_size += len(result.stdout.encode()) + len(result.stderr.encode())

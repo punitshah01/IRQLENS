@@ -123,3 +123,21 @@ def test_diagnostic_timeout_decodes_output(monkeypatch):
     assert not result.success
     assert result.stdout == "partial output"
     assert "partial error" in result.stderr
+
+
+def test_diagnostic_output_is_kept_in_full_up_to_one_mebibyte(monkeypatch):
+    from backend.app.collectors.commands import MAX_STREAM_CHARS, DiagnosticCommandCollector
+
+    # 110,858 characters is what `ethtool -S` printed for a 126-queue NIC.
+    sizes = {"-S": 110_858, "-x": MAX_STREAM_CHARS, "-g": MAX_STREAM_CHARS + 1}
+    monkeypatch.setattr(DiagnosticCommandCollector, "command_available", lambda self, executable: True)
+    monkeypatch.setattr("backend.app.collectors.commands.subprocess.run", lambda command, **kwargs: subprocess.CompletedProcess(
+        command, 0, "x" * sizes.get(command[1], 10), "",
+    ))
+    results = {item.command: item for item in DiagnosticCommandCollector(1).collect(["eth0"], ["ethtool"])}
+    assert len(results) == 8
+    assert (len(results["ethtool -S eth0"].stdout), results["ethtool -S eth0"].success) == (110_858, True)
+    assert (len(results["ethtool -x eth0"].stdout), results["ethtool -x eth0"].success) == (MAX_STREAM_CHARS, True)
+    cut = results["ethtool -g eth0"]
+    assert (len(cut.stdout), cut.success, cut.exit_code) == (MAX_STREAM_CHARS, False, 0)
+    assert cut.stderr.endswith("Output truncated at 1048576 characters per stream.")

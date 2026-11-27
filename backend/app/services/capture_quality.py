@@ -12,6 +12,16 @@ from ..models import CollectionSession, ExportFile
 from .exporter import unwrap_envelope
 
 SUPPORTED_CATEGORIES = COMMAND_CATEGORIES | {"irq", "softirq", "system", "pcie"}
+# What ethtool prints when an interface such as lo or a bridge has no such data.
+UNSUPPORTED_MARKERS = ("operation not supported", "no stats available")
+
+
+def _unsupported_by_device(row: Dict[str, Any]) -> bool:
+    # No output at all: a command that reported something and then failed stays a failure.
+    if not row.get("exit_code") or str(row.get("stdout") or "").strip():
+        return False
+    stderr = str(row.get("stderr") or "").lower()
+    return any(marker in stderr for marker in UNSUPPORTED_MARKERS)
 
 
 def sample_quality(
@@ -156,13 +166,19 @@ def build_capture_quality(session: CollectionSession, files: List[ExportFile], j
     for category in sorted(command_categories):
         results = [row for row in command_results if row.get("category") == category]
         add_check(f"{category} command results", bool(results), "No command results have been received for this category.")
+    unsupported = []
     for index, row in enumerate(command_results):
-        if not row.get("success", False):
-            checks.append({
-                "name": str(row.get("command", f"Command {index + 1}")), "status": "FAILED",
-                "reasons": [str(row.get("stderr") or "Command failed.")[:2000]],
-                "exit_code": row.get("exit_code"),
-            })
+        if row.get("success", False):
+            continue
+        command = str(row.get("command", f"Command {index + 1}"))
+        if _unsupported_by_device(row):
+            unsupported.append({"command": command, "reason": str(row.get("stderr") or "").strip()[:200]})
+            continue
+        checks.append({
+            "name": command, "status": "FAILED",
+            "reasons": [str(row.get("stderr") or "Command failed.")[:2000]],
+            "exit_code": row.get("exit_code"),
+        })
     for job in jobs:
         add_check(f"Remote job {job['job_id']}", job["status"] == "completed", job.get("error") or f"Remote command job is {job['status']}.")
 
@@ -203,10 +219,12 @@ def build_capture_quality(session: CollectionSession, files: List[ExportFile], j
         "selected_categories": session.categories,
         "checks": checks,
         "issue_count": len(issues),
+        "unsupported_commands": unsupported,
         "artifacts": inventory,
         "limitations": [
             "COMPLETE describes evidence availability, not a workload or silicon PASS verdict.",
             "Clock synchronization, counter accuracy, and IRQ-to-CPU mapping are not validated by this check.",
             "CPU frequency is optional and does not determine completeness.",
+            "Device queries answered with 'not supported' are listed in unsupported_commands and do not determine completeness.",
         ],
     }

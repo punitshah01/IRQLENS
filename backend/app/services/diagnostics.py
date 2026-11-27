@@ -317,7 +317,9 @@ class DiagnosticSessionService:
     def _emit_command_files(self, command_dir: Path, rows: List[dict], session_id: str = "") -> List[ExportFile]:
         files = self._emit_category_files(command_dir, "commands", {"commands": rows}, rows, session_id)
         for index, row in enumerate(rows):
-            path = command_dir / f"command_{index + 1:03d}.txt"
+            # The number keeps names unique and in run order; the rest says what the file holds.
+            label = re.sub(r"[^A-Za-z0-9._-]+", "_", str(row.get("command", ""))).strip("._")[:60] or "command"
+            path = command_dir / f"{index + 1:03d}_{label}.txt"
             self.exporter.write_txt(path, str(row.get("command", "")), [
                 f"Exit code: {row.get('exit_code', '')}",
                 "STDOUT:", str(row.get("stdout", "")),
@@ -874,11 +876,16 @@ class DiagnosticSessionService:
             f"<td>{escape('; '.join(check.get('reasons', [])))}</td></tr>"
             for check in (quality or {}).get("checks", [])
         )
+        unsupported = [str(item.get("command", "")) for item in (quality or {}).get("unsupported_commands", [])]
+        unsupported_html = (
+            f'<div class="summary">Not counted: {len(unsupported)} device queries that the interface does not support '
+            f'({escape(", ".join(unsupported))}).</div>' if unsupported else ""
+        )
         quality_html = (
             '<section class="card"><h3>Capture Quality</h3>'
             f'<div class="summary">Evidence completeness: {escape(quality_status)}. Workload/silicon verdict: NOT EVALUATED.</div>'
             '<table><thead><tr><th>Check</th><th>Status</th><th>Samples / Expected</th><th>Evidence</th></tr></thead>'
-            f'<tbody>{quality_rows}</tbody></table></section>'
+            f'<tbody>{quality_rows}</tbody></table>{unsupported_html}</section>'
         )
 
         html = f"""<!doctype html>

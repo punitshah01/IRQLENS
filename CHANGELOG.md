@@ -52,6 +52,10 @@ All notable documentation and implementation highlights are tracked here.
 - Chart axes use compact labels (`1.8M`, `800KB/s`) that fit beside the plot, time labels no longer overlap, storage axis names sit below the legend, and the IRQ bar chart labels every bar.
 - `GET /api/systems/{sut_id}/visualization` accepts `compact=1`, which omits the per-CPU history and cells and the softirq history. The default response is unchanged.
 - The page and its scripts are served with `Cache-Control: no-cache`, so a reload after an update runs the new dashboard.
+- Capture Detail is folded: checks that need attention are shown, while the full check list and each file group open on click and stay open across refreshes. An unchanged capture is no longer redrawn every second.
+- Raw command outputs are named after their command (`026_ethtool_-S_ens3np0.txt` instead of `command_026.txt`). Captures made earlier keep their file names.
+- Command output is kept up to 1,048,576 characters per stream instead of 65,536, which cut `ethtool -S` on a 126-queue NIC (110,858 characters) and marked the capture incomplete.
+- Device queries that an interface does not support (`ethtool -S lo`, `ethtool -g docker0`: no output and `Operation not supported` or `no stats available`) are listed as `unsupported_commands` in the capture quality instead of as failed checks. On a server with `lo` and `docker0` they were 11 of 12 failed checks. **Check Evidence** applies this to existing captures.
 - Agent version 1.2.0 sends softnet, storage, and PCIe telemetry and up to 1024 IRQ rows.
 - The launcher skips `pip install` when dependencies are already importable.
 - With `--host 127.0.0.1` the launcher states that the URL works on the server host only and prints the SSH port-forward command.

@@ -414,7 +414,7 @@ def test_remote_diagnostics_round_trip(monkeypatch):
     assert detail["remote_diagnostics"][0]["status"] == "completed"
     files = client.get(f"/api/sessions/{session_id}/files", headers=dashboard_headers).json()["files"]
     assert {item["format"] for item in files} == {"json", "csv", "txt"}
-    raw = next(item for item in files if item["name"] == "command_001.txt")
+    raw = next(item for item in files if item["name"] == "001_ip_route.txt")
     download = client.get("/api/files", params={"path": raw["path"]}, headers=dashboard_headers)
     assert "default via 192.0.2.1" in download.text
     assert client.delete(f"/api/sessions/{session_id}", headers=dashboard_headers).status_code == 200

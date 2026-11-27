@@ -516,7 +516,7 @@ Remote commands require agent version 1.1.0 or newer (1.2.0 for the `storage` ca
 
 Capture details show `queued`, `running`, `completed`, or `failed` remote jobs. A timed capture can finish while its commands are still pending; wait for terminal job states before taking a final ZIP/report. Downloads are point-in-time snapshots. Late results invalidate the report status so it can be regenerated. Missing tools, permissions, timeouts, and output limits are preserved in command results, not reported as successful collection.
 
-Command batches have a 120-second budget checked between commands, at most 500 executed commands, and an approximately 4 MiB output budget. Individual streams are capped at 65,536 characters with a truncation warning. Remote per-command timeouts are capped at 30 seconds.
+Command batches have a 120-second budget checked between commands, at most 500 executed commands, and an approximately 4 MiB output budget. Individual streams are capped at 1,048,576 characters with a truncation warning. Remote per-command timeouts are capped at 30 seconds.
 
 ## Output Directory Structure
 ### Capture Quality
@@ -524,10 +524,14 @@ Each completed capture includes `capture_quality.json`, a file inventory with si
 
 In Collect Logs, open a capture and use **Check Evidence** to recalculate its quality. The authenticated endpoint is `POST /api/sessions/{session_id}/quality`; session detail includes the saved result as `capture_quality`. Checks do not regenerate telemetry or move the capture's start/end timestamps. Running captures cannot be manually rechecked.
 
+Capture Detail shows the checks that need attention; the full check list, unsupported device queries, and each file group open on click and stay open while the page refreshes.
+
 - `COMPLETE`: all required evidence checks passed. This is not a workload or silicon PASS.
 - `INCOMPLETE`: missing/unusable snapshots, unknown sampling configuration, missing files, failed/pending commands, or insufficient stream coverage.
 - `CAPTURING`: capture is still running.
 - `NOT_EVALUATED`: no saved quality result, typically for an older capture.
+
+A device query that returns no output and `Operation not supported` or `no stats available` (for example `ethtool -S lo` or `ethtool -g docker0`) is listed under `unsupported_commands` and does not make a capture incomplete. Timeouts, missing tools, truncated output, and commands that fail after printing output remain `FAILED`. Use **Check Evidence** to apply this to a capture made by an earlier version.
 
 Required streams need at least two unique samples, at least 90% of the expected sample count, and no gap larger than 2.5 sampling intervals, including both capture boundaries. Invalid, duplicate, out-of-window, and out-of-order timestamps fail completeness. Per-interface coverage is checked for network captures. CPU frequency is optional. Old captures without recorded sampling configuration remain incomplete; no interval is guessed.
 
@@ -554,10 +558,10 @@ captures/
 |   +-- storage/storage.{json,csv,txt}
 |   +-- pcie/pcie.{json,csv,txt}
 |   +-- commands/commands.{json,csv,txt}    (local)
-|   +-- commands/command_001.txt            (local raw output)
+|   +-- commands/001_ip_addr.txt            (local raw output, one file per command, named after it)
 |   +-- commands/<job-id>/                  (remote)
 |   |   +-- commands.{json,csv,txt}
-|   |   +-- command_001.txt
+|   |   +-- 001_ip_addr.txt
 |   |   +-- status.json
 |   +-- timeseries/                         (JSON history per selected category)
 |   +-- report.html                         (generated on request)

@@ -211,11 +211,89 @@ def test_capture_quality_action(dashboard_page, status):
     section.get_by_text("Not evaluated", exact=True).wait_for()
     section.get_by_role("button", name="Check Evidence").click()
     section.locator("strong.tag").filter(has_text=status).wait_for()
+    # Checks that need attention are shown; a clean capture keeps its checks folded.
+    if status == "INCOMPLETE":
+        assert section.locator("details[open] summary").inner_text().split() == ["Needs", "attention", "1", "check(s)"]
+    else:
+        assert section.locator("details[open]").count() == 0
+        assert "2 / 30" not in section.inner_text()
+        section.get_by_text("All checks", exact=True).click()
     assert "NOT EVALUATED" in section.inner_text()
     assert "2 / 30" in section.inner_text()
     assert "6.7%" in section.inner_text()
     assert section.locator("b").count() == 0
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+
+
+def test_capture_detail_folds_checks_and_files(dashboard_page):
+    page = dashboard_page
+    files = [
+        {"name": "commands.json", "category": "commands", "format": "json", "path": "/out/capture/commands/commands.json", "size_bytes": 10},
+        {"name": "012_ethtool_-S_ens3np0.txt", "category": "commands", "format": "txt", "path": "/out/capture/commands/012_ethtool_-S_ens3np0.txt", "size_bytes": 10},
+        {"name": "irqtop.csv", "category": "irqtop", "format": "csv", "path": "/out/capture/irq/irqtop.csv", "size_bytes": 10},
+    ]
+    quality = {
+        "status": "INCOMPLETE", "scope": "capture_quality", "generated_at": time.time(),
+        "checks": [
+            {"name": "categories", "status": "COMPLETE", "reasons": []},
+            {"name": "ethtool command results", "status": "COMPLETE", "reasons": []},
+            {"name": "ethtool -S ens3np0", "status": "FAILED", "reasons": ["Output truncated at 65536 characters per stream."]},
+        ],
+        "unsupported_commands": [
+            {"command": "ethtool -S lo", "reason": "no stats available"},
+            {"command": "ethtool -g <b>docker0</b>", "reason": "netlink error: Operation not supported"},
+        ],
+    }
+    page.route("**/api/sessions/capture/files", lambda route: route.fulfill(json={"files": files}))
+    page.route("**/api/sessions/capture", lambda route: route.fulfill(json={
+        "session_id": "capture", "sut_id": "sut-test", "hostname": "test-host", "status": "stopped",
+        "start_time": 100, "end_time": 130, "categories": ["ethtool"], "capture_quality": quality,
+    }))
+    page.get_by_role("button", name="Collect Logs", exact=True).click()
+    page.locator('[data-toggle-session="capture"]').click()
+    detail = page.locator("#session-detail")
+
+    def fold(name):
+        return detail.locator(f'details[data-fold="capture:{name}"]')
+
+    fold("quality-issues").wait_for()
+    read_folds = """Object.fromEntries([...document.querySelectorAll('#session-detail details[data-fold]')].map(
+        node => [node.dataset.fold.replace('capture:', ''), [node.open, node.querySelector('summary').innerText.replace(/\\s+/g, ' ')]]))"""
+    assert page.evaluate(read_folds) == {
+        "quality-issues": [True, "Needs attention 1 check(s)"],
+        "quality-all": [False, "All checks 2 of 3 complete"],
+        "quality-unsupported": [False, "Unsupported queries 2, not counted"],
+        "files-commands": [False, "commands 2 file(s)"],
+        "files-irqtop": [False, "irqtop 1 file(s)"],
+    }
+    shown = detail.inner_text()
+    assert "Output truncated at 65536 characters per stream." in shown
+    assert "ethtool command results" not in shown and "no stats available" not in shown and "012_ethtool_-S_ens3np0.txt" not in shown
+
+    fold("files-commands").locator("summary").click()
+    fold("quality-unsupported").locator("summary").click()
+    page.wait_for_function("state.folds.get('capture:files-commands') === true && state.folds.get('capture:quality-unsupported') === true")
+    assert fold("files-commands").get_by_role("link", name="Download").count() == 2
+    assert "ethtool -g <b>docker0</b>" in fold("quality-unsupported").inner_text() and detail.locator("b").count() == 0
+
+    # A redraw keeps what the user opened, and an unchanged capture is not rebuilt at all.
+    kept = page.evaluate("""() => {
+        render();
+        const panel = document.querySelector('#session-detail .detail-panel');
+        render();
+        return panel.isConnected;
+    }""")
+    assert kept
+    text, after = page.evaluate("""() => {
+        state.sessionDetail = { ...state.sessionDetail, report_status: 'failed', report_error: 'report failed' };
+        renderSessions();
+        return [document.getElementById('session-detail').innerText, %s];
+    }""" % read_folds)
+    assert "report failed" in text
+    assert {name: value[0] for name, value in after.items()} == {
+        "quality-issues": True, "quality-all": False, "quality-unsupported": True, "files-commands": True, "files-irqtop": False,
+    }
+    assert "012_ethtool_-S_ens3np0.txt" in text and "irqtop.csv" not in text
 
 
 def test_capture_quality_error_is_visible(dashboard_page):

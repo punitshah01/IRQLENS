@@ -571,21 +571,60 @@ button {
   border-radius: 10px;
 }
 
+/* Closed groups sit side by side; an open one takes the full width. */
+.compact-file-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
+  gap: 8px;
+  align-items: start;
+}
+
+.compact-file-list .file-group[open] {
+  grid-column: 1 / -1;
+}
+
+.compact-file-list .key-value {
+  padding: 6px 0;
+}
+
 .compact-file-list .file-group {
   padding: 10px 12px;
   border-radius: 12px;
+  min-width: 0;
 }
 
 .compact-file-list .file-group summary {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   cursor: pointer;
   list-style: none;
 }
 
 .compact-file-list .file-group summary::-webkit-details-marker {
   display: none;
+}
+
+.compact-file-list .file-group summary .item-title {
+  margin-bottom: 0;
+}
+
+.compact-file-list .file-group summary .item-title::before {
+  content: "";
+  display: inline-block;
+  margin-right: 8px;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 6px solid var(--muted);
+}
+
+.compact-file-list .file-group[open] > summary .item-title::before {
+  transform: rotate(90deg);
+}
+
+.compact-file-list .file-group[open] > summary {
+  margin-bottom: 4px;
 }
 
 .finding.warn { border-color: #eed59f; background: var(--yellow-soft); }
