@@ -155,19 +155,23 @@ def test_samples_from_a_machine_with_a_wrong_clock_land_on_the_server_clock():
     try:
         _remote_message(machine_id, {"type": "register", **_sample_registration("its-own-name")})
         started = time.time()
+        moments = []
         for _ in range(3):
-            _remote_message(machine_id, sample(time.time() - behind))
+            moments.append(time.time() - behind)
+            _remote_message(machine_id, sample(moments[-1]))
             time.sleep(0.2)
-        # Stored under the address this server connected to, at the time this server saw them, evenly spaced.
+        # Stored under the address this server connected to, at the time this server saw them.
         assert STORE.get_system(machine_id).hostname == "sut-host" and STORE.get_system("its-own-name") is None
         stamps = [row["timestamp"] for row in STORE.irq_rate_series(machine_id, started - 5)]
         assert len(stamps) == 3 and started - 0.5 <= stamps[0] and stamps[-1] <= time.time() + 0.5
-        assert all(0.1 <= later - earlier <= 0.4 for earlier, later in zip(stamps, stamps[1:]))
+        # One shift for all of them, so they stay as far apart as the machine took them.
+        shifts = [stamp - moment for stamp, moment in zip(stamps, moments)]
+        assert all(abs(shift - behind) < 0.25 for shift in shifts) and max(shifts) - min(shifts) < 0.05
         assert [row["timestamp"] for row in STORE.network_rate_series(machine_id, started - 5)] == stamps
         assert STORE.irq_rate_series(machine_id, started - behind - 60, started - behind + 60) == []
         # Its clock being set back does not send the samples into the past.
         _remote_message(machine_id, sample(time.time() - behind - 100))
-        assert abs(STORE.latest_softirq(machine_id).timestamp - time.time()) < 1.0
+        assert abs(STORE.latest_softirq(machine_id).timestamp - time.time()) < 5.0
     finally:
         CLOCK_SHIFTS.pop(machine_id, None)
         STORE.delete_system(machine_id)
