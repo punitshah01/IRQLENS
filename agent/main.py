@@ -14,9 +14,9 @@ import urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+# Started as a script, the repository root is not on the import path yet. Sent over SSH, the imports come along.
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from backend.app.collectors import (  # noqa: E402
     COMMAND_CATEGORIES, DiagnosticCommandCollector, IRQCollector, NetworkCollector, PCIeCollector, SoftIRQCollector,
